@@ -144,6 +144,11 @@ with tab1:
                 ticker_data[ticker]["Trend"] = "Bear 🐻"
                 ticker_data[ticker]["Target"] = "-"
 
+            # Parse Stopped/Failed Status
+            if "STOPPING" in msg or "Account Restriction" in msg:
+                ticker_data[ticker]["Trend"] = "Stopped ⛔"
+                ticker_data[ticker]["Price"] = "Error"
+
         # Convert to DataFrame for nice display
         if ticker_data:
             st.subheader("📡 Market Monitor")
