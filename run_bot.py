@@ -198,9 +198,11 @@ def job():
                         logger.info(f"[{ticker}] Buy Success!")
                     else:
                         logger.error(f"[{ticker}] Buy Failed: {res}")
-                        # Prevent infinite loop on account errors (e.g. Education missing)
-                        if res.get('msg_cd') == 'APBK1680':
-                            logger.critical(f"[{ticker}] STOPPING: Account requires ETF Education Registration. Please check KIS App.")
+                        # Prevent infinite loop on account errors
+                        # APBK1680: ETF Education / APBK1681: Basic Deposit Requirement
+                        if res.get('msg_cd') in ['APBK1680', 'APBK1681']:
+                            err_msg = res.get('msg1')
+                            logger.critical(f"[{ticker}] STOPPING: Account Restriction Detected ({res.get('msg_cd')}). Message: {err_msg}")
                             data['status'] = 'failed'
                         # Generic backoff for other errors
                         else:
