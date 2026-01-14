@@ -12,30 +12,51 @@ from strategies.volatility_breakout import calculate_target_price
 # Configuration
 # "Universe" of Hot ETFs/Stocks to monitor
 # The Sniper will watch ALL of these and only attack the ones triggering the strategy.
-TARGET_TICKERS_US = [
-    # --- AI & Semiconductors (The Hottest) ---
+
+# --- Trading Mode Settings ---
+# If True, trades non-leveraged (1x) ETFs/Stocks only.
+# Use this if you don't meet the deposit requirement (10M KRW) for leveraged ETFs.
+IS_SAFE_MODE = True 
+
+# 1. Leveraged Targets (Requires >10M KRW Deposit & Education)
+TARGET_TICKERS_US_3X = [
     {'symbol': "NVDL", 'exchange': "NAS"},  # GraniteShares 2x Long NVDA
-    {'symbol': "SOXL", 'exchange': "AMS"},  # Direxion Daily Semiconductor Bull 3X (NYSE Arca -> AMS)
-    
-    # --- Big Tech & Growth ---
+    {'symbol': "SOXL", 'exchange': "AMS"},  # Direxion Daily Semiconductor Bull 3X
     {'symbol': "TQQQ", 'exchange': "NAS"},  # ProShares UltraPro QQQ
-    {'symbol': "TECL", 'exchange': "AMS"},  # Direxion Daily Technology Bull 3X (NYSE Arca -> AMS)
-    {'symbol': "FNGU", 'exchange': "AMS"},  # MicroSectors FANG+ Index 3X (NYSE Arca -> AMS)
-    
-    # --- Crypto / Blockchain ---
-    {'symbol': "BITX", 'exchange': "AMS"},  # 2x Bitcoin Strategy ETF (CBOE/NYSE Arca -> AMS usually)
+    {'symbol': "TECL", 'exchange': "AMS"},  # Direxion Daily Technology Bull 3X
+    {'symbol': "FNGU", 'exchange': "AMS"},  # MicroSectors FANG+ Index 3X
+    {'symbol': "BITX", 'exchange': "AMS"},  # 2x Bitcoin Strategy ETF
     {'symbol': "CONL", 'exchange': "NAS"},  # 2x Coinbase
-    
-    # --- High Volatility / Momentum ---
-    {'symbol': "TSLA", 'exchange': "NAS"},  # Tesla
+    {'symbol': "TSLA", 'exchange': "NAS"},  # Tesla (High Volatility Stock)
 ]
 
-TARGET_TICKERS_KR = [
-    # --- Safe Market Index / US Tech Replicas ---
-    "122630", # KODEX Leverage (KOSPI 200 2x) - High Liquidity
-    "233740", # KODEX KOSDAQ150 Leverage - High Volatility
-    "449200", # KODEX US Tech Top10 - Safe US Tech Proxy
+TARGET_TICKERS_KR_2X = [
+    "122630", # KODEX Leverage (KOSPI 200 2x)
+    "233740", # KODEX KOSDAQ150 Leverage
+    "449200", # KODEX US Tech Top10
 ]
+
+# 2. Non-Leveraged (1x) Targets (No Restrictions)
+TARGET_TICKERS_US_1X = [
+    {'symbol': "NVDA", 'exchange': "NAS"},  # NVIDIA (Stock)
+    {'symbol': "SOXX", 'exchange': "NAS"},  # iShares Semiconductor ETF
+    {'symbol': "QQQ",  'exchange': "NAS"},  # Invesco QQQ Trust
+    {'symbol': "XLK",  'exchange': "AMS"},  # Technology Select Sector SPDR
+    {'symbol': "MAGS", 'exchange': "AMS"},  # Roundhill Magnificent Seven ETF (Big Tech)
+    {'symbol': "IBIT", 'exchange': "NAS"},  # iShares Bitcoin Trust (Spot Bitcoin ETF)
+    {'symbol': "COIN", 'exchange': "NAS"},  # Coinbase (Stock)
+    {'symbol': "TSLA", 'exchange': "NAS"},  # Tesla (Stock)
+]
+
+TARGET_TICKERS_KR_1X = [
+    "069500", # KODEX 200 (KOSPI 200 1x)
+    "229200", # KODEX KOSDAQ150
+    "449200", # KODEX US Tech Top10
+]
+
+# Select Tickers based on Mode
+TARGET_TICKERS_US = TARGET_TICKERS_US_1X if IS_SAFE_MODE else TARGET_TICKERS_US_3X
+TARGET_TICKERS_KR = TARGET_TICKERS_KR_1X if IS_SAFE_MODE else TARGET_TICKERS_KR_2X
 
 QTY = 1 # Quantity per trade (Adjust based on portfolio size!)
 K_VALUE = 0.5
