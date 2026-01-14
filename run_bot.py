@@ -14,20 +14,20 @@ from strategies.volatility_breakout import calculate_target_price
 # The Sniper will watch ALL of these and only attack the ones triggering the strategy.
 TARGET_TICKERS_US = [
     # --- AI & Semiconductors (The Hottest) ---
-    "NVDL",  # GraniteShares 2x Long NVDA (AI Core)
-    "SOXL",  # Direxion Daily Semiconductor Bull 3X (Chips)
+    {'symbol': "NVDL", 'exchange': "NAS"},  # GraniteShares 2x Long NVDA
+    {'symbol': "SOXL", 'exchange': "AMS"},  # Direxion Daily Semiconductor Bull 3X (NYSE Arca -> AMS)
     
     # --- Big Tech & Growth ---
-    "TQQQ",  # ProShares UltraPro QQQ (Nasdaq 100 3x)
-    "TECL",  # Direxion Daily Technology Bull 3X
-    "FNGU",  # MicroSectors FANG+ Index 3X (Big Tech Leaders)
+    {'symbol': "TQQQ", 'exchange': "NAS"},  # ProShares UltraPro QQQ
+    {'symbol': "TECL", 'exchange': "AMS"},  # Direxion Daily Technology Bull 3X (NYSE Arca -> AMS)
+    {'symbol': "FNGU", 'exchange': "AMS"},  # MicroSectors FANG+ Index 3X (NYSE Arca -> AMS)
     
     # --- Crypto / Blockchain ---
-    "BITX",  # 2x Bitcoin Strategy ETF
-    "CONL",  # 2x Coinbase (Crypto Proxy)
+    {'symbol': "BITX", 'exchange': "AMS"},  # 2x Bitcoin Strategy ETF (CBOE/NYSE Arca -> AMS usually)
+    {'symbol': "CONL", 'exchange': "NAS"},  # 2x Coinbase
     
     # --- High Volatility / Momentum ---
-    "TSLA",  # Tesla (King of Volatility)
+    {'symbol': "TSLA", 'exchange': "NAS"},  # Tesla
 ]
 
 TARGET_TICKERS_KR = [
@@ -80,11 +80,22 @@ def job():
     monitoring_targets = {}
 
     # 1. Initialize Targets for each ticker
-    for ticker in tickers:
+    for t_obj in tickers:
+        if isinstance(t_obj, dict):
+            ticker = t_obj['symbol']
+            exchange = t_obj['exchange']
+        else:
+            ticker = t_obj
+            exchange = None
+
         logger.info(f"Analyzing {ticker}...")
         
         # A. Trend Check (20MA)
-        ohlc = kis.get_daily_ohlc(ticker)
+        if market == 'US':
+            ohlc = kis.get_daily_ohlc(ticker, exchange)
+        else:
+            ohlc = kis.get_daily_ohlc(ticker)
+            
         if not ohlc:
             logger.error(f"[{ticker}] Failed to get OHLC. Skipping.")
             continue
@@ -93,7 +104,11 @@ def job():
         closes.reverse() 
         
         ma20 = calculate_ma(closes, 20)
-        current_price = kis.get_current_price(ticker)
+        
+        if market == 'US':
+            current_price = kis.get_current_price(ticker, exchange)
+        else:
+            current_price = kis.get_current_price(ticker)
         
         if not current_price:
              logger.error(f"[{ticker}] Failed to get Current Price. Skipping.")
@@ -123,7 +138,8 @@ def job():
         monitoring_targets[ticker] = {
             'target': target_price,
             'status': 'monitoring',  # monitoring, bought
-            'buys': 0
+            'buys': 0,
+            'exchange': exchange
         }
 
     if not monitoring_targets:
@@ -141,10 +157,16 @@ def job():
             break
             
         for ticker, data in monitoring_targets.items():
-            if data['status'] == 'bought':
+            if data['status'] in ['bought', 'failed']:
                 continue
                 
-            current_price = kis.get_current_price(ticker)
+            exchange = data.get('exchange')
+            
+            if market == 'US':
+                current_price = kis.get_current_price(ticker, exchange)
+            else:
+                current_price = kis.get_current_price(ticker)
+                
             target_price = data['target']
             
             if current_price and current_price >= target_price:
@@ -158,7 +180,12 @@ def job():
                 
                 if sentiment.get('can_buy', False):
                     logger.info(f"[{ticker}] AI Approved. Buying...")
-                    res = kis.buy_market_order(ticker, QTY)
+                    
+                    if market == 'US':
+                        res = kis.buy_market_order(ticker, QTY, exchange)
+                    else:
+                        res = kis.buy_market_order(ticker, QTY)
+                        
                     # Result checking
                     is_success = False
                     if res:
@@ -171,6 +198,13 @@ def job():
                         logger.info(f"[{ticker}] Buy Success!")
                     else:
                         logger.error(f"[{ticker}] Buy Failed: {res}")
+                        # Prevent infinite loop on account errors (e.g. Education missing)
+                        if res.get('msg_cd') == 'APBK1680':
+                            logger.critical(f"[{ticker}] STOPPING: Account requires ETF Education Registration. Please check KIS App.")
+                            data['status'] = 'failed'
+                        # Generic backoff for other errors
+                        else:
+                            time.sleep(5)
                 else:
                     logger.info(f"[{ticker}] AI Rejected buying due to risk.")
                     time.sleep(10) 
@@ -182,7 +216,10 @@ def job():
     for ticker, data in monitoring_targets.items():
         if data['status'] == 'bought':
             logger.info(f"[{ticker}] Selling Market Order...")
-            kis.sell_market_order(ticker, QTY)
+            if market == 'US':
+                kis.sell_market_order(ticker, QTY, data.get('exchange'))
+            else:
+                kis.sell_market_order(ticker, QTY)
 
 if __name__ == "__main__":
     logger.info("=== Global ETF Sniper Bot Started ===")

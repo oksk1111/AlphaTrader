@@ -5,6 +5,7 @@ import glob
 import re
 import time
 from modules.kis_api import KisOverseas
+from modules.kis_domestic import KisDomestic  # Import KisDomestic
 
 st.set_page_config(
     page_title="US-ETF-Sniper Dashboard",
@@ -16,14 +17,20 @@ st.title("📈 US-ETF-Sniper Dashboard")
 
 # --- Initialize API ---
 @st.cache_resource
-def get_kis_client():
+def get_kis_client_us():
     return KisOverseas()
 
+@st.cache_resource
+def get_kis_client_kr():
+    return KisDomestic()
+
 try:
-    kis = get_kis_client()
-    api_status = "🟢 API Connected"
+    kis_us = get_kis_client_us()
+    kis_kr = get_kis_client_kr()
+    api_status = "🟢 API Connected (US & KR)"
 except Exception as e:
-    kis = None
+    kis_us = None
+    kis_kr = None
     api_status = f"🔴 API Error: {str(e)}"
 
 # --- Sidebar ---
@@ -108,7 +115,8 @@ with tab1:
             msg = line['message']
             
             # Extract Ticker from [TICKER]
-            ticker_match = re.search(r"\[([A-Z]+)\]", msg)
+            # Updated regex to support both US (Alphabets) and KR (Numbers) tickers
+            ticker_match = re.search(r"\[([A-Z0-9]+)\]", msg)
             if not ticker_match:
                 continue
             
@@ -171,9 +179,11 @@ with tab2:
         # Just to trigger rerun
         pass
 
-    if kis:
-        balance = kis.get_balance()
-        foreign_balance = kis.get_foreign_balance()
+    # --- US Account ---
+    st.subheader("🇺🇸 US Account")
+    if kis_us:
+        balance_us = kis_us.get_balance()
+        foreign_balance = kis_us.get_foreign_balance()
         
         # --- Prepare Data ---
         deposit_usd = "N/A"
@@ -183,19 +193,14 @@ with tab2:
             else:
                 deposit_usd = str(foreign_balance['deposit'])
         
-        # DEBUG: Show foreign balance raw
-        with st.expander("DEBUG: Foreign Balance Response"):
-            st.write(f"Raw Foreign Balance Object: {foreign_balance}")
-            st.write(f"Derived Deposit USD: {deposit_usd}")
-
         buying_power = "N/A"
         total_profit = "0"
         total_return = "0"
         
         has_stock_balance = False
-        if balance and 'output2' in balance and isinstance(balance['output2'], list) and len(balance['output2']) > 0:
+        if balance_us and 'output2' in balance_us and isinstance(balance_us['output2'], list) and len(balance_us['output2']) > 0:
             has_stock_balance = True
-            summary = balance['output2'][0]
+            summary = balance_us['output2'][0]
             buying_power = summary.get('ovrs_ord_psbl_amt', '0')
             total_profit = summary.get('tot_evlu_pfls_amt', '0')
             total_return = summary.get('ovrs_tot_pfls', '0')
@@ -207,23 +212,16 @@ with tab2:
              buying_power = deposit_usd + " (Est)"
 
         # --- Display Asset Status ---
-        st.markdown("### 💰 Asset Status")
         ac_col1, ac_col2, ac_col3, ac_col4 = st.columns(4)
         ac_col1.metric("Cash (USD)", f"${deposit_usd}")
         ac_col2.metric("Buying Power (USD)", f"${buying_power}")
         ac_col3.metric("Total Profit", f"${total_profit}")
         ac_col4.metric("Total Return", f"{total_return}%")
-        
-        if not has_stock_balance:
-             st.info("Stock balance summary (output2) empty or unavailable. Showing Cash only.")
-             if balance:
-                with st.expander("Raw Balance Data (Debug)"):
-                    st.json(balance)
 
         # --- Display Holdings ---
-        if balance and 'output1' in balance and balance['output1']:
-            st.subheader("Current Holdings")
-            holdings = balance['output1']
+        if balance_us and 'output1' in balance_us and balance_us['output1']:
+            st.write("Current Holdings (US)")
+            holdings = balance_us['output1']
             df_h = pd.DataFrame(holdings)
             
             # Column Mapping
@@ -240,13 +238,52 @@ with tab2:
             # Filter & Rename
             valid_cols = [c for c in col_map.keys() if c in df_h.columns]
             df_h = df_h[valid_cols].rename(columns=col_map)
+            st.dataframe(df_h)
             
-            st.dataframe(df_h, hide_index=True)
-        else:
-            st.info("No stocks currently held (Empty Portfolio).")
+    st.divider()
 
+    # --- KR Account ---
+    st.subheader("🇰🇷 KR Account")
+    if kis_kr:
+        balance_kr = kis_kr.get_balance()
+        
+        if balance_kr and 'output2' in balance_kr:
+            # KR Balance Summary
+            # output2[0] contains summary
+            summary_kr = balance_kr['output2'][0]
+            
+            deposit_krw = summary_kr.get('dnca_tot_amt', '0') # 예수금총금액
+            profit_krw = summary_kr.get('evlu_pfls_smtl_amt', '0') # 평가손익합계금액
+            total_asset_krw = summary_kr.get('tot_evlu_amt', '0') # 총평가금액
+            
+            k_col1, k_col2, k_col3 = st.columns(3)
+            k_col1.metric("Deposit (KRW)", f"{int(deposit_krw):,}")
+            k_col2.metric("Total Profit (KRW)", f"{int(profit_krw):,}")
+            k_col3.metric("Total Asset (KRW)", f"{int(total_asset_krw):,}")
+            
+        if balance_kr and 'output1' in balance_kr and balance_kr['output1']:
+            st.write("Current Holdings (KR)")
+            holdings_kr = balance_kr['output1']
+            df_k = pd.DataFrame(holdings_kr)
+            
+            # Column Mapping for KR
+            col_map_kr = {
+                'pdno': 'Ticker',
+                'prdt_name': 'Name',
+                'hldg_qty': 'Qty',
+                'pchs_avg_pric': 'Avg Price',
+                'prpr': 'Cur Price',
+                'evlu_pfls_rt': 'Return(%)',
+                'evlu_pfls_amt': 'Profit(KRW)'
+            }
+            
+            valid_cols_kr = [c for c in col_map_kr.keys() if c in df_k.columns]
+            df_k = df_k[valid_cols_kr].rename(columns=col_map_kr)
+            st.dataframe(df_k)
+        else:
+            st.info("No KR Holdings found.")
     else:
-        st.error("API Client not initialized.")
+        st.warning("KR API not connected.")
 
 # --- Tab 3: Logs ---
 with tab3:

@@ -110,19 +110,19 @@ class KisOverseas:
             # but raise_for_status handles HTTP errors.
             return res.json()
         except Exception as e:
-            # print(f"[KIS_API] Request Exception ({path}): {e}")
+            print(f"[KIS_API] Request Exception ({path}): {e}")
             return None
 
-    def get_current_price(self, ticker):
+    def get_current_price(self, ticker, exchange="NAS"):
         """현재가 조회 (주식현재가 시세)"""
-        # HHHDFS76200200 : 해외주식 현재가 상세 (미국)
-        tr_id = "HDFS76200200" if "openapivts" not in self.url else "HHDFS76200200" 
+        # HHDFS76200200 : 해외주식 현재가 상세 (미국)
+        tr_id = "HHDFS76200200" 
         path = "/uapi/overseas-price/v1/quotations/price"
         
         headers = self._get_headers(tr_id)
         params = {
             "AUTH": "",
-            "EXCD": "NAS", # NAS for Nasdaq. Needs mapping for NYSE/AMEX if needed.
+            "EXCD": exchange, # NAS, NYS, AMS
             "SYMB": ticker
         }
         
@@ -131,15 +131,18 @@ class KisOverseas:
         
         if res and res['rt_cd'] == '0':
             return float(res['output']['last'])
+        
+        if res:
+            print(f"[KIS] Current Price Error: {res.get('msg1')} (Code: {res.get('msg_cd')})")
         return None
 
-    def get_quote(self, ticker):
+    def get_quote(self, ticker, exchange="NAS"):
         """해외주식 현재가 상세 조회 (시가, 고가, 저가 포함)"""
         path = "/uapi/overseas-price/v1/quotations/price"
         headers = self._get_headers("HHDFS00000300")
         params = {
             "AUTH": "",
-            "EXCD": "NAS",
+            "EXCD": exchange,
             "SYMB": ticker
         }
         
@@ -155,7 +158,7 @@ class KisOverseas:
             print(f"[KIS] Exception getting quote: {e}")
             return None
 
-    def get_daily_ohlc(self, ticker, period="D"):
+    def get_daily_ohlc(self, ticker, exchange="NAS", period="D"):
         """해외주식 기간별 시세 (일봉)"""
         # HHDFS76240000 : 해외주식 기간별시세(일/주/월/년)
         path = "/uapi/overseas-price/v1/quotations/dailyprice"
@@ -167,7 +170,7 @@ class KisOverseas:
         
         params = {
             "AUTH": "",
-            "EXCD": "NAS",
+            "EXCD": exchange,
             "SYMB": ticker,
             "GUBN": "0", # 0:일, 1:주, 2:월
             "BYMD": today,
@@ -181,12 +184,16 @@ class KisOverseas:
             if data['rt_cd'] != '0':
                 print(f"[KIS] Error getting OHLC: {data['msg1']}")
                 return None
-            return data['output2'] # 일별 데이터 리스트
+            
+            items = data['output2']
+            if not items:
+                print(f"[KIS] OHLC List is Empty! (Params: {params})")
+            return items # 일별 데이터 리스트
         except Exception as e:
             print(f"[KIS] Exception getting OHLC: {e}")
             return None
 
-    def buy_market_order(self, ticker, qty):
+    def buy_market_order(self, ticker, qty, exchange="NAS"):
         """해외주식 시장가 매수"""
         # 모의투자/실전투자 TR_ID 구분 필요
         # 실전: TTTT1002U (미국 매수 주문) / 모의: VTTT1002U
@@ -194,11 +201,22 @@ class KisOverseas:
         
         path = "/uapi/overseas-stock/v1/trading/order"
         headers = self._get_headers(tr_id)
+
+        # [CRITICAL UPDATE] Exchange Code Mapping
+        # Price/OHLC APIs use 3-char codes (NAS, AMS, NYS).
+        # Order APIs require 4-char codes (NASD, AMEX, NYSE).
+        order_exchange = exchange
+        if exchange == "NAS":
+            order_exchange = "NASD"
+        elif exchange == "AMS":
+            order_exchange = "AMEX"
+        elif exchange == "NYS":
+            order_exchange = "NYSE"
         
         data = {
             "CANO": self.acc_no_prefix,
             "ACNT_PRDT_CD": self.acc_no_suffix,
-            "OVRS_EXCG_CD": "NAS",
+            "OVRS_EXCG_CD": order_exchange,
             "PDNO": ticker,
             "ORD_QTY": str(qty),
             "OVRS_ORD_UNPR": "0", # 시장가는 0
@@ -213,8 +231,8 @@ class KisOverseas:
             # -> 수정: 현재가 조회 후 +1% 가격으로 지정가 주문 (시장가 효과)
         }
         
-        # 현재가 조회
-        current_price = self.get_current_price(ticker)
+        # 현재가 조회 (Use original 3-char exchange code for Price API)
+        current_price = self.get_current_price(ticker, exchange)
         if not current_price:
             return None
             
@@ -230,24 +248,33 @@ class KisOverseas:
             print(f"[KIS] Order failed: {e}")
             return None
 
-    def sell_market_order(self, ticker, qty):
+    def sell_market_order(self, ticker, qty, exchange="NAS"):
         """해외주식 시장가 매도"""
         tr_id = "VTTT1006U" if "openapivts" in self.url else "TTTT1006U"
         path = "/uapi/overseas-stock/v1/trading/order"
         headers = self._get_headers(tr_id)
         
-        # 현재가 조회
-        current_price = self.get_current_price(ticker)
+        # 현재가 조회 (Use original 3-char exchange code)
+        current_price = self.get_current_price(ticker, exchange)
         if not current_price:
             return None
             
         # 매도 주문 가격 (현재가 * 0.99) - 즉시 체결 유도
         sell_price = round(current_price * 0.99, 2)
         
+        # [CRITICAL UPDATE] Exchange Code Mapping
+        order_exchange = exchange
+        if exchange == "NAS":
+            order_exchange = "NASD"
+        elif exchange == "AMS":
+            order_exchange = "AMEX"
+        elif exchange == "NYS":
+            order_exchange = "NYSE"
+
         data = {
             "CANO": self.acc_no_prefix,
             "ACNT_PRDT_CD": self.acc_no_suffix,
-            "OVRS_EXCG_CD": "NAS",
+            "OVRS_EXCG_CD": order_exchange,
             "PDNO": ticker,
             "ORD_QTY": str(qty),
             "OVRS_ORD_UNPR": str(sell_price),
