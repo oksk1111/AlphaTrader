@@ -264,7 +264,10 @@ if __name__ == "__main__":
     ctx = get_market_status()
     if ctx != 'CLOSED':
         logger.info(f"Bot started during {ctx} Trading Hours. Launching job immediately.")
-        job()
+        try:
+            job()
+        except Exception as e:
+            logger.critical(f"Startup Job Crashed: {e}", exc_info=True)
 
     while True:
         schedule.run_pending()
@@ -277,12 +280,18 @@ if __name__ == "__main__":
         
         # Trigger at 09:00 for KR
         if t == 900:
-            job()
+            try:
+                job()
+            except Exception as e:
+                logger.critical(f"Job Crashed: {e}", exc_info=True)
             time.sleep(60) # Avoid double trigger
             
         # Trigger at 23:30 for US
         if t == 2330:
-            job()
+            try:
+                job()
+            except Exception as e:
+                logger.critical(f"Job Crashed: {e}", exc_info=True)
             time.sleep(60)
             
         time.sleep(1)
