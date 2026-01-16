@@ -4,6 +4,8 @@ import os
 import glob
 import re
 import time
+import subprocess
+import signal
 from modules.kis_api import KisOverseas
 from modules.kis_domestic import KisDomestic  # Import KisDomestic
 
@@ -40,6 +42,41 @@ auto_refresh = st.sidebar.checkbox("Auto Refresh", value=True)
 st.sidebar.markdown(f"**API Status**: {api_status}")
 
 # --- Helper Functions ---
+def get_bot_pid():
+    """Find the process ID of run_bot.py"""
+    try:
+        # pgrep -f run_bot.py checks for running python process
+        pid = subprocess.check_output(["pgrep", "-f", "run_bot.py"]).strip()
+        return int(pid)
+    except subprocess.CalledProcessError:
+        return None
+
+def restart_bot_process():
+    """Kills existing bot and starts a new one"""
+    # 1. Kill Check
+    old_pid = get_bot_pid()
+    if old_pid:
+        try:
+            os.kill(old_pid, signal.SIGTERM)
+            time.sleep(1)
+            # Force kill if still alive
+            if get_bot_pid():
+               os.kill(old_pid, signal.SIGKILL) 
+        except Exception as e:
+            st.error(f"Failed to stop bot: {e}")
+            return False
+            
+    # 2. Start New
+    try:
+        # Using nohup to keep it alive independent of this script
+        # We need to use full path or ensure cwd is correct
+        cmd = "nohup python3 run_bot.py > nohup.out 2>&1 &"
+        subprocess.Popen(cmd, shell=True, cwd=os.getcwd())
+        return True
+    except Exception as e:
+        st.error(f"Failed to start bot: {e}")
+        return False
+
 def get_latest_log_file():
     log_files = glob.glob("database/trading_*.log")
     if not log_files:
@@ -95,6 +132,26 @@ if log_file:
 
 # --- Tab 1: Overview ---
 with tab1:
+    # --- Service Control Section ---
+    st.subheader("🤖 Bot Control")
+    col_status, col_btn = st.columns([2, 1])
+    
+    current_pid = get_bot_pid()
+    status_text = f"🟢 Running (PID: {current_pid})" if current_pid else "🔴 Stopped"
+    
+    with col_status:
+        st.info(f"**Service Status:** {status_text}")
+        
+    with col_btn:
+        if st.button("🔄 Restart Service", type="primary"):
+            with st.spinner("Restarting Bot Service..."):
+                if restart_bot_process():
+                    st.success("Service Restarted Successfully!")
+                    time.sleep(2)
+                    st.rerun()
+                else:
+                    st.error("Failed to restart service.")
+    
     if parsed_lines:
         # 1. Status
         last_log = parsed_lines[-1]
