@@ -6,8 +6,22 @@ import re
 import time
 import subprocess
 import signal
+import json
 from modules.kis_api import KisOverseas
-from modules.kis_domestic import KisDomestic  # Import KisDomestic
+from modules.kis_domestic import KisDomestic
+
+# Load Config
+CONFIG_FILE = "user_config.json"
+
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    return {"trading_mode": "safe", "strategy": "day"}
+
+def save_config(config):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=4)
 
 st.set_page_config(
     page_title="US-ETF-Sniper Dashboard",
@@ -37,6 +51,30 @@ except Exception as e:
 
 # --- Sidebar ---
 st.sidebar.header("Settings")
+
+# 1. Config Management
+config = load_config()
+
+new_trading_mode = st.sidebar.selectbox(
+    "Target Mode (ETF Type)", 
+    ["safe", "risky"], 
+    index=0 if config.get("trading_mode") == "safe" else 1,
+    format_func=lambda x: "Safe Mode (1x Stock/ETF)" if x == "safe" else "Risky Mode (3x Lev ETF)"
+)
+
+new_strategy_mode = st.sidebar.selectbox(
+    "Strategy (Exit Rule)",
+    ["day", "swing"],
+    index=0 if config.get("strategy", "day") == "day" else 1,
+    format_func=lambda x: "Day Trading (Sell at Close)" if x == "day" else "Swing/Hold (Trend Following)"
+)
+
+if new_trading_mode != config.get("trading_mode") or new_strategy_mode != config.get("strategy"):
+    config["trading_mode"] = new_trading_mode
+    config["strategy"] = new_strategy_mode
+    save_config(config)
+    st.sidebar.success("Settings Saved! Restart Bot to Apply.")
+    
 refresh_rate = st.sidebar.slider("Refresh Rate (sec)", 1, 60, 5)
 auto_refresh = st.sidebar.checkbox("Auto Refresh", value=True)
 st.sidebar.markdown(f"**API Status**: {api_status}")

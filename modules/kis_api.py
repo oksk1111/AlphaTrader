@@ -97,9 +97,9 @@ class KisOverseas:
         self.limiter.wait()
         try:
             if method == "GET":
-                res = requests.get(self.url + path, headers=headers, params=params)
+                res = requests.get(self.url + path, headers=headers, params=params, timeout=10)
             elif method == "POST":
-                res = requests.post(self.url + path, headers=headers, data=data)
+                res = requests.post(self.url + path, headers=headers, data=data, timeout=10)
             
             # Simple error logging
             if res.status_code != 200:

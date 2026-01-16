@@ -2,6 +2,8 @@ import time
 import datetime
 import schedule
 import sys
+import json
+import os
 from modules.kis_api import KisOverseas
 from modules.kis_domestic import KisDomestic
 from modules.gemini_analyst import GeminiAnalyst
@@ -10,13 +12,20 @@ from strategies.technical import calculate_ma, check_trend
 from strategies.volatility_breakout import calculate_target_price
 
 # Configuration
-# "Universe" of Hot ETFs/Stocks to monitor
-# The Sniper will watch ALL of these and only attack the ones triggering the strategy.
+CONFIG_FILE = "user_config.json"
 
-# --- Trading Mode Settings ---
-# If True, trades non-leveraged (1x) ETFs/Stocks only.
-# Use this if you don't meet the deposit requirement (10M KRW) for leveraged ETFs.
-IS_SAFE_MODE = True 
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    return {"trading_mode": "safe", "strategy": "day"}
+
+# Load initial config
+user_config = load_config()
+IS_SAFE_MODE = True if user_config.get("trading_mode") == "safe" else False
+STRATEGY_MODE = user_config.get("strategy", "day")  # 'day' or 'swing'
+
+logger.info(f"Loaded Config: Mode={user_config.get('trading_mode')}, Strategy={STRATEGY_MODE}")
 
 # 1. Leveraged Targets (Requires >10M KRW Deposit & Education)
 TARGET_TICKERS_US_3X = [
@@ -79,6 +88,16 @@ def get_market_status():
     return 'CLOSED'
 
 def job():
+    # Reload config dynamically
+    global IS_SAFE_MODE, STRATEGY_MODE, TARGET_TICKERS_US, TARGET_TICKERS_KR
+    user_config = load_config()
+    IS_SAFE_MODE = True if user_config.get("trading_mode") == "safe" else False
+    STRATEGY_MODE = user_config.get("strategy", "day")
+    
+    # Update Target Tickers based on new config
+    TARGET_TICKERS_US = TARGET_TICKERS_US_1X if IS_SAFE_MODE else TARGET_TICKERS_US_3X
+    TARGET_TICKERS_KR = TARGET_TICKERS_KR_1X if IS_SAFE_MODE else TARGET_TICKERS_KR_2X
+
     market = get_market_status()
     
     if market == 'CLOSED':
@@ -87,11 +106,11 @@ def job():
 
     # Select Market Context
     if market == 'US':
-        logger.info(f"🇺🇸 Starting US Trading Session for {TARGET_TICKERS_US}")
+        logger.info(f"🇺🇸 Starting US Trading Session ({STRATEGY_MODE.upper()}) for {TARGET_TICKERS_US}")
         kis = KisOverseas()
         tickers = TARGET_TICKERS_US
     else:
-        logger.info(f"🇰🇷 Starting KR Trading Session for {TARGET_TICKERS_KR}")
+        logger.info(f"🇰🇷 Starting KR Trading Session ({STRATEGY_MODE.upper()}) for {TARGET_TICKERS_KR}")
         kis = KisDomestic()
         tickers = TARGET_TICKERS_KR
     
@@ -99,6 +118,22 @@ def job():
     
     # Dictionary to store monitoring targets
     monitoring_targets = {}
+
+    # --- 0. Check Holding Status (Swing Strategy) ---
+    current_holdings = []
+    try:
+        if market == 'US':
+            balance = kis.get_balance()
+            if balance and 'output1' in balance:
+                current_holdings = [h['pdno'] for h in balance['output1']] # Ticker list
+        else:
+            balance = kis.get_balance()
+            if balance and 'output1' in balance:
+                current_holdings = [h['pdno'] for h in balance['output1']]
+    except Exception as e:
+        logger.error(f"Failed to fetch holdings: {e}")
+
+    logger.info(f"Current Holdings: {current_holdings}")
 
     # 1. Initialize Targets for each ticker
     for t_obj in tickers:
@@ -137,22 +172,37 @@ def job():
 
         logger.info(f"[{ticker}] Current: {current_price}, MA20: {ma20}")
         
-        if not check_trend(current_price, ma20):
+        # --- STRATEGY BRANCHING ---
+        is_uptrend = check_trend(current_price, ma20)
+        
+        # Case 1: Already Holding
+        if ticker in current_holdings:
+            if not is_uptrend:
+                logger.info(f"[{ticker}] Trend Broken (Price < 20MA). Selling immediately.")
+                if market == 'US':
+                    kis.sell_market_order(ticker, QTY, exchange)
+                else:
+                    kis.sell_market_order(ticker, QTY)
+                # Don't add to monitoring list
+                continue
+            else:
+                logger.info(f"[{ticker}] Trend OK. Holding position.")
+                # Mark as bought to prevent duplicate buy
+                monitoring_targets[ticker] = {
+                    'target': 9999999, # Dummy target
+                    'status': 'bought',
+                    'buys': 0,
+                    'exchange': exchange
+                }
+                continue
+
+        # Case 2: New Entry (Trend Analysis)
+        if not is_uptrend:
             logger.info(f"[{ticker}] Bear Market (Price < 20MA). Skipping.")
             continue
 
-        # B. Calculate Target Price (Common Logic)
-        # Note: KR API OHLC structure is adapted to match US one in kis_domestic.py
-        # Need Open price for today.
-        
-        # Get Quote/Current for Open Price
-        # For simplicity, we use OHLC[0] if available or fetch current quote
-        # OHLC[0] from API is today's data usually in KIS, but let's be safe.
-        today_open = float(ohlc[0]['open']) # API returns latest first usually?
-        # Actually kis_domestic returns list daily daily.
-        # Let's rely on OHLC data we just got.
-        # KIS Domestic OHLC[0] is most recent day.
-        
+         # B. Calculate Target Price (Volatility Breakout)
+        today_open = float(ohlc[0]['open']) 
         target_price = calculate_target_price(today_open, ohlc, K_VALUE)
         logger.info(f"[{ticker}] Bull Market! Target Price: {target_price} (Open: {today_open})")
         
@@ -235,14 +285,20 @@ def job():
         time.sleep(0.1)
         
     # 3. Market Close Sell-off
-    logger.info(f"[{market}] Session End. Selling All Holdings.")
-    for ticker, data in monitoring_targets.items():
-        if data['status'] == 'bought':
-            logger.info(f"[{ticker}] Selling Market Order...")
-            if market == 'US':
-                kis.sell_market_order(ticker, QTY, data.get('exchange'))
-            else:
-                kis.sell_market_order(ticker, QTY)
+    logger.info(f"[{market}] Session End. Checking Exit Rules...")
+    
+    if STRATEGY_MODE == 'swing':
+        logger.info(f"[{market}] Strategy is SWING. Skipping daily sell-off relative to Trend 20MA Check.")
+        # Actual selling happens at the START of next session if Trend Broken.
+    else:
+        logger.info(f"[{market}] Strategy is DAY. Selling All Holdings.")
+        for ticker, data in monitoring_targets.items():
+            if data['status'] == 'bought':
+                logger.info(f"[{ticker}] Selling Market Order...")
+                if market == 'US':
+                    kis.sell_market_order(ticker, QTY, data.get('exchange'))
+                else:
+                    kis.sell_market_order(ticker, QTY)
 
 if __name__ == "__main__":
     logger.info("=== Global ETF Sniper Bot Started ===")
