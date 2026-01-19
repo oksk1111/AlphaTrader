@@ -77,27 +77,25 @@ jobs:
 
       - name: Send Telegram Notification
         if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          if [ "${{ job.status }}" == "success" ]; then
-            MESSAGE="✅ US-ETF-Sniper 배포 완료
-
-📅 $(date '+%Y-%m-%d %H:%M:%S')
-🔗 Commit: ${{ github.sha }}
-👤 By: ${{ github.actor }}
-
-🔗 Dashboard: http://158.180.81.25:8501"
-          else
-            MESSAGE="❌ US-ETF-Sniper 배포 실패
-
-📅 $(date '+%Y-%m-%d %H:%M:%S')
-🔗 Commit: ${{ github.sha }}
-👤 By: ${{ github.actor }}
-
-확인이 필요합니다!"
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram not configured, skipping notification"
+            exit 0
           fi
           
-          if [ -n "${{ secrets.TELEGRAM_BOT_TOKEN }}" ] && [ -n "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
-              -H "Content-Type: application/json" \
-              -d "{\"chat_id\": \"${{ secrets.TELEGRAM_CHAT_ID }}\", \"text\": \"$MESSAGE\", \"parse_mode\": \"HTML\"}" || true
+          TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+          COMMIT="${{ github.sha }}"
+          ACTOR="${{ github.actor }}"
+          
+          if [ "${{ job.status }}" == "success" ]; then
+            MESSAGE="✅ US-ETF-Sniper 배포 완료\n\n📅 ${TIMESTAMP}\n🔗 Commit: ${COMMIT:0:7}\n👤 By: ${ACTOR}\n\n🔗 Dashboard: http://158.180.81.25:8501"
+          else
+            MESSAGE="❌ US-ETF-Sniper 배포 실패\n\n📅 ${TIMESTAMP}\n🔗 Commit: ${COMMIT:0:7}\n👤 By: ${ACTOR}\n\n확인이 필요합니다!"
           fi
+          
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "{\"chat_id\": \"${TELEGRAM_CHAT_ID}\", \"text\": \"${MESSAGE}\"}" || echo "Failed to send telegram"
