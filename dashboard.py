@@ -151,7 +151,7 @@ def get_bot_status(last_log_time_str):
         return "Unknown"
 
 # --- Main Content ---
-tab1, tab2, tab3 = st.tabs(["📊 Overview", "💰 Account & Portfolio", "📜 Logs & History"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "💰 Account & Portfolio", "📜 Logs & History", "📈 Analytics"])
 
 log_file = get_latest_log_file()
 parsed_lines = []
@@ -404,6 +404,124 @@ with tab3:
     if parsed_lines:
         df = pd.DataFrame(parsed_lines)
         st.dataframe(df.iloc[::-1], hide_index=True) # Show newest first
+
+# --- Tab 4: Analytics ---
+with tab4:
+    st.subheader("📊 Log Analytics")
+    
+    # Get all log files
+    all_log_files = sorted(glob.glob("database/trading_*.log"))
+    
+    if all_log_files:
+        # Log file selector
+        selected_logs = st.multiselect(
+            "Select Log Files to Analyze",
+            all_log_files,
+            default=all_log_files[-3:] if len(all_log_files) >= 3 else all_log_files
+        )
+        
+        # Parse all selected logs
+        all_parsed = []
+        for lf in selected_logs:
+            try:
+                with open(lf, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+            except UnicodeDecodeError:
+                with open(lf, "r", encoding="cp949") as f:
+                    lines = f.readlines()
+            
+            for line in lines:
+                parsed = parse_log_line(line)
+                if parsed:
+                    parsed['file'] = os.path.basename(lf)
+                    all_parsed.append(parsed)
+        
+        if all_parsed:
+            df_all = pd.DataFrame(all_parsed)
+            
+            # --- Error Summary ---
+            st.subheader("⚠️ Error Summary")
+            errors = df_all[df_all['level'].isin(['ERROR', 'CRITICAL'])]
+            
+            if not errors.empty:
+                # Count errors by type
+                error_patterns = {
+                    'APBK1680 (ETF Education)': 'APBK1680',
+                    'APBK1681 (Deposit Req)': 'APBK1681',
+                    'Token Error': 'Token',
+                    'API Error': 'API Error|Request Exception',
+                    'OHLC Failed': 'Failed to get OHLC',
+                    'Buy Failed': 'Buy Failed',
+                    'Other Errors': ''
+                }
+                
+                error_counts = {}
+                for name, pattern in error_patterns.items():
+                    if pattern:
+                        count = errors[errors['message'].str.contains(pattern, na=False, regex=True)].shape[0]
+                    else:
+                        count = 0
+                    error_counts[name] = count
+                
+                # Display error metrics
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Total Errors", len(errors))
+                col2.metric("CRITICAL", len(errors[errors['level'] == 'CRITICAL']))
+                col3.metric("Account Errors", error_counts['APBK1680 (ETF Education)'] + error_counts['APBK1681 (Deposit Req)'])
+                col4.metric("API Errors", error_counts['Token Error'] + error_counts['API Error'])
+                
+                # Show error details
+                with st.expander("View Error Details"):
+                    st.dataframe(errors[['timestamp', 'file', 'message']].iloc[::-1], hide_index=True)
+            else:
+                st.success("✅ No errors found in selected logs!")
+            
+            # --- Trade Statistics ---
+            st.subheader("📈 Trade Statistics")
+            
+            # Count trades
+            buy_success = df_all[df_all['message'].str.contains('Buy Success', na=False)]
+            buy_failed = df_all[df_all['message'].str.contains('Buy Failed', na=False)]
+            sell_orders = df_all[df_all['message'].str.contains('Selling|Sell Order', na=False, regex=True)]
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Successful Buys", len(buy_success))
+            col2.metric("Failed Buys", len(buy_failed))
+            col3.metric("Sell Orders", len(sell_orders))
+            
+            # --- Ticker Analysis ---
+            st.subheader("🏷️ Ticker Analysis")
+            
+            # Extract tickers from logs
+            ticker_pattern = r"\[([A-Z0-9]+)\]"
+            df_all['ticker'] = df_all['message'].str.extract(ticker_pattern)
+            
+            ticker_stats = []
+            for ticker in df_all['ticker'].dropna().unique():
+                ticker_logs = df_all[df_all['ticker'] == ticker]
+                ticker_stats.append({
+                    'Ticker': ticker,
+                    'Breakouts': ticker_logs[ticker_logs['message'].str.contains('Breakout', na=False)].shape[0],
+                    'Buy Success': ticker_logs[ticker_logs['message'].str.contains('Buy Success', na=False)].shape[0],
+                    'Buy Failed': ticker_logs[ticker_logs['message'].str.contains('Buy Failed', na=False)].shape[0],
+                    'Trend': 'Bull 🐂' if ticker_logs[ticker_logs['message'].str.contains('Bull Market', na=False)].shape[0] > 0 else 'Bear 🐻'
+                })
+            
+            if ticker_stats:
+                df_ticker = pd.DataFrame(ticker_stats)
+                df_ticker = df_ticker.sort_values('Breakouts', ascending=False)
+                st.dataframe(df_ticker, hide_index=True, use_container_width=True)
+            
+            # --- Session Summary ---
+            st.subheader("📅 Session Summary")
+            sessions = df_all[df_all['message'].str.contains('Starting.*Trading Session', na=False, regex=True)]
+            if not sessions.empty:
+                st.write(f"Total Sessions: {len(sessions)}")
+                for _, row in sessions.iterrows():
+                    market = 'US 🇺🇸' if 'US' in row['message'] else 'KR 🇰🇷'
+                    st.text(f"  • {row['timestamp']} - {market}")
+    else:
+        st.warning("No log files found.")
 
 # Auto Refresh logic
 if auto_refresh:

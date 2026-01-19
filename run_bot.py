@@ -4,6 +4,7 @@ import schedule
 import sys
 import json
 import os
+import traceback
 from modules.kis_api import KisOverseas
 from modules.kis_domestic import KisDomestic
 from modules.gemini_analyst import GeminiAnalyst
@@ -13,12 +14,34 @@ from strategies.volatility_breakout import calculate_target_price
 
 # Configuration
 CONFIG_FILE = "user_config.json"
+MAX_RETRIES_PER_TICKER = 3  # Maximum buy retries per ticker per session
+FAILED_TICKERS = set()  # Track permanently failed tickers (account restrictions)
+LEVERAGE_THRESHOLD_KRW = 10_000_000  # 1000만원 기준
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r") as f:
             return json.load(f)
     return {"trading_mode": "safe", "strategy": "day"}
+
+def save_config(config):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=4)
+
+def check_and_upgrade_mode(total_asset_krw):
+    """
+    예치금이 1000만원 이상이면 자동으로 레버리지 모드로 전환
+    """
+    config = load_config()
+    current_mode = config.get("trading_mode", "safe")
+    
+    if total_asset_krw >= LEVERAGE_THRESHOLD_KRW and current_mode == "safe":
+        logger.info(f"🎉 축하합니다! 총 자산이 {total_asset_krw:,.0f}원으로 1000만원을 달성했습니다!")
+        logger.info("🚀 자동으로 레버리지 모드(risky)로 전환합니다.")
+        config["trading_mode"] = "risky"
+        save_config(config)
+        return True
+    return False
 
 # Load initial config
 user_config = load_config()
@@ -67,7 +90,84 @@ TARGET_TICKERS_KR_1X = [
 TARGET_TICKERS_US = TARGET_TICKERS_US_1X if IS_SAFE_MODE else TARGET_TICKERS_US_3X
 TARGET_TICKERS_KR = TARGET_TICKERS_KR_1X if IS_SAFE_MODE else TARGET_TICKERS_KR_2X
 
-QTY = 1 # Quantity per trade (Adjust based on portfolio size!)
+def calculate_signal_strength(current_price, target_price, ma20, ohlc_data):
+    """
+    매수 신호 강도 계산 (0.0 ~ 1.0)
+    - 목표가 돌파 정도
+    - 20MA 대비 위치
+    - 거래량 증가율 (향후 추가 가능)
+    """
+    if not current_price or not target_price or not ma20:
+        return 0.5  # 기본값
+    
+    strength = 0.0
+    
+    # 1. 목표가 돌파 강도 (0 ~ 0.4)
+    # 목표가를 얼마나 초과했는지 (최대 2% 초과 시 만점)
+    breakout_pct = (current_price - target_price) / target_price
+    breakout_score = min(breakout_pct / 0.02, 1.0) * 0.4
+    strength += max(breakout_score, 0)
+    
+    # 2. 20MA 대비 상승 강도 (0 ~ 0.3)
+    # 현재가가 MA20보다 얼마나 위인지 (최대 3% 위 시 만점)
+    ma_distance_pct = (current_price - ma20) / ma20
+    ma_score = min(ma_distance_pct / 0.03, 1.0) * 0.3
+    strength += max(ma_score, 0)
+    
+    # 3. 최근 변동성 대비 돌파 강도 (0 ~ 0.3)
+    if ohlc_data and len(ohlc_data) >= 5:
+        try:
+            recent_ranges = []
+            for i in range(min(5, len(ohlc_data))):
+                high = float(ohlc_data[i]['high'])
+                low = float(ohlc_data[i]['low'])
+                recent_ranges.append(high - low)
+            avg_range = sum(recent_ranges) / len(recent_ranges)
+            today_move = current_price - target_price
+            volatility_score = min(today_move / avg_range, 1.0) * 0.3 if avg_range > 0 else 0.15
+            strength += max(volatility_score, 0)
+        except:
+            strength += 0.15  # 기본값
+    else:
+        strength += 0.15
+    
+    return min(strength, 1.0)
+
+def calculate_order_quantity(available_cash, current_price, signal_strength=0.5, num_targets=1):
+    """
+    신호 강도에 따른 동적 매수 수량 계산
+    
+    - signal_strength: 0.0 ~ 1.0 (약한 신호 ~ 강한 신호)
+    - 강한 신호(0.8+): 가용 자금의 30%까지 투자
+    - 보통 신호(0.5~0.8): 가용 자금의 20%까지 투자
+    - 약한 신호(0.3~0.5): 가용 자금의 10%까지 투자
+    - 매우 약한 신호(<0.3): 최소 수량만 투자
+    """
+    if not available_cash or not current_price or current_price <= 0:
+        return 1
+    
+    # 분산 투자를 위해 종목 수로 나눔
+    per_ticker_cash = available_cash / max(num_targets, 1)
+    
+    # 신호 강도에 따른 투자 비율 결정
+    if signal_strength >= 0.8:
+        position_pct = 0.30  # 강한 신호: 30%
+        logger.info(f"📈 강한 매수 신호! (강도: {signal_strength:.2f}) → 포지션 30%")
+    elif signal_strength >= 0.5:
+        position_pct = 0.20  # 보통 신호: 20%
+        logger.info(f"📊 보통 매수 신호 (강도: {signal_strength:.2f}) → 포지션 20%")
+    elif signal_strength >= 0.3:
+        position_pct = 0.10  # 약한 신호: 10%
+        logger.info(f"📉 약한 매수 신호 (강도: {signal_strength:.2f}) → 포지션 10%")
+    else:
+        position_pct = 0.05  # 매우 약한 신호: 5% (최소)
+        logger.info(f"⚠️ 매우 약한 신호 (강도: {signal_strength:.2f}) → 최소 포지션 5%")
+    
+    max_investment = per_ticker_cash * position_pct
+    qty = int(max_investment / current_price)
+    
+    return max(qty, 1)  # 최소 1주
+
 K_VALUE = 0.5
 
 def get_market_status():
@@ -118,22 +218,50 @@ def job():
     
     # Dictionary to store monitoring targets
     monitoring_targets = {}
+    
+    # Track retry counts for this session
+    retry_counts = {}
+
+    # --- 0. Get Account Balance for Dynamic Quantity ---
+    available_cash = 0
+    total_asset_krw = 0
+    try:
+        balance = kis.get_balance()
+        if balance and 'output2' in balance and balance['output2']:
+            if market == 'US':
+                available_cash = float(balance['output2'][0].get('ovrs_ord_psbl_amt', 0))
+                # US 계좌는 환율 적용하여 원화 환산 (대략 1350원)
+                total_asset_krw = available_cash * 1350
+            else:
+                available_cash = float(balance['output2'][0].get('dnca_tot_amt', 0))
+                total_asset_krw = float(balance['output2'][0].get('tot_evlu_amt', available_cash))
+        logger.info(f"Available Cash: {available_cash:,.0f}, Total Asset (KRW): {total_asset_krw:,.0f}")
+        
+        # 자동 모드 전환 체크 (1000만원 달성 시 레버리지 모드로)
+        if check_and_upgrade_mode(total_asset_krw):
+            # 모드가 변경되었으면 설정 다시 로드
+            user_config = load_config()
+            IS_SAFE_MODE = user_config.get("trading_mode") == "safe"
+            TARGET_TICKERS_US = TARGET_TICKERS_US_1X if IS_SAFE_MODE else TARGET_TICKERS_US_3X
+            TARGET_TICKERS_KR = TARGET_TICKERS_KR_1X if IS_SAFE_MODE else TARGET_TICKERS_KR_2X
+            tickers = TARGET_TICKERS_US if market == 'US' else TARGET_TICKERS_KR
+            logger.info(f"🔄 모드 전환 완료! 새로운 타겟: {tickers}")
+            
+    except Exception as e:
+        logger.error(f"Failed to fetch balance: {e}")
 
     # --- 0. Check Holding Status (Swing Strategy) ---
     current_holdings = []
     try:
-        if market == 'US':
-            balance = kis.get_balance()
-            if balance and 'output1' in balance:
-                current_holdings = [h['pdno'] for h in balance['output1']] # Ticker list
-        else:
-            balance = kis.get_balance()
-            if balance and 'output1' in balance:
-                current_holdings = [h['pdno'] for h in balance['output1']]
+        if balance and 'output1' in balance:
+            current_holdings = [h['pdno'] for h in balance['output1']]
     except Exception as e:
-        logger.error(f"Failed to fetch holdings: {e}")
+        logger.error(f"Failed to parse holdings: {e}")
 
     logger.info(f"Current Holdings: {current_holdings}")
+    
+    # 활성 타겟 수 (분산 투자 계산용)
+    num_active_targets = len(tickers)
 
     # 1. Initialize Targets for each ticker
     for t_obj in tickers:
@@ -177,21 +305,31 @@ def job():
         
         # Case 1: Already Holding
         if ticker in current_holdings:
+            # 보유 수량 조회
+            holding_qty = 1
+            try:
+                for h in balance.get('output1', []):
+                    if h['pdno'] == ticker:
+                        holding_qty = int(h.get('hldg_qty', h.get('ccld_qty_smtl1', 1)))
+                        break
+            except:
+                pass
+            
             if not is_uptrend:
-                logger.info(f"[{ticker}] Trend Broken (Price < 20MA). Selling immediately.")
+                logger.info(f"[{ticker}] Trend Broken (Price < 20MA). Selling {holding_qty} shares immediately.")
                 if market == 'US':
-                    kis.sell_market_order(ticker, QTY, exchange)
+                    kis.sell_market_order(ticker, holding_qty, exchange)
                 else:
-                    kis.sell_market_order(ticker, QTY)
+                    kis.sell_market_order(ticker, holding_qty)
                 # Don't add to monitoring list
                 continue
             else:
-                logger.info(f"[{ticker}] Trend OK. Holding position.")
+                logger.info(f"[{ticker}] Trend OK. Holding {holding_qty} shares.")
                 # Mark as bought to prevent duplicate buy
                 monitoring_targets[ticker] = {
                     'target': 9999999, # Dummy target
                     'status': 'bought',
-                    'buys': 0,
+                    'buys': holding_qty,
                     'exchange': exchange
                 }
                 continue
@@ -210,14 +348,18 @@ def job():
             'target': target_price,
             'status': 'monitoring',  # monitoring, bought
             'buys': 0,
-            'exchange': exchange
+            'exchange': exchange,
+            'ma20': ma20,
+            'ohlc': ohlc  # 신호 강도 계산용
         }
 
     if not monitoring_targets:
         logger.info(f"[{market}] No targets found for today. Sleeping.")
         return
 
-    logger.info(f"[{market}] Watch List: {list(monitoring_targets.keys())}")
+    # 활성 모니터링 대상 수 업데이트
+    num_active_targets = len([t for t in monitoring_targets.values() if t['status'] == 'monitoring'])
+    logger.info(f"[{market}] Watch List: {list(monitoring_targets.keys())} ({num_active_targets} active)")
     
     # 2. Watch Loop
     while True:
@@ -228,7 +370,7 @@ def job():
             break
             
         for ticker, data in monitoring_targets.items():
-            if data['status'] in ['bought', 'failed']:
+            if data['status'] in ['bought', 'failed', 'ai_rejected']:
                 continue
                 
             exchange = data.get('exchange')
@@ -250,39 +392,71 @@ def job():
                 logger.info(f"AI Result: {sentiment}")
                 
                 if sentiment.get('can_buy', False):
-                    logger.info(f"[{ticker}] AI Approved. Buying...")
+                    # Skip if ticker is in global failed list (account restrictions)
+                    if ticker in FAILED_TICKERS:
+                        logger.warning(f"[{ticker}] Skipping - previously failed due to account restriction")
+                        data['status'] = 'failed'
+                        continue
+                    
+                    # Check retry count
+                    if retry_counts.get(ticker, 0) >= MAX_RETRIES_PER_TICKER:
+                        logger.warning(f"[{ticker}] Max retries ({MAX_RETRIES_PER_TICKER}) reached. Skipping for this session.")
+                        data['status'] = 'failed'
+                        continue
+                    
+                    # 매수 신호 강도 계산
+                    signal_strength = calculate_signal_strength(
+                        current_price, 
+                        target_price, 
+                        data.get('ma20'),
+                        data.get('ohlc')
+                    )
+                    logger.info(f"[{ticker}] Signal Strength: {signal_strength:.2f}")
+                    
+                    # 신호 강도에 따른 동적 수량 계산
+                    qty = calculate_order_quantity(
+                        available_cash, 
+                        current_price, 
+                        signal_strength,
+                        num_active_targets
+                    )
+                    logger.info(f"[{ticker}] AI Approved. Buying {qty} shares (Signal: {signal_strength:.2f})...")
                     
                     if market == 'US':
-                        res = kis.buy_market_order(ticker, QTY, exchange)
+                        res = kis.buy_market_order(ticker, qty, exchange)
                     else:
-                        res = kis.buy_market_order(ticker, QTY)
+                        res = kis.buy_market_order(ticker, qty)
                         
                     # Result checking
                     is_success = False
                     if res:
-                        if market == 'US' and res.get('rt_cd') == '0': is_success = True
-                        if market == 'KR' and res.get('rt_cd') == '0': is_success = True
+                        if res.get('rt_cd') == '0': 
+                            is_success = True
                         
                     if is_success:
                         data['status'] = 'bought'
-                        data['buys'] += 1
-                        logger.info(f"[{ticker}] Buy Success!")
+                        data['buys'] = qty
+                        logger.info(f"[{ticker}] Buy Success! Qty: {qty}")
                     else:
                         logger.error(f"[{ticker}] Buy Failed: {res}")
+                        retry_counts[ticker] = retry_counts.get(ticker, 0) + 1
+                        
                         # Prevent infinite loop on account errors
                         # APBK1680: ETF Education / APBK1681: Basic Deposit Requirement
-                        if res.get('msg_cd') in ['APBK1680', 'APBK1681']:
+                        if res and res.get('msg_cd') in ['APBK1680', 'APBK1681']:
                             err_msg = res.get('msg1')
                             logger.critical(f"[{ticker}] STOPPING: Account Restriction Detected ({res.get('msg_cd')}). Message: {err_msg}")
                             data['status'] = 'failed'
+                            FAILED_TICKERS.add(ticker)  # Add to global failed list
                         # Generic backoff for other errors
                         else:
                             time.sleep(5)
                 else:
                     logger.info(f"[{ticker}] AI Rejected buying due to risk.")
-                    time.sleep(10) 
+                    # Don't retry AI rejection immediately
+                    data['status'] = 'ai_rejected'
 
-        time.sleep(0.1)
+        time.sleep(1)  # Reduced polling frequency to avoid API overload
         
     # 3. Market Close Sell-off
     logger.info(f"[{market}] Session End. Checking Exit Rules...")
@@ -294,20 +468,67 @@ def job():
         logger.info(f"[{market}] Strategy is DAY. Selling All Holdings.")
         for ticker, data in monitoring_targets.items():
             if data['status'] == 'bought':
-                logger.info(f"[{ticker}] Selling Market Order...")
+                qty = data['buys']
+                logger.info(f"[{ticker}] Selling {qty} shares...")
                 if market == 'US':
-                    kis.sell_market_order(ticker, QTY, data.get('exchange'))
+                    kis.sell_market_order(ticker, qty, data.get('exchange'))
                 else:
-                    kis.sell_market_order(ticker, QTY)
+                    kis.sell_market_order(ticker, qty)
+
+def run_with_recovery():
+    """Wrapper function to run job with automatic recovery"""
+    max_consecutive_errors = 5
+    error_count = 0
+    
+    while True:
+        try:
+            schedule.run_pending()
+            
+            now = datetime.datetime.now()
+            t = int(now.strftime("%H%M"))
+            
+            # Trigger at 09:00 for KR
+            if t == 900:
+                try:
+                    job()
+                    error_count = 0  # Reset on success
+                except Exception as e:
+                    error_count += 1
+                    logger.critical(f"KR Job Crashed (Attempt {error_count}/{max_consecutive_errors}): {e}", exc_info=True)
+                    if error_count >= max_consecutive_errors:
+                        logger.critical("Too many consecutive errors. Waiting 5 minutes before retry...")
+                        time.sleep(300)
+                        error_count = 0
+                time.sleep(60)
+                
+            # Trigger at 23:30 for US
+            if t == 2330:
+                try:
+                    job()
+                    error_count = 0
+                except Exception as e:
+                    error_count += 1
+                    logger.critical(f"US Job Crashed (Attempt {error_count}/{max_consecutive_errors}): {e}", exc_info=True)
+                    if error_count >= max_consecutive_errors:
+                        logger.critical("Too many consecutive errors. Waiting 5 minutes before retry...")
+                        time.sleep(300)
+                        error_count = 0
+                time.sleep(60)
+                
+            time.sleep(1)
+            
+        except KeyboardInterrupt:
+            logger.info("Received shutdown signal. Exiting gracefully...")
+            break
+        except Exception as e:
+            logger.critical(f"Unexpected error in main loop: {e}", exc_info=True)
+            time.sleep(10)
 
 if __name__ == "__main__":
     logger.info("=== Global ETF Sniper Bot Started ===")
     logger.info(f"US Targets: {TARGET_TICKERS_US}")
     logger.info(f"KR Targets: {TARGET_TICKERS_KR}")
-    
-    # Schedule - Check every 1 minute to trigger job if market is open
-    # We replaced the fixed "at 23:30" with a continuous check loop below
-    # because we now have two market sessions.
+    logger.info(f"Safe Mode: {IS_SAFE_MODE}, Strategy: {STRATEGY_MODE}")
     
     # Heartbeat
     def heartbeat():
@@ -325,29 +546,5 @@ if __name__ == "__main__":
         except Exception as e:
             logger.critical(f"Startup Job Crashed: {e}", exc_info=True)
 
-    while True:
-        schedule.run_pending()
-        
-        # Poll for market start times
-        # If we are not in a job (job blocks execution), this loop runs.
-        # We need to trigger job() when time is right.
-        now = datetime.datetime.now()
-        t = int(now.strftime("%H%M"))
-        
-        # Trigger at 09:00 for KR
-        if t == 900:
-            try:
-                job()
-            except Exception as e:
-                logger.critical(f"Job Crashed: {e}", exc_info=True)
-            time.sleep(60) # Avoid double trigger
-            
-        # Trigger at 23:30 for US
-        if t == 2330:
-            try:
-                job()
-            except Exception as e:
-                logger.critical(f"Job Crashed: {e}", exc_info=True)
-            time.sleep(60)
-            
-        time.sleep(1)
+    # Run main loop with automatic recovery
+    run_with_recovery()

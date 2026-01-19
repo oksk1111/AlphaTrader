@@ -1,0 +1,16 @@
+[Unit]
+Description=US-ETF-Sniper Trading Bot Auto-Restart Monitor
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/US-ETF-Sniper
+ExecStart=/bin/bash /home/ubuntu/US-ETF-Sniper/auto_restart_bot.sh
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/ubuntu/US-ETF-Sniper/database/service.log
+StandardError=append:/home/ubuntu/US-ETF-Sniper/database/service.log
+
+[Install]
+WantedBy=multi-user.target

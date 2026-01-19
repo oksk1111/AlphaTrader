@@ -1,4 +1,11 @@
 {
     "trading_mode": "safe",
-    "strategy": "swing"
+    "strategy": "swing",
+    "leverage_threshold_krw": 10000000,
+    "max_retries_per_ticker": 3,
+    "signal_thresholds": {
+        "strong": 0.8,
+        "medium": 0.5,
+        "weak": 0.3
+    }
 }
