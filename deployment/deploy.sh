@@ -34,17 +34,11 @@ fi
 # Stop existing processes gracefully
 log "🔄 Stopping existing processes..."
 
-if pgrep -f "python.*run_bot.py" > /dev/null; then
-    pkill -f "python.*run_bot.py" || true
-    log "  - Bot stopped"
-fi
+# Kill all matching processes to avoid duplicate PIDs
+pkill -f "python.*run_bot.py" 2>/dev/null && log "  - Bot processes stopped" || log "  - No bot processes found"
+pkill -f "streamlit.*dashboard.py" 2>/dev/null && log "  - Dashboard processes stopped" || log "  - No dashboard processes found"
 
-if pgrep -f "streamlit.*dashboard.py" > /dev/null; then
-    pkill -f "streamlit.*dashboard.py" || true
-    log "  - Dashboard stopped"
-fi
-
-sleep 2
+sleep 3
 
 # Start services
 log "🚀 Starting services..."

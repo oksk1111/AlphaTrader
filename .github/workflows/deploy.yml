@@ -79,14 +79,25 @@ jobs:
         if: always()
         run: |
           if [ "${{ job.status }}" == "success" ]; then
-            MESSAGE="✅ <b>US-ETF-Sniper 배포 완료</b>%0A%0A📅 $(date '+%Y-%m-%d %H:%M:%S')%0A🔗 Commit: ${{ github.sha }}%0A👤 By: ${{ github.actor }}%0A%0A🔗 Dashboard: http://158.180.81.25:8501"
+            MESSAGE="✅ US-ETF-Sniper 배포 완료
+
+📅 $(date '+%Y-%m-%d %H:%M:%S')
+🔗 Commit: ${{ github.sha }}
+👤 By: ${{ github.actor }}
+
+🔗 Dashboard: http://158.180.81.25:8501"
           else
-            MESSAGE="❌ <b>US-ETF-Sniper 배포 실패</b>%0A%0A📅 $(date '+%Y-%m-%d %H:%M:%S')%0A🔗 Commit: ${{ github.sha }}%0A👤 By: ${{ github.actor }}%0A%0A확인이 필요합니다!"
+            MESSAGE="❌ US-ETF-Sniper 배포 실패
+
+📅 $(date '+%Y-%m-%d %H:%M:%S')
+🔗 Commit: ${{ github.sha }}
+👤 By: ${{ github.actor }}
+
+확인이 필요합니다!"
           fi
           
           if [ -n "${{ secrets.TELEGRAM_BOT_TOKEN }}" ] && [ -n "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
             curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
-              -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
-              -d "text=$MESSAGE" \
-              -d "parse_mode=HTML" || true
+              -H "Content-Type: application/json" \
+              -d "{\"chat_id\": \"${{ secrets.TELEGRAM_CHAT_ID }}\", \"text\": \"$MESSAGE\", \"parse_mode\": \"HTML\"}" || true
           fi

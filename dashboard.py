@@ -84,9 +84,16 @@ def get_bot_pid():
     """Find the process ID of run_bot.py"""
     try:
         # pgrep -f run_bot.py checks for running python process
-        pid = subprocess.check_output(["pgrep", "-f", "run_bot.py"]).strip()
-        return int(pid)
-    except subprocess.CalledProcessError:
+        pid_output = subprocess.check_output(["pgrep", "-f", "run_bot.py"]).strip()
+        # Handle multiple PIDs - get the first one
+        if isinstance(pid_output, bytes):
+            pid_output = pid_output.decode('utf-8')
+        
+        pids = pid_output.strip().split('\n')
+        if pids and pids[0]:
+            return int(pids[0])
+        return None
+    except (subprocess.CalledProcessError, ValueError, IndexError):
         return None
 
 def restart_bot_process():
