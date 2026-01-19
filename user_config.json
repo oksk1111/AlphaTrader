@@ -1,12 +1,19 @@
 {
     "trading_mode": "safe",
-    "strategy": "swing",
+    "strategy": "dca",
     "leverage_threshold_krw": 10000000,
     "max_retries_per_ticker": 3,
     "signal_thresholds": {
         "strong": 0.8,
         "medium": 0.5,
         "weak": 0.3
+    },
+    "dca_settings": {
+        "enabled": true,
+        "daily_investment_pct": 5,
+        "buy_delay_minutes": 30,
+        "min_investment_usd": 10,
+        "max_investment_usd": 100
     },
     "telegram": {
         "enabled": true,

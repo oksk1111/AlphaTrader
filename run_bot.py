@@ -46,7 +46,14 @@ def check_and_upgrade_mode(total_asset_krw):
 # Load initial config
 user_config = load_config()
 IS_SAFE_MODE = True if user_config.get("trading_mode") == "safe" else False
-STRATEGY_MODE = user_config.get("strategy", "day")  # 'day' or 'swing'
+STRATEGY_MODE = user_config.get("strategy", "day")  # 'day', 'swing', or 'dca'
+DCA_SETTINGS = user_config.get("dca_settings", {
+    "enabled": True,
+    "daily_investment_pct": 5,
+    "buy_delay_minutes": 30,
+    "min_investment_usd": 10,
+    "max_investment_usd": 100
+})
 
 logger.info(f"Loaded Config: Mode={user_config.get('trading_mode')}, Strategy={STRATEGY_MODE}")
 
@@ -168,6 +175,34 @@ def calculate_order_quantity(available_cash, current_price, signal_strength=0.5,
     
     return max(qty, 1)  # 최소 1주
 
+def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_settings=None):
+    """
+    DCA 전략용 매수 수량 계산
+    - 매일 일정 비율/금액을 분할 매수
+    """
+    if not available_cash or not current_price or current_price <= 0:
+        return 1
+    
+    if dca_settings is None:
+        dca_settings = DCA_SETTINGS
+    
+    daily_pct = dca_settings.get("daily_investment_pct", 5) / 100
+    min_investment = dca_settings.get("min_investment_usd", 10)
+    max_investment = dca_settings.get("max_investment_usd", 100)
+    
+    # 종목별 투자 금액 계산
+    per_ticker_cash = available_cash / max(num_targets, 1)
+    investment_amount = per_ticker_cash * daily_pct
+    
+    # 최소/최대 제한 적용
+    investment_amount = max(min_investment, min(max_investment, investment_amount))
+    
+    qty = int(investment_amount / current_price)
+    
+    logger.info(f"📈 DCA 매수: ${investment_amount:.2f} → {qty}주 (가격: ${current_price:.2f})")
+    
+    return max(qty, 1)
+
 K_VALUE = 0.5
 
 def get_market_status():
@@ -227,15 +262,19 @@ def job():
     total_asset_krw = 0
     try:
         balance = kis.get_balance()
-        if balance and 'output2' in balance and balance['output2']:
-            if market == 'US':
-                available_cash = float(balance['output2'][0].get('ovrs_ord_psbl_amt', 0))
-                # US 계좌는 환율 적용하여 원화 환산 (대략 1350원)
-                total_asset_krw = available_cash * 1350
-            else:
-                available_cash = float(balance['output2'][0].get('dnca_tot_amt', 0))
-                total_asset_krw = float(balance['output2'][0].get('tot_evlu_amt', available_cash))
-        logger.info(f"Available Cash: {available_cash:,.0f}, Total Asset (KRW): {total_asset_krw:,.0f}")
+        if market == 'US':
+            # US 시장은 get_foreign_balance()로 정확한 USD 잔고 조회
+            foreign_bal = kis.get_foreign_balance()
+            if foreign_bal and 'deposit' in foreign_bal:
+                available_cash = float(foreign_bal['deposit'])
+            # US 계좌는 환율 적용하여 원화 환산 (대략 1350원)
+            total_asset_krw = available_cash * 1350
+        else:
+            if balance and 'output2' in balance and balance['output2']:
+                if isinstance(balance['output2'], list) and len(balance['output2']) > 0:
+                    available_cash = float(balance['output2'][0].get('dnca_tot_amt', 0))
+                    total_asset_krw = float(balance['output2'][0].get('tot_evlu_amt', available_cash))
+        logger.info(f"Available Cash: {available_cash:,.2f}, Total Asset (KRW): {total_asset_krw:,.0f}")
         
         # 자동 모드 전환 체크 (1000만원 달성 시 레버리지 모드로)
         if check_and_upgrade_mode(total_asset_krw):
@@ -303,6 +342,39 @@ def job():
         # --- STRATEGY BRANCHING ---
         is_uptrend = check_trend(current_price, ma20)
         
+        # DCA 전략: 추세와 관계없이 매일 일정 금액 매수
+        if STRATEGY_MODE == 'dca':
+            # AI 체크 (DCA도 극단적 하락장은 피함)
+            news = ai.fetch_news()
+            sentiment = ai.check_market_sentiment(news)
+            
+            if sentiment.get('market_condition') == 'CRASH':
+                logger.warning(f"[{ticker}] DCA Paused - Market Crash Detected")
+                continue
+            
+            # DCA 수량 계산
+            qty = calculate_dca_quantity(available_cash, current_price, num_active_targets, DCA_SETTINGS)
+            
+            if qty > 0:
+                logger.info(f"[{ticker}] DCA Buy: {qty} shares at ${current_price:.2f}")
+                
+                if market == 'US':
+                    res = kis.buy_market_order(ticker, qty, exchange)
+                else:
+                    res = kis.buy_market_order(ticker, qty)
+                
+                if res and res.get('rt_cd') == '0':
+                    logger.info(f"[{ticker}] ✅ DCA Buy Success! {qty} shares")
+                    monitoring_targets[ticker] = {
+                        'target': current_price,
+                        'status': 'bought',
+                        'buys': qty,
+                        'exchange': exchange
+                    }
+                else:
+                    logger.error(f"[{ticker}] DCA Buy Failed: {res}")
+            continue  # DCA는 바로 다음 종목으로
+        
         # Case 1: Already Holding
         if ticker in current_holdings:
             # 보유 수량 조회
@@ -355,6 +427,11 @@ def job():
 
     if not monitoring_targets:
         logger.info(f"[{market}] No targets found for today. Sleeping.")
+        return
+
+    # DCA 모드는 Watch Loop 없이 바로 종료 (이미 매수 완료)
+    if STRATEGY_MODE == 'dca':
+        logger.info(f"[{market}] DCA Mode - Daily purchases complete. Skipping watch loop.")
         return
 
     # 활성 모니터링 대상 수 업데이트

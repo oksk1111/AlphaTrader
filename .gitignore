@@ -7,3 +7,6 @@ venv/
 ignored/
 cloudflared
 nohup.out
+# Test & Debug files
+debug_*.py
+test_*.py
