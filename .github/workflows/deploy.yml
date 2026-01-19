@@ -1,0 +1,92 @@
+name: Deploy to Oracle Cloud
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # 수동 실행 가능
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ORACLE_SSH_KEY }}" > ~/.ssh/oracle_key
+          chmod 600 ~/.ssh/oracle_key
+          ssh-keyscan -H 158.180.81.25 >> ~/.ssh/known_hosts
+
+      - name: Deploy to Oracle Cloud
+        run: |
+          ssh -i ~/.ssh/oracle_key -o StrictHostKeyChecking=no ubuntu@158.180.81.25 << 'ENDSSH'
+            set -e
+            
+            echo "🚀 Starting deployment..."
+            cd ~/US-ETF-Sniper
+            
+            # Git pull
+            echo "📥 Pulling latest changes..."
+            git fetch origin main
+            git reset --hard origin/main
+            
+            # Install dependencies if requirements changed
+            if git diff HEAD~1 --name-only | grep -q "requirements.txt"; then
+              echo "📦 Installing new dependencies..."
+              source venv/bin/activate
+              pip install -r requirements.txt
+            fi
+            
+            # Restart services
+            echo "🔄 Restarting services..."
+            
+            # Kill existing processes
+            pkill -f "python.*run_bot.py" || true
+            pkill -f "streamlit.*dashboard.py" || true
+            
+            sleep 2
+            
+            # Restart bot and dashboard
+            source venv/bin/activate
+            nohup python run_bot.py >> database/bot_stdout.log 2>&1 &
+            nohup streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0 >> database/dashboard_stdout.log 2>&1 &
+            
+            sleep 3
+            
+            # Verify processes are running
+            if pgrep -f "python.*run_bot.py" > /dev/null; then
+              echo "✅ Bot started successfully"
+            else
+              echo "❌ Bot failed to start"
+              exit 1
+            fi
+            
+            if pgrep -f "streamlit.*dashboard.py" > /dev/null; then
+              echo "✅ Dashboard started successfully"
+            else
+              echo "❌ Dashboard failed to start"
+              exit 1
+            fi
+            
+            echo "🎉 Deployment completed successfully!"
+          ENDSSH
+
+      - name: Send Telegram Notification
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            MESSAGE="✅ <b>US-ETF-Sniper 배포 완료</b>%0A%0A📅 $(date '+%Y-%m-%d %H:%M:%S')%0A🔗 Commit: ${{ github.sha }}%0A👤 By: ${{ github.actor }}%0A%0A🔗 Dashboard: http://158.180.81.25:8501"
+          else
+            MESSAGE="❌ <b>US-ETF-Sniper 배포 실패</b>%0A%0A📅 $(date '+%Y-%m-%d %H:%M:%S')%0A🔗 Commit: ${{ github.sha }}%0A👤 By: ${{ github.actor }}%0A%0A확인이 필요합니다!"
+          fi
+          
+          if [ -n "${{ secrets.TELEGRAM_BOT_TOKEN }}" ] && [ -n "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+              -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+              -d "text=$MESSAGE" \
+              -d "parse_mode=HTML" || true
+          fi
