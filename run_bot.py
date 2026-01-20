@@ -5,6 +5,7 @@ import sys
 import json
 import os
 import traceback
+import pytz
 from modules.kis_api import KisOverseas
 from modules.kis_domestic import KisDomestic
 from modules.gemini_analyst import GeminiAnalyst
@@ -226,7 +227,8 @@ def get_market_status():
     """
     Returns 'US', 'KR', or 'CLOSED' based on current KST time.
     """
-    now = datetime.datetime.now()
+    kst = pytz.timezone('Asia/Seoul')
+    now = datetime.datetime.now(kst)
     t = int(now.strftime("%H%M"))
     
     # US Market: 23:30 ~ 06:00

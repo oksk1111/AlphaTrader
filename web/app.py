@@ -9,6 +9,7 @@ import glob
 import json
 import subprocess
 import signal
+import pytz
 from datetime import datetime
 from pathlib import Path
 
@@ -75,8 +76,9 @@ def parse_log_line(line):
     return None
 
 def get_market_status():
-    """현재 시장 상태"""
-    now = datetime.now()
+    """현재 시장 상태 (KST 기준)"""
+    kst = pytz.timezone('Asia/Seoul')
+    now = datetime.now(kst)
     t = int(now.strftime("%H%M"))
     
     if 2330 <= t <= 2400 or 0 <= t < 600:
@@ -141,10 +143,10 @@ def get_account_data():
         if balance and 'output1' in balance:
             for h in balance['output1']:
                 result["holdings"].append({
-                    "ticker": h.get('pdno', 'N/A'),
-                    "name": h.get('prdt_name', 'N/A'),
-                    "qty": h.get('ccld_qty_smtl1', '0'),
-                    "profit": h.get('evlu_pfls_amt', '0')
+                    "ticker": h.get('ovrs_pdno', h.get('pdno', 'N/A')),
+                    "name": h.get('ovrs_item_name', h.get('prdt_name', 'N/A')),
+                    "qty": h.get('ovrs_cblc_qty', h.get('ccld_qty_smtl1', '0')),
+                    "profit": h.get('frcr_evlu_pfls_amt', h.get('evlu_pfls_amt', '0'))
                 })
         
         return result
