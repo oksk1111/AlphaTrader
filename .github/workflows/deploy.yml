@@ -58,32 +58,27 @@ jobs:
             # Restart services
             echo "🔄 Restarting services..."
             
-            # Kill existing processes
-            pkill -f "python.*run_bot.py" || true
-            pkill -f "uvicorn.*web.app" || true
-            pkill -f "streamlit" || true
+            # Use systemctl to restart services correctly
+            sudo systemctl daemon-reload
+            sudo systemctl restart etf-bot
+            sudo systemctl restart etf-dashboard
             
-            sleep 2
+            sleep 5
             
-            # Restart bot and dashboard (FastAPI)
-            source venv/bin/activate
-            nohup python run_bot.py >> database/bot_stdout.log 2>&1 &
-            nohup python -m uvicorn web.app:app --host 0.0.0.0 --port 8501 >> database/dashboard_stdout.log 2>&1 &
-            
-            sleep 3
-            
-            # Verify processes are running
-            if pgrep -f "python.*run_bot.py" > /dev/null; then
-              echo "✅ Bot started successfully"
+            # Verify services are active
+            if systemctl is-active --quiet etf-bot; then
+              echo "✅ Bot service started successfully"
             else
-              echo "❌ Bot failed to start"
+              echo "❌ Bot service failed to start"
+              sudo systemctl status etf-bot --no-pager
               exit 1
             fi
             
-            if pgrep -f "uvicorn" > /dev/null; then
-              echo "✅ Dashboard (FastAPI) started successfully"
+            if systemctl is-active --quiet etf-dashboard; then
+              echo "✅ Dashboard service started successfully (FastAPI)"
             else
-              echo "❌ Dashboard failed to start"
+              echo "❌ Dashboard service failed to start"
+              sudo systemctl status etf-dashboard --no-pager
               exit 1
             fi
             
