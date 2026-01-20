@@ -258,6 +258,32 @@ def job():
         logger.info("Market is closed. Sleeping.")
         return
 
+    # --- [New] Buy Delay Logic for Market Stabilization ---
+    buy_delay = DCA_SETTINGS.get("buy_delay_minutes", 0) if STRATEGY_MODE == 'dca' else 0
+    if buy_delay > 0:
+        kst = pytz.timezone('Asia/Seoul')
+        now = datetime.datetime.now(kst)
+        
+        # Determine Market Open Time
+        if market == 'US':
+            # US Open: 23:30 KST
+            market_open = now.replace(hour=23, minute=30, second=0, microsecond=0)
+            if 0 <= now.hour < 9: # Early morning (next day in KST)
+                market_open = market_open - datetime.timedelta(days=1)
+        else:
+            # KR Open: 09:00 KST
+            market_open = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        
+        target_time = market_open + datetime.timedelta(minutes=buy_delay)
+        wait_seconds = (target_time - now).total_seconds()
+        
+        # Only wait if we are within the delay window (don't wait if we started late)
+        # also check if wait_seconds is reasonable (e.g. < 2 hours)
+        if 0 < wait_seconds <= (buy_delay * 60) + 60: 
+            logger.info(f"⏳ Waiting {buy_delay} minutes for market stabilization... ({wait_seconds/60:.1f} min left)")
+            time.sleep(wait_seconds)
+            logger.info("⚡ Market stabilized. Starting analysis.")
+
     # Select Market Context
     if market == 'US':
         logger.info(f"🇺🇸 Starting US Trading Session ({STRATEGY_MODE.upper()}) for {TARGET_TICKERS_US}")
@@ -363,6 +389,12 @@ def job():
         
         # DCA 전략: 추세와 관계없이 매일 일정 금액 매수
         if STRATEGY_MODE == 'dca':
+            # --- [New] Trend Filter for DCA ---
+            # 사용자 요청: 비율과 추세에 따른 거래 (하락장 매수 방지)
+            if not is_uptrend:
+                logger.info(f"[{ticker}] DCA Skipped - Bear Market (Price < 20MA). Conserving capital.")
+                continue
+
             # AI 체크 (DCA도 극단적 하락장은 피함)
             news = ai.fetch_news()
             sentiment = ai.check_market_sentiment(news)
