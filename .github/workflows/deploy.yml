@@ -60,14 +60,15 @@ jobs:
             
             # Kill existing processes
             pkill -f "python.*run_bot.py" || true
-            pkill -f "streamlit.*dashboard.py" || true
+            pkill -f "uvicorn.*web.app" || true
+            pkill -f "streamlit" || true
             
             sleep 2
             
-            # Restart bot and dashboard
+            # Restart bot and dashboard (FastAPI)
             source venv/bin/activate
             nohup python run_bot.py >> database/bot_stdout.log 2>&1 &
-            nohup streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0 >> database/dashboard_stdout.log 2>&1 &
+            nohup python -m uvicorn web.app:app --host 0.0.0.0 --port 8501 >> database/dashboard_stdout.log 2>&1 &
             
             sleep 3
             
@@ -79,8 +80,8 @@ jobs:
               exit 1
             fi
             
-            if pgrep -f "streamlit.*dashboard.py" > /dev/null; then
-              echo "✅ Dashboard started successfully"
+            if pgrep -f "uvicorn" > /dev/null; then
+              echo "✅ Dashboard (FastAPI) started successfully"
             else
               echo "❌ Dashboard failed to start"
               exit 1

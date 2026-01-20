@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📈 US-ETF-Sniper Dashboard</title>
+    <style>
+        :root {
+            --bg-color: #0e1117;
+            --card-bg: #1e2128;
+            --text-color: #fafafa;
+            --text-secondary: #a0a0a0;
+            --accent: #4CAF50;
+            --danger: #f44336;
+            --warning: #ff9800;
+            --border: #333;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-color);
+            color: var(--text-color);
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { margin-bottom: 20px; font-size: 1.8em; }
+        h2 { font-size: 1.2em; margin-bottom: 15px; color: var(--text-secondary); }
+        
+        /* Cards */
+        .card {
+            background: var(--card-bg);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid var(--border);
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        /* Grid */
+        .grid { display: grid; gap: 15px; }
+        .grid-2 { grid-template-columns: repeat(2, 1fr); }
+        .grid-3 { grid-template-columns: repeat(3, 1fr); }
+        .grid-4 { grid-template-columns: repeat(4, 1fr); }
+        @media (max-width: 768px) {
+            .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+        }
+        
+        /* Metrics */
+        .metric {
+            background: var(--card-bg);
+            border-radius: 8px;
+            padding: 15px;
+            text-align: center;
+            border: 1px solid var(--border);
+        }
+        .metric-label { font-size: 0.85em; color: var(--text-secondary); }
+        .metric-value { font-size: 1.5em; font-weight: bold; margin-top: 5px; }
+        .metric-value.success { color: var(--accent); }
+        .metric-value.danger { color: var(--danger); }
+        
+        /* Table */
+        table { width: 100%; border-collapse: collapse; }
+        th, td { 
+            padding: 12px 15px; 
+            text-align: left; 
+            border-bottom: 1px solid var(--border);
+        }
+        th { 
+            background: rgba(255,255,255,0.05); 
+            font-weight: 600;
+            color: var(--text-secondary);
+        }
+        tr:hover { background: rgba(255,255,255,0.02); }
+        
+        /* Buttons */
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-primary:hover { background: #45a049; }
+        .btn-danger { background: var(--danger); color: white; }
+        
+        /* Status Badge */
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 500;
+        }
+        .badge-success { background: rgba(76, 175, 80, 0.2); color: var(--accent); }
+        .badge-danger { background: rgba(244, 67, 54, 0.2); color: var(--danger); }
+        .badge-warning { background: rgba(255, 152, 0, 0.2); color: var(--warning); }
+        
+        /* Logs */
+        .log-container {
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.85em;
+            background: #0a0a0a;
+            border-radius: 6px;
+            padding: 15px;
+        }
+        .log-line { padding: 3px 0; border-bottom: 1px solid #222; }
+        .log-time { color: #666; margin-right: 10px; }
+        .log-level-INFO { color: #4CAF50; }
+        .log-level-ERROR { color: #f44336; }
+        .log-level-WARNING { color: #ff9800; }
+        
+        /* Select */
+        select {
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--card-bg);
+            color: var(--text-color);
+            font-size: 14px;
+        }
+        
+        /* Tabs */
+        .tabs { display: flex; gap: 10px; margin-bottom: 20px; }
+        .tab {
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            transition: all 0.2s;
+        }
+        .tab.active, .tab:hover {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+        }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        
+        /* Auto-refresh indicator */
+        .refresh-indicator {
+            font-size: 0.8em;
+            color: var(--text-secondary);
+        }
+        .refresh-indicator.active { color: var(--accent); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px;">
+            <h1>📈 US-ETF-Sniper</h1>
+            <div>
+                <span class="refresh-indicator" id="refreshIndicator">Auto-refresh: 5s</span>
+            </div>
+        </header>
+
+        <!-- Status Cards -->
+        <div class="grid grid-4">
+            <div class="metric">
+                <div class="metric-label">Bot Status</div>
+                <div class="metric-value" id="botStatus">{{ bot_status }}</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Market</div>
+                <div class="metric-value">{{ market_status }}</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Mode</div>
+                <div class="metric-value">{{ config.trading_mode|upper }}</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Strategy</div>
+                <div class="metric-value">{{ config.strategy|upper }}</div>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('overview')">📊 Overview</div>
+            <div class="tab" onclick="switchTab('account')">💰 Account</div>
+            <div class="tab" onclick="switchTab('logs')">📜 Logs</div>
+            <div class="tab" onclick="switchTab('settings')">⚙️ Settings</div>
+        </div>
+
+        <!-- Overview Tab -->
+        <div class="tab-content active" id="tab-overview">
+            <div class="card">
+                <div class="card-header">
+                    <h2>📡 Market Monitor</h2>
+                    <span style="color: var(--text-secondary);">Last Update: <span id="lastUpdate">{{ last_update }}</span></span>
+                </div>
+                <table id="tickerTable">
+                    <thead>
+                        <tr>
+                            <th>Ticker</th>
+                            <th>Price</th>
+                            <th>Target</th>
+                            <th>MA20</th>
+                            <th>Trend</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for ticker, data in ticker_data.items() %}
+                        <tr>
+                            <td><strong>{{ ticker }}</strong></td>
+                            <td>{{ data.current }}</td>
+                            <td>{{ data.target }}</td>
+                            <td>{{ data.ma20 }}</td>
+                            <td>
+                                {% if 'Bull' in data.trend %}
+                                <span class="badge badge-success">{{ data.trend }}</span>
+                                {% elif 'Bear' in data.trend %}
+                                <span class="badge badge-danger">{{ data.trend }}</span>
+                                {% else %}
+                                <span class="badge badge-warning">{{ data.trend }}</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Account Tab -->
+        <div class="tab-content" id="tab-account">
+            <div class="card">
+                <div class="card-header">
+                    <h2>🇺🇸 US Account</h2>
+                    <button class="btn btn-primary" onclick="refreshAccount()">Refresh</button>
+                </div>
+                <div class="grid grid-3" id="accountMetrics">
+                    <div class="metric">
+                        <div class="metric-label">Cash (USD)</div>
+                        <div class="metric-value" id="depositUsd">Loading...</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Holdings</div>
+                        <div class="metric-value" id="holdingsCount">-</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Status</div>
+                        <div class="metric-value success">Active</div>
+                    </div>
+                </div>
+                <div id="holdingsTable" style="margin-top: 20px;"></div>
+            </div>
+        </div>
+
+        <!-- Logs Tab -->
+        <div class="tab-content" id="tab-logs">
+            <div class="card">
+                <div class="card-header">
+                    <h2>📜 System Logs</h2>
+                </div>
+                <div class="log-container" id="logContainer">
+                    {% for log in recent_logs %}
+                    <div class="log-line">
+                        <span class="log-time">{{ log.timestamp }}</span>
+                        <span class="log-level-{{ log.level }}">{{ log.level }}</span>
+                        {{ log.message }}
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Settings Tab -->
+        <div class="tab-content" id="tab-settings">
+            <div class="card">
+                <h2>⚙️ Bot Settings</h2>
+                <div class="grid grid-2" style="margin-top: 20px;">
+                    <div>
+                        <label style="display: block; margin-bottom: 8px; color: var(--text-secondary);">Trading Mode</label>
+                        <select id="tradingMode" style="width: 100%;">
+                            <option value="safe" {% if config.trading_mode == 'safe' %}selected{% endif %}>Safe (1x ETF)</option>
+                            <option value="risky" {% if config.trading_mode == 'risky' %}selected{% endif %}>Risky (3x Lev ETF)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label style="display: block; margin-bottom: 8px; color: var(--text-secondary);">Strategy</label>
+                        <select id="strategyMode" style="width: 100%;">
+                            <option value="day" {% if config.strategy == 'day' %}selected{% endif %}>Day Trading</option>
+                            <option value="swing" {% if config.strategy == 'swing' %}selected{% endif %}>Swing/Hold</option>
+                            <option value="dca" {% if config.strategy == 'dca' %}selected{% endif %}>DCA (분할매수)</option>
+                        </select>
+                    </div>
+                </div>
+                <div style="margin-top: 20px; display: flex; gap: 10px;">
+                    <button class="btn btn-primary" onclick="saveConfig()">Save Settings</button>
+                    <button class="btn btn-danger" onclick="restartBot()">🔄 Restart Bot</button>
+                </div>
+                <div id="settingsMessage" style="margin-top: 15px;"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Tab switching
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.querySelector(`[onclick="switchTab('${tabName}')"]`).classList.add('active');
+            document.getElementById(`tab-${tabName}`).classList.add('active');
+            
+            if (tabName === 'account') refreshAccount();
+        }
+
+        // Auto-refresh status
+        async function refreshStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                
+                document.getElementById('botStatus').textContent = data.bot_status;
+                document.getElementById('lastUpdate').textContent = data.last_update;
+                
+                // Update ticker table
+                const tbody = document.querySelector('#tickerTable tbody');
+                tbody.innerHTML = '';
+                for (const [ticker, info] of Object.entries(data.ticker_data)) {
+                    const badgeClass = info.trend.includes('Bull') ? 'badge-success' : 
+                                       info.trend.includes('Bear') ? 'badge-danger' : 'badge-warning';
+                    tbody.innerHTML += `
+                        <tr>
+                            <td><strong>${ticker}</strong></td>
+                            <td>${info.current}</td>
+                            <td>${info.target}</td>
+                            <td>${info.ma20}</td>
+                            <td><span class="badge ${badgeClass}">${info.trend}</span></td>
+                        </tr>
+                    `;
+                }
+                
+                // Update logs
+                const logContainer = document.getElementById('logContainer');
+                logContainer.innerHTML = data.recent_logs.map(log => `
+                    <div class="log-line">
+                        <span class="log-time">${log.timestamp}</span>
+                        <span class="log-level-${log.level}">${log.level}</span>
+                        ${log.message}
+                    </div>
+                `).join('');
+            } catch (e) {
+                console.error('Failed to refresh:', e);
+            }
+        }
+
+        // Refresh account data
+        async function refreshAccount() {
+            document.getElementById('depositUsd').textContent = 'Loading...';
+            try {
+                const res = await fetch('/api/account');
+                const data = await res.json();
+                
+                document.getElementById('depositUsd').textContent = '$' + data.deposit_usd;
+                document.getElementById('holdingsCount').textContent = data.holdings.length;
+                
+                if (data.holdings.length > 0) {
+                    let html = '<table><thead><tr><th>Ticker</th><th>Name</th><th>Qty</th><th>P/L</th></tr></thead><tbody>';
+                    data.holdings.forEach(h => {
+                        html += `<tr><td>${h.ticker}</td><td>${h.name}</td><td>${h.qty}</td><td>${h.profit}</td></tr>`;
+                    });
+                    html += '</tbody></table>';
+                    document.getElementById('holdingsTable').innerHTML = html;
+                } else {
+                    document.getElementById('holdingsTable').innerHTML = '<p style="color: var(--text-secondary);">No holdings</p>';
+                }
+            } catch (e) {
+                document.getElementById('depositUsd').textContent = 'Error';
+            }
+        }
+
+        // Save config
+        async function saveConfig() {
+            const config = {
+                trading_mode: document.getElementById('tradingMode').value,
+                strategy: document.getElementById('strategyMode').value
+            };
+            
+            try {
+                const res = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(config)
+                });
+                const data = await res.json();
+                if (data.success) {
+                    document.getElementById('settingsMessage').innerHTML = 
+                        '<span style="color: var(--accent);">✅ Settings saved! Restart bot to apply.</span>';
+                }
+            } catch (e) {
+                document.getElementById('settingsMessage').innerHTML = 
+                    '<span style="color: var(--danger);">❌ Failed to save settings</span>';
+            }
+        }
+
+        // Restart bot
+        async function restartBot() {
+            if (!confirm('Restart the bot?')) return;
+            
+            document.getElementById('settingsMessage').innerHTML = 
+                '<span style="color: var(--warning);">⏳ Restarting bot...</span>';
+            
+            try {
+                const res = await fetch('/api/restart', {method: 'POST'});
+                const data = await res.json();
+                if (data.success) {
+                    document.getElementById('settingsMessage').innerHTML = 
+                        '<span style="color: var(--accent);">✅ Bot restarted successfully!</span>';
+                    setTimeout(refreshStatus, 2000);
+                } else {
+                    document.getElementById('settingsMessage').innerHTML = 
+                        `<span style="color: var(--danger);">❌ ${data.error}</span>`;
+                }
+            } catch (e) {
+                document.getElementById('settingsMessage').innerHTML = 
+                    '<span style="color: var(--danger);">❌ Failed to restart</span>';
+            }
+        }
+
+        // Auto-refresh every 5 seconds
+        setInterval(refreshStatus, 5000);
+    </script>
+</body>
+</html>
