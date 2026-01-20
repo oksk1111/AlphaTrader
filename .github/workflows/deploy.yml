@@ -22,17 +22,31 @@ jobs:
           ssh-keyscan -H 158.180.81.25 >> ~/.ssh/known_hosts
 
       - name: Deploy to Oracle Cloud
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          ssh -i ~/.ssh/oracle_key -o StrictHostKeyChecking=no ubuntu@158.180.81.25 << 'ENDSSH'
+          # Pass Telegram credentials to server
+          ssh -i ~/.ssh/oracle_key -o StrictHostKeyChecking=no ubuntu@158.180.81.25 << ENDSSH
             set -e
             
             echo "🚀 Starting deployment..."
             cd ~/US-ETF-Sniper
             
+            # Update Telegram credentials in .env
+            echo "📱 Updating Telegram credentials..."
+            grep -v "TELEGRAM_" .env > .env.tmp || true
+            echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}" >> .env.tmp
+            echo "TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}" >> .env.tmp
+            mv .env.tmp .env
+            
             # Git pull
             echo "📥 Pulling latest changes..."
             git fetch origin main
             git reset --hard origin/main
+            
+            # Restore .env after git reset (since .env is gitignored, keep our updated version)
+            # The .env was already updated above before git reset
             
             # Install dependencies if requirements changed
             if git diff HEAD~1 --name-only | grep -q "requirements.txt"; then

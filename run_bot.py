@@ -9,6 +9,7 @@ from modules.kis_api import KisOverseas
 from modules.kis_domestic import KisDomestic
 from modules.gemini_analyst import GeminiAnalyst
 from modules.logger import logger
+from modules.telegram_notifier import TelegramNotifier
 from strategies.technical import calculate_ma, check_trend
 from strategies.volatility_breakout import calculate_target_price
 
@@ -17,6 +18,22 @@ CONFIG_FILE = "user_config.json"
 MAX_RETRIES_PER_TICKER = 3  # Maximum buy retries per ticker per session
 FAILED_TICKERS = set()  # Track permanently failed tickers (account restrictions)
 LEVERAGE_THRESHOLD_KRW = 10_000_000  # 1000만원 기준
+
+# Telegram Notifier for alerts
+telegram = TelegramNotifier()
+
+def send_alert(message: str, is_error: bool = False):
+    """시스템 알림 발송"""
+    prefix = "🚨 [ERROR] " if is_error else "ℹ️ [INFO] "
+    full_message = f"{prefix}{message}\n\n⏰ {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    
+    if telegram.is_configured():
+        telegram.send_message(full_message)
+    
+    if is_error:
+        logger.error(message)
+    else:
+        logger.info(message)
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -586,8 +603,10 @@ def run_with_recovery():
                 except Exception as e:
                     error_count += 1
                     logger.critical(f"US Job Crashed (Attempt {error_count}/{max_consecutive_errors}): {e}", exc_info=True)
+                    send_alert(f"US Job Crashed (Attempt {error_count}/{max_consecutive_errors}): {e}", is_error=True)
                     if error_count >= max_consecutive_errors:
                         logger.critical("Too many consecutive errors. Waiting 5 minutes before retry...")
+                        send_alert("Too many consecutive errors! Waiting 5 minutes...", is_error=True)
                         time.sleep(300)
                         error_count = 0
                 time.sleep(60)
@@ -596,9 +615,11 @@ def run_with_recovery():
             
         except KeyboardInterrupt:
             logger.info("Received shutdown signal. Exiting gracefully...")
+            send_alert("Bot received shutdown signal. Exiting...")
             break
         except Exception as e:
             logger.critical(f"Unexpected error in main loop: {e}", exc_info=True)
+            send_alert(f"Unexpected error in main loop: {e}", is_error=True)
             time.sleep(10)
 
 if __name__ == "__main__":
@@ -606,6 +627,9 @@ if __name__ == "__main__":
     logger.info(f"US Targets: {TARGET_TICKERS_US}")
     logger.info(f"KR Targets: {TARGET_TICKERS_KR}")
     logger.info(f"Safe Mode: {IS_SAFE_MODE}, Strategy: {STRATEGY_MODE}")
+    
+    # Startup notification
+    send_alert(f"🚀 Bot Started!\nMode: {'Safe' if IS_SAFE_MODE else 'Leverage'}\nStrategy: {STRATEGY_MODE.upper()}")
     
     # Heartbeat
     def heartbeat():
@@ -622,6 +646,7 @@ if __name__ == "__main__":
             job()
         except Exception as e:
             logger.critical(f"Startup Job Crashed: {e}", exc_info=True)
+            send_alert(f"Startup Job Crashed: {e}", is_error=True)
 
     # Run main loop with automatic recovery
     run_with_recovery()
