@@ -122,7 +122,7 @@ def parse_ticker_data(parsed_lines):
     return ticker_data
 
 def get_account_data():
-    """계좌 정보 조회 (KIS API)"""
+    """US 계좌 정보 조회 (KIS API)"""
     try:
         from modules.kis_api import KisOverseas
         kis = KisOverseas()
@@ -150,6 +150,43 @@ def get_account_data():
         return result
     except Exception as e:
         return {"deposit_usd": f"Error: {e}", "holdings": []}
+
+def get_kr_account_data():
+    """KR 계좌 정보 조회 (KIS API)"""
+    try:
+        from modules.kis_domestic import KisDomestic
+        kis = KisDomestic()
+        
+        balance = kis.get_balance()
+        
+        result = {
+            "deposit_krw": "0",
+            "profit_krw": "0",
+            "total_asset_krw": "0",
+            "holdings": []
+        }
+        
+        if balance and 'output2' in balance and balance['output2']:
+            summary = balance['output2'][0]
+            result["deposit_krw"] = summary.get('dnca_tot_amt', '0')
+            result["profit_krw"] = summary.get('evlu_pfls_smtl_amt', '0')
+            result["total_asset_krw"] = summary.get('tot_evlu_amt', '0')
+        
+        if balance and 'output1' in balance:
+            for h in balance['output1']:
+                result["holdings"].append({
+                    "code": h.get('pdno', 'N/A'),
+                    "name": h.get('prdt_name', 'N/A'),
+                    "qty": h.get('hldg_qty', '0'),
+                    "avg_price": h.get('pchs_avg_pric', '0'),
+                    "cur_price": h.get('prpr', '0'),
+                    "profit": h.get('evlu_pfls_amt', '0'),
+                    "profit_pct": h.get('evlu_pfls_rt', '0')
+                })
+        
+        return result
+    except Exception as e:
+        return {"deposit_krw": "Error", "profit_krw": "0", "total_asset_krw": "0", "holdings": [], "error": str(e)}
 
 # --- API 엔드포인트 ---
 @app.get("/", response_class=HTMLResponse)
@@ -227,8 +264,13 @@ async def api_status():
 
 @app.get("/api/account")
 async def api_account():
-    """계좌 정보 API"""
+    """US 계좌 정보 API"""
     return JSONResponse(get_account_data())
+
+@app.get("/api/account/kr")
+async def api_account_kr():
+    """KR 계좌 정보 API"""
+    return JSONResponse(get_kr_account_data())
 
 @app.post("/api/config")
 async def update_config(request: Request):

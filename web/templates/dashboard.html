@@ -236,10 +236,11 @@
 
         <!-- Account Tab -->
         <div class="tab-content" id="tab-account">
+            <!-- US Account -->
             <div class="card">
                 <div class="card-header">
                     <h2>🇺🇸 US Account</h2>
-                    <button class="btn btn-primary" onclick="refreshAccount()">Refresh</button>
+                    <button class="btn btn-primary" onclick="refreshAccount()">Refresh All</button>
                 </div>
                 <div class="grid grid-3" id="accountMetrics">
                     <div class="metric">
@@ -255,7 +256,29 @@
                         <div class="metric-value success">Active</div>
                     </div>
                 </div>
-                <div id="holdingsTable" style="margin-top: 20px;"></div>
+                <div id="holdingsTableUs" style="margin-top: 20px;"></div>
+            </div>
+            
+            <!-- KR Account -->
+            <div class="card">
+                <div class="card-header">
+                    <h2>🇰🇷 KR Account (국내주식)</h2>
+                </div>
+                <div class="grid grid-3" id="krAccountMetrics">
+                    <div class="metric">
+                        <div class="metric-label">예수금 (KRW)</div>
+                        <div class="metric-value" id="depositKrw">Loading...</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">평가손익 (KRW)</div>
+                        <div class="metric-value" id="profitKrw">-</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">총 자산 (KRW)</div>
+                        <div class="metric-value" id="totalAssetKrw">-</div>
+                    </div>
+                </div>
+                <div id="holdingsTableKr" style="margin-top: 20px;"></div>
             </div>
         </div>
 
@@ -358,8 +381,9 @@
             }
         }
 
-        // Refresh account data
+        // Refresh account data (US + KR)
         async function refreshAccount() {
+            // Refresh US Account
             document.getElementById('depositUsd').textContent = 'Loading...';
             try {
                 const res = await fetch('/api/account');
@@ -374,12 +398,49 @@
                         html += `<tr><td>${h.ticker}</td><td>${h.name}</td><td>${h.qty}</td><td>${h.profit}</td></tr>`;
                     });
                     html += '</tbody></table>';
-                    document.getElementById('holdingsTable').innerHTML = html;
+                    document.getElementById('holdingsTableUs').innerHTML = html;
                 } else {
-                    document.getElementById('holdingsTable').innerHTML = '<p style="color: var(--text-secondary);">No holdings</p>';
+                    document.getElementById('holdingsTableUs').innerHTML = '<p style="color: var(--text-secondary);">No US holdings</p>';
                 }
             } catch (e) {
                 document.getElementById('depositUsd').textContent = 'Error';
+            }
+            
+            // Refresh KR Account
+            document.getElementById('depositKrw').textContent = 'Loading...';
+            try {
+                const res = await fetch('/api/account/kr');
+                const data = await res.json();
+                
+                document.getElementById('depositKrw').textContent = '₩' + Number(data.deposit_krw).toLocaleString();
+                document.getElementById('profitKrw').textContent = '₩' + Number(data.profit_krw).toLocaleString();
+                document.getElementById('totalAssetKrw').textContent = '₩' + Number(data.total_asset_krw).toLocaleString();
+                
+                // Color for profit
+                const profitEl = document.getElementById('profitKrw');
+                if (data.profit_krw > 0) {
+                    profitEl.classList.add('success');
+                    profitEl.classList.remove('danger');
+                } else if (data.profit_krw < 0) {
+                    profitEl.classList.remove('success');
+                    profitEl.classList.add('danger');
+                }
+                
+                if (data.holdings && data.holdings.length > 0) {
+                    let html = '<table><thead><tr><th>종목코드</th><th>종목명</th><th>수량</th><th>평가손익</th></tr></thead><tbody>';
+                    data.holdings.forEach(h => {
+                        const profitClass = parseFloat(h.profit_pct) >= 0 ? 'success' : 'danger';
+                        html += `<tr><td>${h.code}</td><td>${h.name}</td><td>${h.qty}</td><td class="${profitClass}">${h.profit} (${h.profit_pct}%)</td></tr>`;
+                    });
+                    html += '</tbody></table>';
+                    document.getElementById('holdingsTableKr').innerHTML = html;
+                } else {
+                    document.getElementById('holdingsTableKr').innerHTML = '<p style="color: var(--text-secondary);">보유 국내주식 없음</p>';
+                }
+            } catch (e) {
+                document.getElementById('depositKrw').textContent = 'Error';
+                document.getElementById('profitKrw').textContent = '-';
+                document.getElementById('totalAssetKrw').textContent = '-';
             }
         }
 
