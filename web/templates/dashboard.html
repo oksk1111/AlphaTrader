@@ -395,36 +395,52 @@
                 const res = await fetch('/api/account');
                 const data = await res.json();
                 
+                // Safe number parsing helper
+                const toNum = (val) => parseFloat(val) || 0;
+                
+                const depositUsd = toNum(data.deposit_usd);
+                const depositKrw = toNum(data.deposit_krw) || Math.round(depositUsd * (data.exchange_rate || 1450));
+                const profitUsd = toNum(data.profit_usd);
+                const profitKrw = toNum(data.profit_krw) || Math.round(profitUsd * (data.exchange_rate || 1450));
+                const totalAssetUsd = toNum(data.total_asset_usd) || depositUsd;
+                const totalAssetKrw = toNum(data.total_asset_krw) || Math.round(totalAssetUsd * (data.exchange_rate || 1450));
+                const exchangeRate = data.exchange_rate || 1450;
+                
                 // 예수금 (USD + KRW)
-                document.getElementById('depositUsd').textContent = '$' + data.deposit_usd.toLocaleString(undefined, {minimumFractionDigits: 2});
-                document.getElementById('depositUsdKrw').textContent = '₩' + data.deposit_krw.toLocaleString();
+                document.getElementById('depositUsd').textContent = '$' + depositUsd.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                document.getElementById('depositUsdKrw').textContent = '₩' + depositKrw.toLocaleString();
                 
                 // 평가손익
                 const profitEl = document.getElementById('profitUsd');
-                profitEl.textContent = (data.profit_usd >= 0 ? '+$' : '-$') + Math.abs(data.profit_usd).toLocaleString(undefined, {minimumFractionDigits: 2});
-                document.getElementById('profitUsdKrw').textContent = (data.profit_krw >= 0 ? '+₩' : '-₩') + Math.abs(data.profit_krw).toLocaleString();
-                profitEl.className = 'metric-value ' + (data.profit_usd >= 0 ? 'success' : 'danger');
+                profitEl.textContent = (profitUsd >= 0 ? '+$' : '-$') + Math.abs(profitUsd).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                document.getElementById('profitUsdKrw').textContent = (profitKrw >= 0 ? '+₩' : '-₩') + Math.abs(profitKrw).toLocaleString();
+                profitEl.className = 'metric-value ' + (profitUsd >= 0 ? 'success' : 'danger');
                 
                 // 총 자산
-                document.getElementById('totalAssetUsd').textContent = '$' + data.total_asset_usd.toLocaleString(undefined, {minimumFractionDigits: 2});
-                document.getElementById('totalAssetUsdKrw').textContent = '₩' + data.total_asset_krw.toLocaleString();
+                document.getElementById('totalAssetUsd').textContent = '$' + totalAssetUsd.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                document.getElementById('totalAssetUsdKrw').textContent = '₩' + totalAssetKrw.toLocaleString();
                 
                 // 환율
-                document.getElementById('exchangeRate').textContent = data.exchange_rate.toLocaleString();
+                document.getElementById('exchangeRate').textContent = exchangeRate.toLocaleString();
                 
                 // Holdings 테이블 (통일된 포맷)
                 if (data.holdings && data.holdings.length > 0) {
                     let html = '<table><thead><tr><th>종목</th><th>종목명</th><th>수량</th><th>평단가</th><th>현재가</th><th>평가손익</th></tr></thead><tbody>';
                     data.holdings.forEach(h => {
-                        const profitClass = h.profit >= 0 ? 'success' : 'danger';
-                        const profitSign = h.profit >= 0 ? '+' : '';
+                        const profit = toNum(h.profit);
+                        const profitPct = toNum(h.profit_pct);
+                        const avgPrice = toNum(h.avg_price);
+                        const curPrice = toNum(h.cur_price);
+                        const qty = parseInt(h.qty) || 0;
+                        const profitClass = profit >= 0 ? 'success' : 'danger';
+                        const profitSign = profit >= 0 ? '+' : '';
                         html += `<tr>
-                            <td><strong>${h.ticker}</strong></td>
-                            <td>${h.name}</td>
-                            <td>${h.qty}</td>
-                            <td>$${h.avg_price.toFixed(2)}</td>
-                            <td>$${h.cur_price.toFixed(2)}</td>
-                            <td class="${profitClass}">${profitSign}$${h.profit.toFixed(2)} (${profitSign}${h.profit_pct.toFixed(2)}%)</td>
+                            <td><strong>${h.ticker || 'N/A'}</strong></td>
+                            <td>${h.name || 'N/A'}</td>
+                            <td>${qty}</td>
+                            <td>$${avgPrice.toFixed(2)}</td>
+                            <td>$${curPrice.toFixed(2)}</td>
+                            <td class="${profitClass}">${profitSign}$${profit.toFixed(2)} (${profitSign}${profitPct.toFixed(2)}%)</td>
                         </tr>`;
                     });
                     html += '</tbody></table>';
