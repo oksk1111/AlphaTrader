@@ -159,12 +159,28 @@ def get_account_data():
             for h in balance['output1']:
                 ticker = h.get('ovrs_pdno', h.get('pdno', 'N/A'))
                 name = h.get('ovrs_item_name', h.get('prdt_name', 'N/A'))
+                
+                # 수량 (Quantity)
                 qty = int(h.get('ovrs_cblc_qty', h.get('ccld_qty_smtl1', '0') or '0'))
-                avg_price = float(h.get('pchs_avg_pric', h.get('avg_unpr3', '0') or '0'))
-                cur_price = float(h.get('now_pric2', h.get('ovrs_now_pric1', '0') or '0'))
+                
+                # 매입평균가격 (Purchase Avg Price) - pchs_avg_pric 우선
+                avg_price_raw = h.get('pchs_avg_pric', h.get('avg_unpr3', '0'))
+                avg_price = float(avg_price_raw or '0')
+                
+                # 현재가 (Current Price) - ovrs_now_pric1 우선 (해외주식)
+                cur_price_raw = h.get('ovrs_now_pric1', h.get('now_pric2', '0'))
+                cur_price = float(cur_price_raw or '0')
+                
+                # 평가손익 (Profit/Loss)
                 profit = float(h.get('frcr_evlu_pfls_amt', h.get('evlu_pfls_amt', '0') or '0'))
                 profit_pct = float(h.get('evlu_pfls_rt1', h.get('evlu_pfls_rt', '0') or '0'))
+                
+                # 평가금액 (Eval Amount)
                 eval_amt = float(h.get('ovrs_stck_evlu_amt', h.get('frcr_evlu_amt', '0') or '0'))
+                
+                # If values are still 0, try simplistic calculation
+                if cur_price == 0 and qty > 0 and eval_amt > 0:
+                    cur_price = eval_amt / qty
                 
                 total_eval_usd += eval_amt
                 total_profit_usd += profit
