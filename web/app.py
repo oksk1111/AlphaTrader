@@ -123,8 +123,11 @@ def parse_ticker_data(parsed_lines):
     
     return ticker_data
 
+# 환율 설정 (실시간 환율 API 연동 가능하나 일단 고정값 사용)
+USD_KRW_RATE = 1450.0
+
 def get_account_data():
-    """US 계좌 정보 조회 (KIS API)"""
+    """US 계좌 정보 조회 (KIS API) - 통합 포맷"""
     try:
         from modules.kis_api import KisOverseas
         kis = KisOverseas()
@@ -133,25 +136,66 @@ def get_account_data():
         balance = kis.get_balance()
         
         result = {
-            "deposit_usd": "N/A",
+            "deposit_usd": 0.0,
+            "deposit_krw": 0,
+            "profit_usd": 0.0,
+            "profit_krw": 0,
+            "total_asset_usd": 0.0,
+            "total_asset_krw": 0,
+            "exchange_rate": USD_KRW_RATE,
             "holdings": []
         }
         
+        # 외화 예수금
         if foreign_bal and 'deposit' in foreign_bal:
-            result["deposit_usd"] = f"{foreign_bal['deposit']:.2f}"
+            result["deposit_usd"] = float(foreign_bal['deposit'])
+            result["deposit_krw"] = int(result["deposit_usd"] * USD_KRW_RATE)
+        
+        # 보유 종목 및 평가금액 집계
+        total_eval_usd = 0.0
+        total_profit_usd = 0.0
         
         if balance and 'output1' in balance:
             for h in balance['output1']:
+                ticker = h.get('ovrs_pdno', h.get('pdno', 'N/A'))
+                name = h.get('ovrs_item_name', h.get('prdt_name', 'N/A'))
+                qty = int(h.get('ovrs_cblc_qty', h.get('ccld_qty_smtl1', '0') or '0'))
+                avg_price = float(h.get('pchs_avg_pric', h.get('avg_unpr3', '0') or '0'))
+                cur_price = float(h.get('now_pric2', h.get('ovrs_now_pric1', '0') or '0'))
+                profit = float(h.get('frcr_evlu_pfls_amt', h.get('evlu_pfls_amt', '0') or '0'))
+                profit_pct = float(h.get('evlu_pfls_rt1', h.get('evlu_pfls_rt', '0') or '0'))
+                eval_amt = float(h.get('ovrs_stck_evlu_amt', h.get('frcr_evlu_amt', '0') or '0'))
+                
+                total_eval_usd += eval_amt
+                total_profit_usd += profit
+                
                 result["holdings"].append({
-                    "ticker": h.get('ovrs_pdno', h.get('pdno', 'N/A')),
-                    "name": h.get('ovrs_item_name', h.get('prdt_name', 'N/A')),
-                    "qty": h.get('ovrs_cblc_qty', h.get('ccld_qty_smtl1', '0')),
-                    "profit": h.get('frcr_evlu_pfls_amt', h.get('evlu_pfls_amt', '0'))
+                    "ticker": ticker,
+                    "name": name,
+                    "qty": qty,
+                    "avg_price": round(avg_price, 2),
+                    "cur_price": round(cur_price, 2),
+                    "eval_amt": round(eval_amt, 2),
+                    "profit": round(profit, 2),
+                    "profit_pct": round(profit_pct, 2)
                 })
+        
+        # 총 자산 및 평가손익 계산
+        result["profit_usd"] = round(total_profit_usd, 2)
+        result["profit_krw"] = int(total_profit_usd * USD_KRW_RATE)
+        result["total_asset_usd"] = round(result["deposit_usd"] + total_eval_usd, 2)
+        result["total_asset_krw"] = int(result["total_asset_usd"] * USD_KRW_RATE)
         
         return result
     except Exception as e:
-        return {"deposit_usd": f"Error: {e}", "holdings": []}
+        return {
+            "deposit_usd": 0.0, "deposit_krw": 0,
+            "profit_usd": 0.0, "profit_krw": 0,
+            "total_asset_usd": 0.0, "total_asset_krw": 0,
+            "exchange_rate": USD_KRW_RATE,
+            "holdings": [],
+            "error": str(e)
+        }
 
 def get_kr_account_data():
     """KR 계좌 정보 조회 (KIS API)"""

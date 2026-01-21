@@ -239,22 +239,28 @@
             <!-- US Account -->
             <div class="card">
                 <div class="card-header">
-                    <h2>🇺🇸 US Account</h2>
+                    <h2>🇺🇸 US Account (해외주식)</h2>
                     <button class="btn btn-primary" onclick="refreshAccount()">Refresh All</button>
                 </div>
                 <div class="grid grid-3" id="accountMetrics">
                     <div class="metric">
-                        <div class="metric-label">Cash (USD)</div>
+                        <div class="metric-label">예수금 (Cash)</div>
                         <div class="metric-value" id="depositUsd">Loading...</div>
+                        <div class="metric-sub" id="depositUsdKrw" style="font-size: 0.8em; color: var(--text-secondary);"></div>
                     </div>
                     <div class="metric">
-                        <div class="metric-label">Holdings</div>
-                        <div class="metric-value" id="holdingsCount">-</div>
+                        <div class="metric-label">평가손익 (P/L)</div>
+                        <div class="metric-value" id="profitUsd">-</div>
+                        <div class="metric-sub" id="profitUsdKrw" style="font-size: 0.8em; color: var(--text-secondary);"></div>
                     </div>
                     <div class="metric">
-                        <div class="metric-label">Status</div>
-                        <div class="metric-value success">Active</div>
+                        <div class="metric-label">총 자산 (Total)</div>
+                        <div class="metric-value" id="totalAssetUsd">-</div>
+                        <div class="metric-sub" id="totalAssetUsdKrw" style="font-size: 0.8em; color: var(--text-secondary);"></div>
                     </div>
+                </div>
+                <div style="margin-top: 10px; font-size: 0.85em; color: var(--text-secondary);">
+                    환율: <span id="exchangeRate">1,450</span> KRW/USD
                 </div>
                 <div id="holdingsTableUs" style="margin-top: 20px;"></div>
             </div>
@@ -389,21 +395,46 @@
                 const res = await fetch('/api/account');
                 const data = await res.json();
                 
-                document.getElementById('depositUsd').textContent = '$' + data.deposit_usd;
-                document.getElementById('holdingsCount').textContent = data.holdings.length;
+                // 예수금 (USD + KRW)
+                document.getElementById('depositUsd').textContent = '$' + data.deposit_usd.toLocaleString(undefined, {minimumFractionDigits: 2});
+                document.getElementById('depositUsdKrw').textContent = '₩' + data.deposit_krw.toLocaleString();
                 
-                if (data.holdings.length > 0) {
-                    let html = '<table><thead><tr><th>Ticker</th><th>Name</th><th>Qty</th><th>P/L</th></tr></thead><tbody>';
+                // 평가손익
+                const profitEl = document.getElementById('profitUsd');
+                profitEl.textContent = (data.profit_usd >= 0 ? '+$' : '-$') + Math.abs(data.profit_usd).toLocaleString(undefined, {minimumFractionDigits: 2});
+                document.getElementById('profitUsdKrw').textContent = (data.profit_krw >= 0 ? '+₩' : '-₩') + Math.abs(data.profit_krw).toLocaleString();
+                profitEl.className = 'metric-value ' + (data.profit_usd >= 0 ? 'success' : 'danger');
+                
+                // 총 자산
+                document.getElementById('totalAssetUsd').textContent = '$' + data.total_asset_usd.toLocaleString(undefined, {minimumFractionDigits: 2});
+                document.getElementById('totalAssetUsdKrw').textContent = '₩' + data.total_asset_krw.toLocaleString();
+                
+                // 환율
+                document.getElementById('exchangeRate').textContent = data.exchange_rate.toLocaleString();
+                
+                // Holdings 테이블 (통일된 포맷)
+                if (data.holdings && data.holdings.length > 0) {
+                    let html = '<table><thead><tr><th>종목</th><th>종목명</th><th>수량</th><th>평단가</th><th>현재가</th><th>평가손익</th></tr></thead><tbody>';
                     data.holdings.forEach(h => {
-                        html += `<tr><td>${h.ticker}</td><td>${h.name}</td><td>${h.qty}</td><td>${h.profit}</td></tr>`;
+                        const profitClass = h.profit >= 0 ? 'success' : 'danger';
+                        const profitSign = h.profit >= 0 ? '+' : '';
+                        html += `<tr>
+                            <td><strong>${h.ticker}</strong></td>
+                            <td>${h.name}</td>
+                            <td>${h.qty}</td>
+                            <td>$${h.avg_price.toFixed(2)}</td>
+                            <td>$${h.cur_price.toFixed(2)}</td>
+                            <td class="${profitClass}">${profitSign}$${h.profit.toFixed(2)} (${profitSign}${h.profit_pct.toFixed(2)}%)</td>
+                        </tr>`;
                     });
                     html += '</tbody></table>';
                     document.getElementById('holdingsTableUs').innerHTML = html;
                 } else {
-                    document.getElementById('holdingsTableUs').innerHTML = '<p style="color: var(--text-secondary);">No US holdings</p>';
+                    document.getElementById('holdingsTableUs').innerHTML = '<p style="color: var(--text-secondary);">보유 해외주식 없음</p>';
                 }
             } catch (e) {
                 document.getElementById('depositUsd').textContent = 'Error';
+                console.error('US Account Error:', e);
             }
             
             // Refresh KR Account
