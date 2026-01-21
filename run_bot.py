@@ -11,7 +11,7 @@ from modules.kis_domestic import KisDomestic
 from modules.gemini_analyst import GeminiAnalyst
 from modules.logger import logger
 from modules.telegram_notifier import TelegramNotifier
-from strategies.technical import calculate_ma, check_trend
+from strategies.technical import calculate_ma, check_trend, check_volume_spike
 from strategies.volatility_breakout import calculate_target_price
 
 # Configuration
@@ -501,18 +501,39 @@ def job():
             if data['status'] in ['bought', 'failed', 'ai_rejected']:
                 continue
                 
-            exchange = data.get('exchange')
-            
-            if market == 'US':
-                current_price = kis.get_current_price(ticker, exchange)
-            else:
-                current_price = kis.get_current_price(ticker)
-                
             target_price = data['target']
             
+            # --- [Enhanced] Volume & Price Check ---
+            # 1. Fetch Price & Volume
+            if market == 'US':
+                # Use get_quote to get real-time volume (tvol) + price (last)
+                quote = kis.get_quote(ticker, exchange)
+                current_price = float(quote['last']) if quote else 0
+                current_vol = float(quote['tvol']) if quote else 0
+            else:
+                current_price = kis.get_current_price(ticker)
+                # KR API might need separate call for volume if get_current_price doesn't return it
+                # For simplicity/speed in KR, we might skip volume or need to impl get_quote for KR
+                current_vol = 0 # KR Volume Check pending implementation
+            
+            # 2. Check Conditions
             if current_price and current_price >= target_price:
-                logger.info(f"[{ticker}] Breakout Detected! ({current_price} >= {target_price})")
+                logger.info(f"[{ticker}] Price Breakout! ({current_price} >= {target_price})")
                 
+                # Volume Spike Check (Only for US currently as we fetched quote)
+                if market == 'US' and current_vol > 0:
+                    ohlc = data.get('ohlc', [])
+                    is_volume_spike = check_volume_spike(current_vol, ohlc)
+                    
+                    if not is_volume_spike:
+                        # Optional: Log warning but maybe don't block fully if user wants aggressive
+                        # BUT user asked for filters. Let's make it a Soft Warning or Strong Filter?
+                        # User asked to "apply new logic". Let's apply it.
+                        logger.warning(f"[{ticker}] ⚠️ Volume too low ({current_vol}). Spike check failed. Waiting for volume support.")
+                        continue
+                    else:
+                        logger.info(f"[{ticker}] ✅ Volume Spike Confirmed! ({current_vol})")
+
                 logger.info("Checking AI Sentiment...")
                 news = ai.fetch_news() # TODO: Improve AI news source for KR stocks later
                 sentiment = ai.check_market_sentiment(news)
