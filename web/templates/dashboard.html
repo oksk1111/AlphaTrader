@@ -387,6 +387,10 @@
             }
         }
 
+        function safeNum(val) {
+            return (typeof val === 'number') ? val : 0;
+        }
+
         // Refresh account data (US + KR)
         async function refreshAccount(force = false) {
             const urlParams = force ? '?force=true' : '';
@@ -395,38 +399,57 @@
             if (force) document.getElementById('depositUsd').textContent = 'Refreshing...';
             try {
                 const res = await fetch('/api/account' + urlParams);
-                const data = await res.json();
+                if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
                 
+                const data = await res.json();
+                console.log('US Account Data:', data); // Debugging
+                
+                if (data.error) {
+                    console.error('API Error:', data.error);
+                }
+
                 // 예수금 (USD + KRW)
-                document.getElementById('depositUsd').textContent = '$' + data.deposit_usd.toLocaleString(undefined, {minimumFractionDigits: 2});
-                document.getElementById('depositUsdKrw').textContent = '₩' + data.deposit_krw.toLocaleString();
+                const depUsd = safeNum(data.deposit_usd);
+                const depKrw = safeNum(data.deposit_krw);
+                document.getElementById('depositUsd').textContent = '$' + depUsd.toLocaleString(undefined, {minimumFractionDigits: 2});
+                document.getElementById('depositUsdKrw').textContent = '₩' + depKrw.toLocaleString();
                 
                 // 평가손익
+                const profUsd = safeNum(data.profit_usd);
+                const profKrw = safeNum(data.profit_krw);
+                
                 const profitEl = document.getElementById('profitUsd');
-                profitEl.textContent = (data.profit_usd >= 0 ? '+$' : '-$') + Math.abs(data.profit_usd).toLocaleString(undefined, {minimumFractionDigits: 2});
-                document.getElementById('profitUsdKrw').textContent = (data.profit_krw >= 0 ? '+₩' : '-₩') + Math.abs(data.profit_krw).toLocaleString();
-                profitEl.className = 'metric-value ' + (data.profit_usd >= 0 ? 'success' : 'danger');
+                profitEl.textContent = (profUsd >= 0 ? '+$' : '-$') + Math.abs(profUsd).toLocaleString(undefined, {minimumFractionDigits: 2});
+                document.getElementById('profitUsdKrw').textContent = (profKrw >= 0 ? '+₩' : '-₩') + Math.abs(profKrw).toLocaleString();
+                profitEl.className = 'metric-value ' + (profUsd >= 0 ? 'success' : 'danger');
                 
                 // 총 자산
-                document.getElementById('totalAssetUsd').textContent = '$' + data.total_asset_usd.toLocaleString(undefined, {minimumFractionDigits: 2});
-                document.getElementById('totalAssetUsdKrw').textContent = '₩' + data.total_asset_krw.toLocaleString();
+                const totUsd = safeNum(data.total_asset_usd);
+                const totKrw = safeNum(data.total_asset_krw);
+                
+                document.getElementById('totalAssetUsd').textContent = '$' + totUsd.toLocaleString(undefined, {minimumFractionDigits: 2});
+                document.getElementById('totalAssetUsdKrw').textContent = '₩' + totKrw.toLocaleString();
                 
                 // 환율
-                document.getElementById('exchangeRate').textContent = data.exchange_rate.toLocaleString();
+                const exRate = safeNum(data.exchange_rate);
+                document.getElementById('exchangeRate').textContent = exRate.toLocaleString();
                 
                 // Holdings 테이블 (통일된 포맷)
-                if (data.holdings && data.holdings.length > 0) {
+                if (data.holdings && Array.isArray(data.holdings) && data.holdings.length > 0) {
                     let html = '<table><thead><tr><th>종목</th><th>종목명</th><th>수량</th><th>평단가</th><th>현재가</th><th>평가손익</th></tr></thead><tbody>';
                     data.holdings.forEach(h => {
-                        const profitClass = h.profit >= 0 ? 'success' : 'danger';
-                        const profitSign = h.profit >= 0 ? '+' : '';
+                        const profit = safeNum(h.profit);
+                        const profitPct = safeNum(h.profit_pct);
+                        const profitClass = profit >= 0 ? 'success' : 'danger';
+                        const profitSign = profit >= 0 ? '+' : '';
+                        
                         html += `<tr>
-                            <td><strong>${h.ticker}</strong></td>
-                            <td>${h.name}</td>
-                            <td>${h.qty}</td>
-                            <td>$${h.avg_price.toFixed(2)}</td>
-                            <td>$${h.cur_price.toFixed(2)}</td>
-                            <td class="${profitClass}">${profitSign}$${h.profit.toFixed(2)} (${profitSign}${h.profit_pct.toFixed(2)}%)</td>
+                            <td><strong>${h.ticker || 'N/A'}</strong></td>
+                            <td>${h.name || 'N/A'}</td>
+                            <td>${h.qty || 0}</td>
+                            <td>$${safeNum(h.avg_price).toFixed(2)}</td>
+                            <td>$${safeNum(h.cur_price).toFixed(2)}</td>
+                            <td class="${profitClass}">${profitSign}$${profit.toFixed(2)} (${profitSign}${profitPct.toFixed(2)}%)</td>
                         </tr>`;
                     });
                     html += '</tbody></table>';
@@ -443,27 +466,46 @@
             if (force) document.getElementById('depositKrw').textContent = 'Refreshing...';
             try {
                 const res = await fetch('/api/account/kr' + urlParams);
-                const data = await res.json();
+                if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
                 
-                document.getElementById('depositKrw').textContent = '₩' + Number(data.deposit_krw).toLocaleString();
-                document.getElementById('profitKrw').textContent = '₩' + Number(data.profit_krw).toLocaleString();
-                document.getElementById('totalAssetKrw').textContent = '₩' + Number(data.total_asset_krw).toLocaleString();
+                const data = await res.json();
+                console.log('KR Account Data:', data);
+                
+                // KRW logic (Already strings mostly in backend but let's be safe)
+                // Backend returns strings for KRW values except holdings numbers might be...
+                // Wait, get_kr_account_data returns strings for top level fields?
+                // "deposit_krw": "0" (String)
+                
+                const parseKrw = (val) => {
+                    if (typeof val === 'number') return val;
+                    if (typeof val === 'string') return parseInt(val.replace(/,/g, '')) || 0;
+                    return 0;
+                };
+
+                const depKrw = parseKrw(data.deposit_krw);
+                const profKrw = parseKrw(data.profit_krw);
+                const totKrw = parseKrw(data.total_asset_krw);
+
+                document.getElementById('depositKrw').textContent = '₩' + depKrw.toLocaleString();
+                document.getElementById('profitKrw').textContent = '₩' + profKrw.toLocaleString();
+                document.getElementById('totalAssetKrw').textContent = '₩' + totKrw.toLocaleString();
                 
                 // Color for profit
                 const profitEl = document.getElementById('profitKrw');
-                if (data.profit_krw > 0) {
+                if (profKrw > 0) {
                     profitEl.classList.add('success');
                     profitEl.classList.remove('danger');
-                } else if (data.profit_krw < 0) {
+                } else if (profKrw < 0) {
                     profitEl.classList.remove('success');
                     profitEl.classList.add('danger');
                 }
                 
-                if (data.holdings && data.holdings.length > 0) {
+                if (data.holdings && Array.isArray(data.holdings) && data.holdings.length > 0) {
                     let html = '<table><thead><tr><th>종목코드</th><th>종목명</th><th>수량</th><th>평가손익</th></tr></thead><tbody>';
                     data.holdings.forEach(h => {
-                        const profitClass = parseFloat(h.profit_pct) >= 0 ? 'success' : 'danger';
-                        html += `<tr><td>${h.code}</td><td>${h.name}</td><td>${h.qty}</td><td class="${profitClass}">${h.profit} (${h.profit_pct}%)</td></tr>`;
+                        const profitPct = parseFloat(h.profit_pct || 0);
+                        const profitClass = profitPct >= 0 ? 'success' : 'danger';
+                        html += `<tr><td>${h.code || '-'}</td><td>${h.name || '-'}</td><td>${h.qty || 0}</td><td class="${profitClass}">${h.profit || 0} (${h.profit_pct || 0}%)</td></tr>`;
                     });
                     html += '</tbody></table>';
                     document.getElementById('holdingsTableKr').innerHTML = html;
@@ -471,6 +513,7 @@
                     document.getElementById('holdingsTableKr').innerHTML = '<p style="color: var(--text-secondary);">보유 국내주식 없음</p>';
                 }
             } catch (e) {
+                console.error('KR Account Error:', e);
                 document.getElementById('depositKrw').textContent = 'Error';
                 document.getElementById('profitKrw').textContent = '-';
                 document.getElementById('totalAssetKrw').textContent = '-';
