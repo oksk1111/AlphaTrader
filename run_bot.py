@@ -13,6 +13,7 @@ from modules.logger import logger
 from modules.telegram_notifier import TelegramNotifier
 from strategies.technical import calculate_ma, check_trend, check_volume_spike
 from strategies.volatility_breakout import calculate_target_price
+from modules.account_manager import update_all_accounts
 
 # Configuration
 CONFIG_FILE = "user_config.json"
@@ -686,10 +687,16 @@ if __name__ == "__main__":
     # Startup notification
     send_alert(f"🚀 Bot Started!\nMode: {'Safe' if IS_SAFE_MODE else 'Leverage'}\nStrategy: {STRATEGY_MODE.upper()}")
     
-    # Heartbeat
+    # Heartbeat & Data Collection
     def heartbeat():
         status = get_market_status()
         logger.info(f"Heartbeat: Bot is alive... Market Status: {status}")
+        
+        # Collect account data for dashboard every minute
+        try:
+            update_all_accounts()
+        except Exception as e:
+            logger.error(f"Background account update failed: {e}")
         
     schedule.every(1).minutes.do(heartbeat)
     
