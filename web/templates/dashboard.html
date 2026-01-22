@@ -388,7 +388,12 @@
         }
 
         function safeNum(val) {
-            return (typeof val === 'number') ? val : 0;
+            if (typeof val === 'number') return val;
+            if (typeof val === 'string') {
+                const parsed = parseFloat(val.replace(/,/g, ''));
+                return isNaN(parsed) ? 0 : parsed;
+            }
+            return 0;
         }
 
         // Refresh account data (US + KR)

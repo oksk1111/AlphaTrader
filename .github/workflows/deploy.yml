@@ -45,8 +45,12 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
             
-            # Restore .env after git reset (since .env is gitignored, keep our updated version)
-            # The .env was already updated above before git reset
+            # Clean up pycache to prevent stale code
+            echo "🧹 Cleaning up pycache..."
+            find . -name "*.pyc" -delete
+            find . -name "__pycache__" -type d -exec rm -rf {} +
+
+            # Update Telegram credentials in .env
             
             # Install dependencies if requirements changed
             if git diff HEAD~1 --name-only | grep -q "requirements.txt"; then
