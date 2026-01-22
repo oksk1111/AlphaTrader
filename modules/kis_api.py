@@ -321,30 +321,37 @@ class KisOverseas:
             return None
 
     def get_balance(self):
-        """잔고 조회"""
-        # HHDFS76410000 : 해외주식 잔고지원
-        tr_id = "VTTS3012R" if "openapivts" in self.url else "TTTS3012R" # 모의/실전 TR ID 확인 필요. 
-        # 문서상: 해외주식 체결기준잔고 (TTTS3012R)
-        
+        """잔고 조회 (전체 거래소)"""
+        tr_id = "VTTS3012R" if "openapivts" in self.url else "TTTS3012R"
         path = "/uapi/overseas-stock/v1/trading/inquire-balance"
         headers = self._get_headers(tr_id)
         
-        params = {
-            "CANO": self.acc_no_prefix,
-            "ACNT_PRDT_CD": self.acc_no_suffix,
-            "OVRS_EXCG_CD": "NAS",
-            "TR_CRCY_CD": "USD",
-            "CTX_AREA_FK200": "",
-            "CTX_AREA_NK200": ""
-        }
+        all_holdings = []
+        exchanges = ["NASD", "NYSE", "AMEX"]  # 모든 거래소 조회
         
-        try:
-            res = requests.get(self.url + path, headers=headers, params=params)
-            res.raise_for_status()
-            return res.json()
-        except Exception as e:
-            print(f"[KIS] Balance check failed: {e}")
-            return None
+        for exch in exchanges:
+            params = {
+                "CANO": self.acc_no_prefix,
+                "ACNT_PRDT_CD": self.acc_no_suffix,
+                "OVRS_EXCG_CD": exch,
+                "TR_CRCY_CD": "USD",
+                "CTX_AREA_FK200": "",
+                "CTX_AREA_NK200": ""
+            }
+            
+            try:
+                res = requests.get(self.url + path, headers=headers, params=params)
+                res.raise_for_status()
+                data = res.json()
+                
+                if data.get('rt_cd') == '0' and 'output1' in data:
+                    for item in data['output1']:
+                        item['_exchange'] = exch  # 거래소 정보 추가
+                    all_holdings.extend(data['output1'])
+            except Exception as e:
+                print(f"[KIS] Balance check failed for {exch}: {e}")
+        
+        return {"output1": all_holdings} if all_holdings else None
 
     def get_foreign_balance(self):
         """외화예수금 조회 (USD) - CTRP6504R"""

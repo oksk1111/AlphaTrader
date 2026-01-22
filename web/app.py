@@ -174,8 +174,8 @@ def get_account_data(force_update=False):
     last_update = cached_us.get("timestamp", 0)
     now_ts = datetime.now().timestamp()
     
-    # 60초 이내이고 강제 업데이트가 아니면 캐시 반환
-    if not force_update and (now_ts - last_update < 60) and cached_us.get("data"):
+    # 300초(5분) 이내이고 강제 업데이트가 아니면 캐시 반환
+    if not force_update and (now_ts - last_update < 300) and cached_us.get("data"):
         return cached_us["data"]
 
     try:
@@ -211,26 +211,43 @@ def get_account_data(force_update=False):
                 name = h.get('ovrs_item_name', h.get('prdt_name', 'N/A'))
                 
                 # 수량 (Quantity)
-                qty = int(h.get('ovrs_cblc_qty', h.get('ccld_qty_smtl1', '0') or '0'))
+                qty_raw = h.get('ovrs_cblc_qty', h.get('ord_psbl_qty', h.get('cblc_qty13', '0')))
+                qty = int(float(qty_raw or '0'))
                 
-                # 매입평균가격 (Purchase Avg Price) - pchs_avg_pric 우선
-                avg_price_raw = h.get('pchs_avg_pric', h.get('avg_unpr3', '0'))
+                if qty <= 0:
+                    continue  # 수량이 0이면 스킵
+                
+                # 매입평균가격 (Purchase Avg Price)
+                avg_price_raw = h.get('pchs_avg_pric', h.get('avg_unpr3', h.get('pchs_avg_pric1', '0')))
                 avg_price = float(avg_price_raw or '0')
                 
-                # 현재가 (Current Price) - ovrs_now_pric1 우선 (해외주식)
-                cur_price_raw = h.get('ovrs_now_pric1', h.get('now_pric2', '0'))
+                # 현재가 (Current Price) - 별도 API 호출 필요시
+                cur_price_raw = h.get('now_pric2', h.get('ovrs_now_pric1', h.get('ovrs_stck_prpr', '0')))
                 cur_price = float(cur_price_raw or '0')
                 
                 # 평가손익 (Profit/Loss)
-                profit = float(h.get('frcr_evlu_pfls_amt', h.get('evlu_pfls_amt', '0') or '0'))
-                profit_pct = float(h.get('evlu_pfls_rt1', h.get('evlu_pfls_rt', '0') or '0'))
+                profit_raw = h.get('frcr_evlu_pfls_amt', h.get('evlu_pfls_amt', h.get('ovrs_stck_evlu_pfls_amt', '0')))
+                profit = float(profit_raw or '0')
+                
+                profit_pct_raw = h.get('evlu_pfls_rt1', h.get('evlu_pfls_rt', h.get('evlu_pfls_rt1', '0')))
+                profit_pct = float(profit_pct_raw or '0')
                 
                 # 평가금액 (Eval Amount)
-                eval_amt = float(h.get('ovrs_stck_evlu_amt', h.get('frcr_evlu_amt', '0') or '0'))
+                eval_amt_raw = h.get('ovrs_stck_evlu_amt', h.get('frcr_evlu_amt', '0'))
+                eval_amt = float(eval_amt_raw or '0')
                 
-                # If values are still 0, try simplistic calculation
+                # 현재가 계산 폴백
                 if cur_price == 0 and qty > 0 and eval_amt > 0:
                     cur_price = eval_amt / qty
+                
+                # 평단가 계산 폴백 (평가금액 - 손익) / 수량
+                if avg_price == 0 and qty > 0 and eval_amt > 0:
+                    purchase_amt = eval_amt - profit
+                    avg_price = purchase_amt / qty if qty > 0 else 0
+                
+                # 손익률 계산 폴백
+                if profit_pct == 0 and avg_price > 0:
+                    profit_pct = ((cur_price - avg_price) / avg_price) * 100 if avg_price > 0 else 0
                 
                 total_eval_usd += eval_amt
                 total_profit_usd += profit
@@ -257,6 +274,8 @@ def get_account_data(force_update=False):
         
         return result
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         # 실패 시 캐시가 있으면 반환 (오래된 데이터라도)
         if cached_us.get("data"):
             return cached_us["data"]
@@ -279,7 +298,8 @@ def get_kr_account_data(force_update=False):
     last_update = cached_kr.get("timestamp", 0)
     now_ts = datetime.now().timestamp()
     
-    if not force_update and (now_ts - last_update < 60) and cached_kr.get("data"):
+    # 5분 캐시
+    if not force_update and (now_ts - last_update < 300) and cached_kr.get("data"):
         return cached_kr["data"]
 
     try:
