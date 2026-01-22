@@ -240,7 +240,7 @@
             <div class="card">
                 <div class="card-header">
                     <h2>🇺🇸 US Account (해외주식)</h2>
-                    <button class="btn btn-primary" onclick="refreshAccount()">Refresh All</button>
+                    <button class="btn btn-primary" onclick="refreshAccount(true)">Force Refresh</button>
                 </div>
                 <div class="grid grid-3" id="accountMetrics">
                     <div class="metric">
@@ -388,11 +388,13 @@
         }
 
         // Refresh account data (US + KR)
-        async function refreshAccount() {
+        async function refreshAccount(force = false) {
+            const urlParams = force ? '?force=true' : '';
+            
             // Refresh US Account
-            document.getElementById('depositUsd').textContent = 'Loading...';
+            if (force) document.getElementById('depositUsd').textContent = 'Refreshing...';
             try {
-                const res = await fetch('/api/account');
+                const res = await fetch('/api/account' + urlParams);
                 const data = await res.json();
                 
                 // 예수금 (USD + KRW)
@@ -438,9 +440,9 @@
             }
             
             // Refresh KR Account
-            document.getElementById('depositKrw').textContent = 'Loading...';
+            if (force) document.getElementById('depositKrw').textContent = 'Refreshing...';
             try {
-                const res = await fetch('/api/account/kr');
+                const res = await fetch('/api/account/kr' + urlParams);
                 const data = await res.json();
                 
                 document.getElementById('depositKrw').textContent = '₩' + Number(data.deposit_krw).toLocaleString();

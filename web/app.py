@@ -30,6 +30,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "web" / "templates"))
 
 # --- Config 관리 ---
 CONFIG_FILE = BASE_DIR / "user_config.json"
+CACHE_FILE = BASE_DIR / "database/account_cache.json"
 
 def load_config():
     if CONFIG_FILE.exists():
@@ -40,6 +41,24 @@ def load_config():
 def save_config(config):
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=4)
+
+def load_cache():
+    if CACHE_FILE.exists():
+        try:
+            with open(CACHE_FILE, "r") as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+def save_cache(data):
+    try:
+        current_cache = load_cache()
+        current_cache.update(data)
+        with open(CACHE_FILE, "w") as f:
+            json.dump(current_cache, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        print(f"Cache save failed: {e}")
 
 # --- 유틸리티 함수 ---
 def get_bot_pid():
@@ -123,11 +142,42 @@ def parse_ticker_data(parsed_lines):
     
     return ticker_data
 
+CACHE_FILE = BASE_DIR / "database/account_cache.json"
+
+def load_cache():
+    if CACHE_FILE.exists():
+        try:
+            with open(CACHE_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_cache(data):
+    try:
+        current = load_cache()
+        current.update(data)
+        with open(CACHE_FILE, "w") as f:
+            json.dump(current, f, indent=4)
+    except Exception as e:
+        print(f"Cache save failed: {e}")
+
 # 환율 설정 (실시간 환율 API 연동 가능하나 일단 고정값 사용)
 USD_KRW_RATE = 1450.0
 
-def get_account_data():
-    """US 계좌 정보 조회 (KIS API) - 통합 포맷"""
+def get_account_data(force_update=False):
+    """US 계좌 정보 조회 (KIS API) - 통합 포맷 + 캐싱 적용"""
+    
+    # 캐시 확인
+    cache = load_cache()
+    cached_us = cache.get("us", {})
+    last_update = cached_us.get("timestamp", 0)
+    now_ts = datetime.now().timestamp()
+    
+    # 60초 이내이고 강제 업데이트가 아니면 캐시 반환
+    if not force_update and (now_ts - last_update < 60) and cached_us.get("data"):
+        return cached_us["data"]
+
     try:
         from modules.kis_api import KisOverseas
         kis = KisOverseas()
@@ -202,8 +252,15 @@ def get_account_data():
         result["total_asset_usd"] = round(result["deposit_usd"] + total_eval_usd, 2)
         result["total_asset_krw"] = int(result["total_asset_usd"] * USD_KRW_RATE)
         
+        # 캐시 저장
+        save_cache({"us": {"data": result, "timestamp": now_ts}})
+        
         return result
     except Exception as e:
+        # 실패 시 캐시가 있으면 반환 (오래된 데이터라도)
+        if cached_us.get("data"):
+            return cached_us["data"]
+            
         return {
             "deposit_usd": 0.0, "deposit_krw": 0,
             "profit_usd": 0.0, "profit_krw": 0,
@@ -213,8 +270,18 @@ def get_account_data():
             "error": str(e)
         }
 
-def get_kr_account_data():
-    """KR 계좌 정보 조회 (KIS API)"""
+def get_kr_account_data(force_update=False):
+    """KR 계좌 정보 조회 (KIS API) + 캐싱 적용"""
+    
+    # 캐시 확인
+    cache = load_cache()
+    cached_kr = cache.get("kr", {})
+    last_update = cached_kr.get("timestamp", 0)
+    now_ts = datetime.now().timestamp()
+    
+    if not force_update and (now_ts - last_update < 60) and cached_kr.get("data"):
+        return cached_kr["data"]
+
     try:
         from modules.kis_domestic import KisDomestic
         kis = KisDomestic()
@@ -246,8 +313,14 @@ def get_kr_account_data():
                     "profit_pct": h.get('evlu_pfls_rt', '0')
                 })
         
+        # 캐시 저장
+        save_cache({"kr": {"data": result, "timestamp": now_ts}})
+        
         return result
     except Exception as e:
+        if cached_kr.get("data"):
+            return cached_kr["data"]
+            
         return {"deposit_krw": "Error", "profit_krw": "0", "total_asset_krw": "0", "holdings": [], "error": str(e)}
 
 # --- API 엔드포인트 ---
@@ -325,14 +398,14 @@ async def api_status():
     })
 
 @app.get("/api/account")
-async def api_account():
+async def api_account(force: bool = False):
     """US 계좌 정보 API"""
-    return JSONResponse(get_account_data())
+    return JSONResponse(get_account_data(force_update=force))
 
 @app.get("/api/account/kr")
-async def api_account_kr():
+async def api_account_kr(force: bool = False):
     """KR 계좌 정보 API"""
-    return JSONResponse(get_kr_account_data())
+    return JSONResponse(get_kr_account_data(force_update=force))
 
 @app.post("/api/config")
 async def update_config(request: Request):
