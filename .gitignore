@@ -9,4 +9,5 @@ cloudflared
 nohup.out
 # Test & Debug files
 debug_*.py
-test_*.py
+test_*.pydatabase/kis_token_cache.json
+database/account_cache.json

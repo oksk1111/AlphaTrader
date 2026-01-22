@@ -1,6 +1,7 @@
 import requests
 import json
 import time
+import os
 from config import KIS_BASE_URL, KIS_APP_KEY, KIS_APP_SECRET, KIS_CANO, KIS_ACNT_PRDT_CD
 from modules.kis_api import RateLimiter
 
@@ -20,9 +21,27 @@ class KisDomestic:
         self._refresh_token()
 
     def _refresh_token(self):
-        """Access Token 발급 (동일 로직)"""
+        """Access Token 발급 (파일 캐싱 적용 - kis_api.py와 공유)"""
+        token_file = "database/kis_token_cache.json"
+        
+        # Ensure database directory exists
+        os.makedirs("database", exist_ok=True)
+        
+        # 1. 파일에서 토큰 읽기 시도
+        if os.path.exists(token_file):
+            try:
+                with open(token_file, "r") as f:
+                    data = json.load(f)
+                    if time.time() < data.get("expiry", 0) - 300:
+                        self.access_token = data["access_token"]
+                        self.token_expiry = data["expiry"]
+                        return
+            except Exception as e:
+                print(f"[KIS-KR] Failed to load token cache: {e}")
+
+        # 2. 토큰이 없거나 만료된 경우 새로 발급
         if time.time() < self.token_expiry:
-            return
+             return
 
         path = "/oauth2/tokenP"
         headers = {"content-type": "application/json"}
@@ -37,7 +56,7 @@ class KisDomestic:
             
             if res.status_code == 403 and "EGW00133" in res.text:
                 print("[KIS-KR] Token rate limit hit. Waiting 60 seconds...")
-                time.sleep(65)
+                time.sleep(60)
                 res = requests.post(self.url + path, headers=headers, data=json.dumps(body))
 
             if res.status_code != 200:
@@ -46,8 +65,19 @@ class KisDomestic:
             res.raise_for_status()
             data = res.json()
             self.access_token = data['access_token']
-            self.token_expiry = time.time() + int(data['expires_in']) - 60
-            print(f"[KIS-KR] Token refreshed.")
+            self.token_expiry = time.time() + int(data['expires_in'])
+            
+            # 3. 파일에 저장
+            try:
+                with open(token_file, "w") as f:
+                    json.dump({
+                        "access_token": self.access_token,
+                        "expiry": self.token_expiry
+                    }, f)
+                print(f"[KIS-KR] Token refreshed and cached.")
+            except Exception as e:
+                 print(f"[KIS-KR] Failed to save token cache: {e}")
+                 
         except Exception as e:
             print(f"[KIS-KR] Token refresh failed: {e}")
             raise
