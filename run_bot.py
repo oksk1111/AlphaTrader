@@ -508,7 +508,61 @@ def job():
             break
             
         for ticker, data in monitoring_targets.items():
-            if data['status'] in ['bought', 'failed', 'ai_rejected']:
+            # --- [Rule No.1] Risk Management for Bought Positions ---
+            if data['status'] == 'bought':
+                try:
+                    # Fetch current price
+                    if market == 'US':
+                        quote = kis.get_quote(ticker, data.get('exchange'))
+                        curr = float(quote['last']) if quote else 0
+                    else:
+                        curr = kis.get_current_price(ticker)
+                        
+                    if curr <= 0: continue
+
+                    buy_price = data.get('buy_price', 0)
+                    highest_price = data.get('highest_price', curr)
+                    qty = data.get('buys', 0)
+                    
+                    # Update Highest Price (for Trailing Stop)
+                    if curr > highest_price:
+                        monitoring_targets[ticker]['highest_price'] = curr
+                        highest_price = curr
+                        
+                    # Calculate PnL
+                    pnl_pct = ((curr - buy_price) / buy_price) * 100
+                    
+                    # 1. Stop Loss (-3%) - ABSOLUTE RULE
+                    if pnl_pct <= -3.0:
+                        logger.warning(f"[{ticker}] 🛑 Stop Loss Triggered! ({pnl_pct:.2f}%). Selling {qty} shares.")
+                        if market == 'US':
+                            kis.sell_market_order(ticker, qty, data.get('exchange'))
+                        else:
+                            kis.sell_market_order(ticker, qty)
+                        data['status'] = 'sold_sl' # Mark as Sold (Stop Loss)
+                        continue
+                        
+                    # 2. Trailing Stop
+                    # Condition: If profit was ever > 3%, and falls 1.5% from peak -> Sell
+                    peak_pnl_pct = ((highest_price - buy_price) / buy_price) * 100
+                    
+                    if peak_pnl_pct >= 3.0:
+                        drop_from_peak = ((highest_price - curr) / highest_price) * 100
+                        if drop_from_peak >= 1.5:
+                            logger.info(f"[{ticker}] 💰 Trailing Stop Triggered! (Peak: {peak_pnl_pct:.2f}%, Drop: {drop_from_peak:.2f}%). Selling {qty} shares.")
+                            if market == 'US':
+                                kis.sell_market_order(ticker, qty, data.get('exchange'))
+                            else:
+                                kis.sell_market_order(ticker, qty)
+                            data['status'] = 'sold_tp' # Mark as Sold (Take Profit)
+                            continue
+                            
+                except Exception as e:
+                    logger.error(f"[{ticker}] Error in Risk Management: {e}")
+                
+                continue # Skip breakout check if already bought
+
+            if data['status'] in ['failed', 'ai_rejected', 'sold_sl', 'sold_tp']:
                 continue
                 
             target_price = data['target']
@@ -595,7 +649,9 @@ def job():
                     if is_success:
                         data['status'] = 'bought'
                         data['buys'] = qty
-                        logger.info(f"[{ticker}] Buy Success! Qty: {qty}")
+                        data['buy_price'] = current_price # Store Buy Price
+                        data['highest_price'] = current_price # Initialize Highest Price
+                        logger.info(f"[{ticker}] Buy Success! Qty: {qty} @ {current_price}")
                     else:
                         logger.error(f"[{ticker}] Buy Failed: {res}")
                         retry_counts[ticker] = retry_counts.get(ticker, 0) + 1
