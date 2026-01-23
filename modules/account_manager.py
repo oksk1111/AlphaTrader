@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from modules.kis_api import KisOverseas
 from modules.kis_domestic import KisDomestic
+from modules.logger import logger
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CACHE_FILE = BASE_DIR / "database/account_cache.json"
@@ -33,7 +34,7 @@ def save_cache(data):
         with open(CACHE_FILE, "w") as f:
             json.dump(current, f, indent=4, ensure_ascii=False)
     except Exception as e:
-        print(f"Cache save failed: {e}")
+        logger.error(f"Cache save failed: {e}")
 
 def update_us_account():
     """US 계좌 정보 수집 및 캐싱"""
@@ -104,7 +105,7 @@ def update_us_account():
         # print("✅ US Account Cache Updated")
         return result
     except Exception as e:
-        print(f"❌ US Account Update Failed: {e}")
+        logger.error(f"❌ US Account Update Failed: {e}")
         return None
 
 def update_kr_account():
@@ -140,7 +141,7 @@ def update_kr_account():
         # print("✅ KR Account Cache Updated")
         return result
     except Exception as e:
-        print(f"❌ KR Account Update Failed: {e}")
+        logger.error(f"❌ KR Account Update Failed: {e}")
         return None
 
 def update_all_accounts():

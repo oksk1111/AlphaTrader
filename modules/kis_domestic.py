@@ -96,11 +96,15 @@ class KisDomestic:
     def _request(self, method, path, headers=None, params=None, data=None):
         self.limiter.wait()
         try:
+            res = None
             if method == "GET":
                 res = requests.get(self.url + path, headers=headers, params=params)
             elif method == "POST":
                 res = requests.post(self.url + path, headers=headers, data=data)
-            return res.json()
+            
+            if res:
+                return res.json()
+            return None
         except Exception as e:
             print(f"[KIS-KR] Request Exception: {e}")
             return None
@@ -246,6 +250,32 @@ class KisDomestic:
             "FID_TRGT_EXLS_CLS_CODE": "0",
             "FID_TRGT_CLS_CODE": "0",
             "FID_JAE_GUBUN": "0",           # 제외옵션 없음
+            "FID_COND_VOL_CX_CD": "0"
+        }
+        
+        res = self._request("GET", path, headers=headers, params=params)
+        if res and res['rt_cd'] == '0':
+            return res['output']
+        return []
+
+    def get_trading_value_rank(self):
+        """거래대금 상위 순위 (우량주 발굴용) - FHPST01780000"""
+        path = "/uapi/domestic-stock/v1/ranking/trade-value"
+        headers = self._get_headers("FHPST01780000")
+        
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",  # 주식
+            "FID_COND_SCR_DIV_CODE": "20178",
+            "FID_INPUT_ISCD": "0000",       # 전체
+            "FID_RANK_SORT_CLS_CODE": "0",  # 순위순
+            "FID_INPUT_CNT_1": "0",         # 순위 시작
+            "FID_PBLC_YN": "Y",             # 상장여부
+            "FID_INPUT_PRICE_1": "",
+            "FID_INPUT_PRICE_2": "",
+            "FID_VOL_CNT": "",
+            "FID_TRGT_EXLS_CLS_CODE": "0",
+            "FID_TRGT_CLS_CODE": "0",
+            "FID_JAE_GUBUN": "0",
             "FID_COND_VOL_CX_CD": "0"
         }
         

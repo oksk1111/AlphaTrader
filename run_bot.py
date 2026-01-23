@@ -300,7 +300,11 @@ def job():
         tickers = TARGET_TICKERS_KR + current_dynamic_targets
         
         logger.info(f"🇰🇷 Starting KR Trading Session ({STRATEGY_MODE.upper()})")
-        logger.info(f"   - Static Targets: {[t['symbol'] for t in TARGET_TICKERS_KR]}")
+        
+        # Log Static Targets (handle both dict and string)
+        static_log = [t['symbol'] if isinstance(t, dict) else t for t in TARGET_TICKERS_KR]
+        logger.info(f"   - Static Targets: {static_log}")
+        
         if current_dynamic_targets:
             logger.info(f"   - Dynamic Targets (Scanner): {[t['symbol'] for t in current_dynamic_targets]}")
             
@@ -773,10 +777,12 @@ if __name__ == "__main__":
                 
                 # Scan for volume spikes (300%+) and top gainers (10%+)
                 spikes = scanner.scan_volume_spikes(min_volume_increase_rate=300)
-                # gainers = scanner.scan_top_gainers(min_gain=15)
                 
+                # New: Scan for Blue Chip Surges (High Trading Value)
+                blue_chips = scanner.scan_blue_chip_surge(min_gain=2.0, max_rank=50)
+
                 # found_tickers = spikes + gainers
-                found_tickers = spikes # Focus on volume for now
+                found_tickers = spikes + blue_chips # Combine both strategies
                 
                 current_dynamic_codes = [t['symbol'] for t in DYNAMIC_TARGETS]
                 
