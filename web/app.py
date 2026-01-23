@@ -247,13 +247,25 @@ async def api_status():
 
 @app.get("/api/account")
 async def api_account(force: bool = False):
+    # Read raw cache for debugging
+    raw_cache = {}
+    try:
+        if CACHE_FILE.exists():
+            with open(CACHE_FILE, "r") as f:
+                raw_cache = json.load(f)
+    except Exception as e:
+        raw_cache = {"error": str(e)}
+    
     data = get_account_data(force)
     # Add debug info
     data["_debug"] = {
         "cache_file": str(CACHE_FILE),
         "cache_exists": CACHE_FILE.exists(),
         "base_dir": str(BASE_DIR),
-        "cwd": os.getcwd()
+        "cwd": os.getcwd(),
+        "raw_cache_keys": list(raw_cache.keys()) if isinstance(raw_cache, dict) else str(raw_cache),
+        "us_data_exists": "us" in raw_cache and "data" in raw_cache.get("us", {}),
+        "us_deposit": raw_cache.get("us", {}).get("data", {}).get("deposit_usd", "NOT_FOUND")
     }
     return JSONResponse(data)
 
