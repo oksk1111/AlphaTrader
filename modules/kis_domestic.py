@@ -205,3 +205,52 @@ class KisDomestic:
         }
         
         return self._request("POST", path, headers=headers, data=json.dumps(data))
+
+    def get_volume_rank(self):
+        """거래량 급증 종목 순위 (전일 대비 급증) - FHPST01710000"""
+        path = "/uapi/domestic-stock/v1/ranking/volume-surge"
+        headers = self._get_headers("FHPST01710000")
+        
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",  # 주식
+            "FID_COND_SCR_DIV_CODE": "20171",
+            "FID_INPUT_ISCD": "0000",       # 전체
+            "FID_TRGT_CLS_CODE": "0",       # 전체
+            "FID_TRGT_EXLS_CLS_CODE": "0",  # 제외없음
+            "FID_INPUT_PRICE_1": "",        # 가격대 상관없음
+            "FID_INPUT_PRICE_2": "",
+            "FID_VOL_CNT": "",              # 거래량 상관없음
+            "FID_INPUT_DATE_1": ""          # 오늘
+        }
+        
+        res = self._request("GET", path, headers=headers, params=params)
+        if res and res['rt_cd'] == '0':
+            return res['output']
+        return []
+
+    def get_fluctuation_rank(self):
+        """등락률 순위 (상승률 상위) - FHPST01700000"""
+        path = "/uapi/domestic-stock/v1/ranking/fluctuation"
+        headers = self._get_headers("FHPST01700000")
+        
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_COND_SCR_DIV_CODE": "20170",
+            "FID_INPUT_ISCD": "0000",
+            "FID_RANK_SORT_CLS_CODE": "0",  # 상승률순
+            "FID_INPUT_CNT_1": "0",         # 순위 시작
+            "FID_PBLC_YN": "Y",             # 상장여부
+            "FID_INPUT_PRICE_1": "",
+            "FID_INPUT_PRICE_2": "",
+            "FID_VOL_CNT": "",
+            "FID_TRGT_EXLS_CLS_CODE": "0",
+            "FID_TRGT_CLS_CODE": "0",
+            "FID_JAE_GUBUN": "0",           # 제외옵션 없음
+            "FID_COND_VOL_CX_CD": "0"
+        }
+        
+        res = self._request("GET", path, headers=headers, params=params)
+        if res and res['rt_cd'] == '0':
+            return res['output']
+        return []
+

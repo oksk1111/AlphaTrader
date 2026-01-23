@@ -14,12 +14,14 @@ from modules.telegram_notifier import TelegramNotifier
 from strategies.technical import calculate_ma, check_trend, check_volume_spike
 from strategies.volatility_breakout import calculate_target_price
 from modules.account_manager import update_all_accounts
+from modules.market_scanner import scanner  # New scanner module
 
 # Configuration
 CONFIG_FILE = "user_config.json"
 MAX_RETRIES_PER_TICKER = 3  # Maximum buy retries per ticker per session
 FAILED_TICKERS = set()  # Track permanently failed tickers (account restrictions)
 LEVERAGE_THRESHOLD_KRW = 10_000_000  # 1000만원 기준
+DYNAMIC_TARGETS = [] # Found by scanner
 
 # Telegram Notifier for alerts
 telegram = TelegramNotifier()
@@ -291,10 +293,17 @@ def job():
         kis = KisOverseas()
         tickers = TARGET_TICKERS_US
     else:
-        logger.info(f"🇰🇷 Starting KR Trading Session ({STRATEGY_MODE.upper()}) for {TARGET_TICKERS_KR}")
         kis = KisDomestic()
-        tickers = TARGET_TICKERS_KR
-    
+        # Merge Static and Dynamic Targets for KR
+        # DYNAMIC_TARGETS are found by the scanner
+        current_dynamic_targets = [t for t in DYNAMIC_TARGETS if t.get('exchange') == 'KR']
+        tickers = TARGET_TICKERS_KR + current_dynamic_targets
+        
+        logger.info(f"🇰🇷 Starting KR Trading Session ({STRATEGY_MODE.upper()})")
+        logger.info(f"   - Static Targets: {[t['symbol'] for t in TARGET_TICKERS_KR]}")
+        if current_dynamic_targets:
+            logger.info(f"   - Dynamic Targets (Scanner): {[t['symbol'] for t in current_dynamic_targets]}")
+            
     ai = GeminiAnalyst()
     
     # Dictionary to store monitoring targets
@@ -697,8 +706,42 @@ if __name__ == "__main__":
             update_all_accounts()
         except Exception as e:
             logger.error(f"Background account update failed: {e}")
+            
+    def run_scanner():
+        """Run Market Scanner for KR Stocks"""
+        status = get_market_status()
+        if status == 'KR': # Only scan during KR market hours
+            try:
+                global DYNAMIC_TARGETS
+                logger.info("📡 Scanning for KR opportunities...")
+                
+                # Scan for volume spikes (300%+) and top gainers (10%+)
+                spikes = scanner.scan_volume_spikes(min_volume_increase_rate=300)
+                # gainers = scanner.scan_top_gainers(min_gain=15)
+                
+                # found_tickers = spikes + gainers
+                found_tickers = spikes # Focus on volume for now
+                
+                current_dynamic_codes = [t['symbol'] for t in DYNAMIC_TARGETS]
+                
+                new_discoveries = []
+                for item in found_tickers:
+                    code = item['code']
+                    if code not in current_dynamic_codes and code not in TARGET_TICKERS_KR:
+                        # Add to dynamic targets
+                        DYNAMIC_TARGETS.append({'symbol': code, 'exchange': 'KR', 'reason': item['reason']})
+                        new_discoveries.append(f"{item['name']}({item['reason']})")
+                
+                if new_discoveries:
+                    msg = f"🚀 [Scanner] Found {len(new_discoveries)} new opportunities:\n" + "\n".join(new_discoveries)
+                    send_alert(msg)
+                    logger.info(f"Updated Dynamic Targets: {[t['symbol'] for t in DYNAMIC_TARGETS]}")
+                    
+            except Exception as e:
+                logger.error(f"Scanner failed: {e}")
         
     schedule.every(1).minutes.do(heartbeat)
+    schedule.every(5).minutes.do(run_scanner) # Scan every 5 minutes
     
     # Startup Check
     ctx = get_market_status()
