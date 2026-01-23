@@ -22,6 +22,8 @@ from fastapi.templating import Jinja2Templates
 BASE_DIR = Path(__file__).resolve().parent.parent
 os.chdir(BASE_DIR)
 
+print(f"[Dashboard] Starting... BASE_DIR={BASE_DIR}")
+
 # FastAPI 앱 초기화
 app = FastAPI(title="US-ETF-Sniper Dashboard")
 
@@ -46,9 +48,15 @@ def load_cache():
     if CACHE_FILE.exists():
         try:
             with open(CACHE_FILE, "r") as f:
-                return json.load(f)
-        except:
+                data = json.load(f)
+                # Debug: Log cache load status
+                print(f"[Dashboard] Cache loaded from {CACHE_FILE}, US keys: {list(data.get('us', {}).get('data', {}).keys())}")
+                return data
+        except Exception as e:
+            print(f"[Dashboard] Cache load error: {e}")
             return {}
+    else:
+        print(f"[Dashboard] Cache file not found: {CACHE_FILE}")
     return {}
 
 # --- 유틸리티 함수 ---
@@ -141,7 +149,10 @@ def get_account_data(force_update=False):
     cache = load_cache()
     us_data = cache.get("us", {}).get("data")
     if us_data:
+        # Debug output
+        print(f"[Dashboard] US Account: deposit_usd={us_data.get('deposit_usd')}, total_asset_usd={us_data.get('total_asset_usd')}")
         return us_data
+    print("[Dashboard] US Account data not found in cache")
     return {
         "deposit_usd": 0.0, "deposit_krw": 0, "total_asset_usd": 0.0, "total_asset_krw": 0,
         "profit_usd": 0.0, "profit_krw": 0, "exchange_rate": USD_KRW_RATE, "holdings": [],
@@ -153,7 +164,9 @@ def get_kr_account_data(force_update=False):
     cache = load_cache()
     kr_data = cache.get("kr", {}).get("data")
     if kr_data:
+        print(f"[Dashboard] KR Account: deposit_krw={kr_data.get('deposit_krw')}, total_asset_krw={kr_data.get('total_asset_krw')}")
         return kr_data
+    print("[Dashboard] KR Account data not found in cache")
     return {
         "deposit_krw": "0", "total_asset_krw": "0", "profit_krw": "0", "holdings": [],
         "msg": "Waiting for Bot..."
@@ -234,7 +247,15 @@ async def api_status():
 
 @app.get("/api/account")
 async def api_account(force: bool = False):
-    return JSONResponse(get_account_data(force))
+    data = get_account_data(force)
+    # Add debug info
+    data["_debug"] = {
+        "cache_file": str(CACHE_FILE),
+        "cache_exists": CACHE_FILE.exists(),
+        "base_dir": str(BASE_DIR),
+        "cwd": os.getcwd()
+    }
+    return JSONResponse(data)
 
 @app.get("/api/account/kr")
 async def api_account_kr(force: bool = False):

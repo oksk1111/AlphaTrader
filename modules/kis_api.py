@@ -354,71 +354,45 @@ class KisOverseas:
         return {"output1": all_holdings} if all_holdings else None
 
     def get_foreign_balance(self):
-        """외화예수금 조회 (USD) - CTRP6504R (실전) / VTTS3012R (모의)"""
-        is_mock = "openapivts" in self.url
+        """외화예수금 조회 (USD) - CTRP6504R"""
+        # 실전: CTRP6504R / 모의: VTTC8434R
+        tr_id = "VTTC8434R" if "openapivts" in self.url else "CTRP6504R"
+        path = "/uapi/domestic-stock/v1/trading/inquire-balance"
         
-        if is_mock:
-            # Mock: Use Overseas Stock Balance to estimate cash
-            tr_id = "VTTS3012R"
-            path = "/uapi/overseas-stock/v1/trading/inquire-balance"
-            
-            headers = self._get_headers(tr_id)
-            params = {
-                "CANO": self.acc_no_prefix,
-                "ACNT_PRDT_CD": self.acc_no_suffix,
-                "OVRS_EXCG_CD": "NAS",
-                "TR_CRCY_CD": "USD",
-                "CTX_AREA_FK100": "",
-                "CTX_AREA_NK100": ""
-            }
-        else:
-            # Real: Foreign Currency Balance
-            tr_id = "CTRP6504R"
-            path = "/uapi/overseas-stock/v1/trading/inquire-present-balance"
-            
-            headers = self._get_headers(tr_id)
-            params = {
-                "CANO": self.acc_no_prefix,
-                "ACNT_PRDT_CD": self.acc_no_suffix,
-                "WCRC_FRCR_DVSN_CD": "02",
-                "CTX_AREA_FK100": "",
-                "CTX_AREA_NK100": "",
-                "INQR_DVSN": "02",
-                "TR_MKET_CD": "00",
-                "NATN_CD": "840",
-                "INQR_DVSN_CD": "00"
-            }
+        headers = self._get_headers(tr_id)
+        
+        params = {
+            "CANO": self.acc_no_prefix,
+            "ACNT_PRDT_CD": self.acc_no_suffix,
+            "WCRC_FRCR_DVSN_CD": "02", # 외화
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+            "INQR_DVSN": "02", # 계좌별
+            "fund_sttl_icld_yn": "N",
+            "fncg_amt_auto_rdpt_yn": "N",
+            "prcs_dvsn": "00",
+            "TR_MKET_CD": "00",
+            "NATN_CD": "840", # USA
+            "INQR_DVSN_CD": "00"
+        }
         
         try:
             res = requests.get(self.url + path, headers=headers, params=params)
             res.raise_for_status()
             data = res.json()
-            
-            if data['rt_cd'] != '0':
-                print(f"[KIS] Foreign Balance Error: {data.get('msg1')}")
-                return None
-
-            if is_mock:
-                # Mock Response Parsing (VTTS3012R)
-                if 'output2' in data:
-                    return {
-                        'deposit': float(data['output2'].get('ovrs_ord_psbl_amt', 0)), # 주문가능금액
-                        'withdraw_possible': float(data['output2'].get('ovrs_ord_psbl_amt', 0))
-                    }
+            # print(f"[DEBUG] Foreign Balance Response: {data}")  # Uncomment for deep debug
+            if data['rt_cd'] == '0' and 'output2' in data:
+                # Find USD item
+                for item in data['output2']:
+                    if item['crcy_cd'].strip() == 'USD':
+                        return {
+                            'deposit': float(item['frcr_dncl_amt_2']), # 예수금
+                            'withdraw_possible': float(item['frcr_drwg_psbl_amt_1']) # 출금가능
+                        }
+                # If USD not found, return raw for debugging
+                return {'debug_raw': data['output2'], 'deposit': 0}
             else:
-                 # Real Response Parsing (CTRP6504R)
-                if 'output2' in data:
-                    for item in data['output2']:
-                        if item.get('crcy_cd', '').strip() == 'USD':
-                             return {
-                                'deposit': float(item.get('frcr_dncl_amt_2', 0)),
-                                'withdraw_possible': float(item.get('frcr_drwg_psbl_amt_1', 0))
-                            }
-            return {'deposit': 0.0}
-
-        except Exception as e:
-            print(f"[KIS] Exception getting foreign balance: {e}")
-            return None
+                print(f"[KIS] Foreign Balance Error: {data.get('msg1')} (Code: {data.get('msg_cd')})")
             return None
         except Exception as e:
             print(f"[KIS] Foreign Balance check failed: {e}")

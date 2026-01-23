@@ -34,14 +34,11 @@ if [ ! -f ".env" ]; then
     cat <<EOT >> .env
 KIS_APP_KEY=your_app_key_here
 KIS_APP_SECRET=your_app_secret_here
-KIS_CANO=your_account_no_here
-KIS_ACNT_PRDT_CD=01
-KIS_MOCK=True
+KIS_ACCOUNT_NO=your_account_no_here
 GEMINI_API_KEY=your_gemini_key_here
 DISCORD_WEBHOOK_URL=optional_webhook_url
 EOT
     echo "Please edit .env file with your actual keys."
-    echo "❗ IMPORTANT: Set KIS_MOCK=False if using Real Account Keys."
 fi
 
 # 6. Setup Systemd Services
