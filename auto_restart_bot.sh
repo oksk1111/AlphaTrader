@@ -208,15 +208,15 @@ check_and_restart_bot() {
 }
 
 check_and_restart_dashboard() {
-    if ! pgrep -f "streamlit.*dashboard.py" > /dev/null; then
-        log_message "⚠️ Dashboard process not found. Restarting..."
+    if ! pgrep -f "uvicorn.*web.app:app" > /dev/null; then
+        log_message "⚠️ Dashboard (uvicorn) process not found. Restarting..."
         cd "$SCRIPT_DIR"
-        nohup venv/bin/streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0 >> "$LOG_DIR/dashboard_stdout.log" 2>&1 &
+        nohup venv/bin/python -m uvicorn web.app:app --host 0.0.0.0 --port 8501 >> "$LOG_DIR/dashboard_stdout.log" 2>&1 &
         sleep 3
-        if pgrep -f "streamlit.*dashboard.py" > /dev/null; then
-            log_message "✅ Dashboard restarted successfully"
+        if pgrep -f "uvicorn.*web.app:app" > /dev/null; then
+            log_message "✅ Dashboard (uvicorn) restarted successfully"
         else
-            log_message "❌ Failed to restart dashboard!"
+            log_message "❌ Failed to restart dashboard (uvicorn)!"
         fi
     fi
 }

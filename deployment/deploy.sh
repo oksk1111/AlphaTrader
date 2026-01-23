@@ -36,7 +36,8 @@ log "🔄 Stopping existing processes..."
 
 # Kill all matching processes to avoid duplicate PIDs
 pkill -f "python.*run_bot.py" 2>/dev/null && log "  - Bot processes stopped" || log "  - No bot processes found"
-pkill -f "streamlit.*dashboard.py" 2>/dev/null && log "  - Dashboard processes stopped" || log "  - No dashboard processes found"
+pkill -f "uvicorn.*web.app:app" 2>/dev/null && log "  - Uvicorn dashboard stopped" || log "  - No uvicorn dashboard found"
+pkill -f "streamlit.*dashboard.py" 2>/dev/null && log "  - Streamlit dashboard stopped (legacy)" || log "  - No streamlit dashboard found"
 
 sleep 3
 
@@ -48,8 +49,8 @@ source venv/bin/activate
 nohup python run_bot.py >> database/bot_stdout.log 2>&1 &
 sleep 2
 
-# Start dashboard
-nohup streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0 >> database/dashboard_stdout.log 2>&1 &
+# Start dashboard (FastAPI via uvicorn)
+nohup venv/bin/python -m uvicorn web.app:app --host 0.0.0.0 --port 8501 >> database/dashboard_stdout.log 2>&1 &
 sleep 3
 
 # Verify
@@ -62,10 +63,10 @@ else
     ERRORS=$((ERRORS + 1))
 fi
 
-if pgrep -f "streamlit.*dashboard.py" > /dev/null; then
-    log "✅ Dashboard started"
+if pgrep -f "uvicorn.*web.app:app" > /dev/null; then
+    log "✅ Dashboard (uvicorn) started"
 else
-    log "❌ Dashboard failed to start"
+    log "❌ Dashboard (uvicorn) failed to start"
     ERRORS=$((ERRORS + 1))
 fi
 
