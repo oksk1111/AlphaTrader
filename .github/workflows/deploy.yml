@@ -2,92 +2,49 @@ name: Deploy to Oracle Cloud
 
 on:
   push:
-    branches:
-      - main
-  workflow_dispatch:  # 수동 실행 가능
+    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Checkout code
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup SSH Key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.ORACLE_SSH_KEY }}" > ~/.ssh/oracle_key
-          chmod 600 ~/.ssh/oracle_key
-          ssh-keyscan -H 158.180.81.25 >> ~/.ssh/known_hosts
-
-      - name: Deploy to Oracle Cloud
+      - name: Deploy to Server
+        uses: appleboy/ssh-action@v1.0.3
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          # Pass Telegram credentials to server
-          ssh -i ~/.ssh/oracle_key -o StrictHostKeyChecking=no ubuntu@158.180.81.25 << ENDSSH
-            set -e
-            
-            echo "🚀 Starting deployment..."
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USERNAME }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          port: 22
+          envs: TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          script: |
+            echo "🚀 Starting deployment via GitHub Actions..."
             cd ~/US-ETF-Sniper
             
-            # Update Telegram credentials in .env
-            echo "📱 Updating Telegram credentials..."
-            grep -v "TELEGRAM_" .env > .env.tmp || true
-            echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}" >> .env.tmp
-            echo "TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}" >> .env.tmp
-            mv .env.tmp .env
-            
-            # Git pull
-            echo "📥 Pulling latest changes..."
+            # 1. Update Code
+            echo "📥 (Step 1/3) Pulling latest changes..."
             git fetch origin main
             git reset --hard origin/main
             
-            # Clean up pycache to prevent stale code
-            echo "🧹 Cleaning up pycache..."
-            find . -name "*.pyc" -delete
-            find . -name "__pycache__" -type d -exec rm -rf {} +
-
-            # Update Telegram credentials in .env
-            
-            # Install dependencies if requirements changed
-            if git diff HEAD~1 --name-only | grep -q "requirements.txt"; then
-              echo "📦 Installing new dependencies..."
-              source venv/bin/activate
-              pip install -r requirements.txt
+            # 2. Update Environment Variables (Telegram)
+            echo "🔧 (Step 2/3) Updating configuration..."
+            if [ -f .env ]; then
+              grep -v "TELEGRAM_" .env > .env.tmp || true
+              mv .env.tmp .env
             fi
+            echo "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN" >> .env
+            echo "TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID" >> .env
             
-            # Restart services
-            echo "🔄 Restarting services..."
-            
-            # Use systemctl to restart services correctly
-            sudo systemctl daemon-reload
-            sudo systemctl restart etf-bot
-            sudo systemctl restart etf-dashboard
-            
-            sleep 5
-            
-            # Verify services are active
-            if systemctl is-active --quiet etf-bot; then
-              echo "✅ Bot service started successfully"
-            else
-              echo "❌ Bot service failed to start"
-              sudo systemctl status etf-bot --no-pager
-              exit 1
-            fi
-            
-            if systemctl is-active --quiet etf-dashboard; then
-              echo "✅ Dashboard service started successfully (FastAPI)"
-            else
-              echo "❌ Dashboard service failed to start"
-              sudo systemctl status etf-dashboard --no-pager
-              exit 1
-            fi
-            
-            echo "🎉 Deployment completed successfully!"
-          ENDSSH
+            # 3. Execute Deployment Script
+            echo "🔄 (Step 3/3) Running local deploy script..."
+            chmod +x deployment/deploy.sh
+            ./deployment/deploy.sh
 
       - name: Send Telegram Notification
         if: always()
@@ -96,20 +53,19 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
-            echo "Telegram not configured, skipping notification"
+            echo "Telegram skipped"
             exit 0
           fi
           
           TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
           COMMIT="${{ github.sha }}"
+          STATUS="${{ job.status }}"
           ACTOR="${{ github.actor }}"
           
-          if [ "${{ job.status }}" == "success" ]; then
-            MESSAGE="✅ US-ETF-Sniper 배포 완료\n\n📅 ${TIMESTAMP}\n🔗 Commit: ${COMMIT:0:7}\n👤 By: ${ACTOR}\n\n🔗 Dashboard: http://158.180.81.25:8501"
+          if [ "$STATUS" == "success" ]; then
+            MSG="✅ *US-ETF-Sniper 배포 성공*%0A📅 $TIMESTAMP%0A👤 $ACTOR%0A🔗 Commit: ${COMMIT:0:7}"
           else
-            MESSAGE="❌ US-ETF-Sniper 배포 실패\n\n📅 ${TIMESTAMP}\n🔗 Commit: ${COMMIT:0:7}\n👤 By: ${ACTOR}\n\n확인이 필요합니다!"
+            MSG="❌ *US-ETF-Sniper 배포 실패*%0A📅 $TIMESTAMP%0A👤 $ACTOR%0A🔗 Commit: ${COMMIT:0:7}%0A⚠️ 확인 요망"
           fi
           
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -H "Content-Type: application/json" \
-            -d "{\"chat_id\": \"${TELEGRAM_CHAT_ID}\", \"text\": \"${MESSAGE}\"}" || echo "Failed to send telegram"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"             -d chat_id="${TELEGRAM_CHAT_ID}"             -d text="${MSG}"             -d parse_mode="Markdown" || true
