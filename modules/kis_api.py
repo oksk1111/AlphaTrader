@@ -131,13 +131,11 @@ class KisOverseas:
             elif method == "POST":
                 res = requests.post(self.url + path, headers=headers, data=data, timeout=10)
             
-            # Simple error logging
+            # Detailed error logging
             if res.status_code != 200:
-                # 404/500 etc
-                pass 
+                print(f"[KIS_API] Error {res.status_code} for {path}")
+                print(f"[KIS_API] Response: {res.text[:500]}") # Log first 500 chars
             
-            # Note: We rely on caller to check res['rt_cd'] usually, 
-            # but raise_for_status handles HTTP errors.
             return res.json()
         except Exception as e:
             print(f"[KIS_API] Request Exception ({path}): {e}")
@@ -341,6 +339,10 @@ class KisOverseas:
             
             try:
                 res = requests.get(self.url + path, headers=headers, params=params)
+                if res.status_code != 200:
+                    print(f"[KIS] Balance check failed Status: {res.status_code}")
+                    print(f"[KIS] Balance check Response: {res.text}")
+
                 res.raise_for_status()
                 data = res.json()
                 
@@ -349,9 +351,20 @@ class KisOverseas:
                         item['_exchange'] = exch  # 거래소 정보 추가
                     all_holdings.extend(data['output1'])
             except Exception as e:
+                # If one exchange fails (e.g. AMEX 500 error), log it but continue to others if possible?
+                # Currently we print and loop continues.
                 print(f"[KIS] Balance check failed for {exch}: {e}")
         
-        return {"output1": all_holdings} if all_holdings else None
+        # Deduplicate holdings by pdno (ticker)
+        unique_holdings = {}
+        if all_holdings:
+            for h in all_holdings:
+                ticker = h.get('ovrs_pdno', h.get('pdno'))
+                if ticker and ticker not in unique_holdings:
+                    unique_holdings[ticker] = h
+            return {"output1": list(unique_holdings.values())}
+        
+        return None
 
     def get_foreign_balance(self):
         """외화예수금 조회 (USD) - CTRP6504R"""
@@ -368,9 +381,9 @@ class KisOverseas:
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": "",
             "INQR_DVSN": "02", # 계좌별
-            "fund_sttl_icld_yn": "N",
-            "fncg_amt_auto_rdpt_yn": "N",
-            "prcs_dvsn": "00",
+            "FUND_STTL_ICLD_YN": "N",
+            "FNCG_AMT_AUTO_RDPT_YN": "N",
+            "PRCS_DVSN": "00",
             "TR_MKET_CD": "00",
             "NATN_CD": "840", # USA
             "INQR_DVSN_CD": "00"
@@ -378,6 +391,11 @@ class KisOverseas:
         
         try:
             res = requests.get(self.url + path, headers=headers, params=params)
+            
+            if res.status_code != 200:
+                print(f"[KIS] Foreign Balance Error Status: {res.status_code}")
+                print(f"[KIS] Foreign Balance Response: {res.text}")
+            
             res.raise_for_status()
             data = res.json()
             # print(f"[DEBUG] Foreign Balance Response: {data}")  # Uncomment for deep debug
