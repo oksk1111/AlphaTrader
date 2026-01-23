@@ -92,7 +92,6 @@ TARGET_TICKERS_KR_2X = [
     "122630", # KODEX Leverage (KOSPI 200 2x)
     "233740", # KODEX KOSDAQ150 Leverage
     "449200", # KODEX US Tech Top10
-    "060250", # NHN KCP (User Request)
 ]
 
 # 2. Non-Leveraged (1x) Targets (No Restrictions)
@@ -111,7 +110,6 @@ TARGET_TICKERS_KR_1X = [
     "069500", # KODEX 200 (KOSPI 200 1x)
     "229200", # KODEX KOSDAQ150
     "449200", # KODEX US Tech Top10
-    "060250", # NHN KCP (User Request)
 ]
 
 # Select Tickers based on Mode
