@@ -43,6 +43,11 @@ def update_us_account():
         foreign_bal = kis.get_foreign_balance()
         balance = kis.get_balance()
         
+        # Check if we got valid data - don't overwrite cache with zeros
+        if not foreign_bal and not balance:
+            logger.warning("[US Account] API returned no data, keeping existing cache")
+            return None
+        
         result = {
             "deposit_usd": 0.0, "deposit_krw": 0,
             "profit_usd": 0.0, "profit_krw": 0,
@@ -101,8 +106,13 @@ def update_us_account():
         result["total_asset_usd"] = round(result["deposit_usd"] + total_eval_usd, 2)
         result["total_asset_krw"] = int(result["total_asset_usd"] * USD_KRW_RATE)
         
-        save_cache({"us": {"data": result, "timestamp": datetime.now().timestamp()}})
-        # print("✅ US Account Cache Updated")
+        # Only save if we have meaningful data (deposit or holdings)
+        if result["deposit_usd"] > 0 or len(result["holdings"]) > 0:
+            save_cache({"us": {"data": result, "timestamp": datetime.now().timestamp()}})
+            logger.info(f"✅ US Account Cache Updated: deposit=${result['deposit_usd']}, holdings={len(result['holdings'])}")
+        else:
+            logger.warning("[US Account] No valid data to cache (deposit=0, no holdings)")
+        
         return result
     except Exception as e:
         logger.error(f"❌ US Account Update Failed: {e}")
@@ -114,11 +124,16 @@ def update_kr_account():
         kis = KisDomestic()
         balance = kis.get_balance()
         
+        # Check if we got valid data
+        if not balance:
+            logger.warning("[KR Account] API returned no data, keeping existing cache")
+            return None
+        
         result = {
             "deposit_krw": "0", "profit_krw": "0", "total_asset_krw": "0", "holdings": []
         }
         
-        if balance and 'output2' in balance:
+        if balance and 'output2' in balance and len(balance['output2']) > 0:
             summary = balance['output2'][0]
             result["deposit_krw"] = summary.get('dnca_tot_amt', '0')
             result["profit_krw"] = summary.get('evlu_pfls_smtl_amt', '0')
@@ -137,8 +152,16 @@ def update_kr_account():
                         "profit_pct": h.get('evlu_pfls_rt', '0')
                     })
         
-        save_cache({"kr": {"data": result, "timestamp": datetime.now().timestamp()}})
-        # print("✅ KR Account Cache Updated")
+        # Only save if we have meaningful data
+        deposit_val = int(result["deposit_krw"]) if result["deposit_krw"] else 0
+        total_val = int(result["total_asset_krw"]) if result["total_asset_krw"] else 0
+        
+        if deposit_val > 0 or total_val > 0 or len(result["holdings"]) > 0:
+            save_cache({"kr": {"data": result, "timestamp": datetime.now().timestamp()}})
+            logger.info(f"✅ KR Account Cache Updated: deposit={result['deposit_krw']}, holdings={len(result['holdings'])}")
+        else:
+            logger.warning("[KR Account] No valid data to cache")
+        
         return result
     except Exception as e:
         logger.error(f"❌ KR Account Update Failed: {e}")
