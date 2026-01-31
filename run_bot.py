@@ -99,6 +99,11 @@ TARGET_TICKERS_KR_2X = [
 # 2. Non-Leveraged (1x) Targets (No Restrictions)
 TARGET_TICKERS_US_1X = [
     {'symbol': "NVDA", 'exchange': "NAS"},  # NVIDIA (Stock)
+    {'symbol': "MSFT", 'exchange': "NAS"},  # Microsoft
+    {'symbol': "AAPL", 'exchange': "NAS"},  # Apple
+    {'symbol': "AMZN", 'exchange': "NAS"},  # Amazon
+    {'symbol': "GOOGL", 'exchange': "NAS"}, # Google
+    {'symbol': "META", 'exchange': "NAS"},  # Meta
     {'symbol': "SOXX", 'exchange': "NAS"},  # iShares Semiconductor ETF
     {'symbol': "QQQ",  'exchange': "NAS"},  # Invesco QQQ Trust
     {'symbol': "XLK",  'exchange': "AMS"},  # Technology Select Sector SPDR
@@ -504,6 +509,8 @@ def job():
     logger.info(f"[{market}] Watch List: {list(monitoring_targets.keys())} ({num_active_targets} active)")
     
     # 2. Watch Loop
+    last_scan_time = datetime.datetime.now()
+
     while True:
         # Check if market closed
         current_market = get_market_status()
@@ -511,6 +518,63 @@ def job():
             logger.info(f"[{market}] Market Closed. Ending Session.")
             break
             
+        # --- [New] Dynamic Scanning during session (KR Only) ---
+        # Run every 5 minutes (300 seconds)
+        if market == 'KR' and (datetime.datetime.now() - last_scan_time).total_seconds() > 300:
+            logger.info("🔄 Running Mid-Session Scanner...")
+            last_scan_time = datetime.datetime.now()
+            try:
+                # Scan for opportunities
+                # Lower threshold to capture more movement as per user request
+                spikes = scanner.scan_volume_spikes(min_volume_increase_rate=200) 
+                blue_chips = scanner.scan_blue_chip_surge(min_gain=2.0)
+                found = spikes + blue_chips
+                
+                for item in found:
+                    ticker = item['code']
+                    # Skip if already monitoring or failed/sold or known bad
+                    if ticker in monitoring_targets or ticker in FAILED_TICKERS: continue
+                    
+                    logger.info(f"✨ New Candidate Found: {ticker} ({item['name']}) - {item['reason']}")
+                    
+                    # Initialize Analysis for New Ticker
+                    ohlc = kis.get_daily_ohlc(ticker)
+                    if not ohlc: continue
+                    
+                    closes = [float(x['clos']) for x in ohlc]
+                    closes.reverse()
+                    ma20 = calculate_ma(closes, 20)
+                    
+                    # Get fresh current price
+                    curr_p = kis.get_current_price(ticker)
+                    if not curr_p: curr_p = item['price']
+                    
+                    is_uptrend = check_trend(curr_p, ma20)
+                    
+                    # Apply Trend Filter (unless DCA mode which might be more lenient, but sticking to safe defaults)
+                    if not is_uptrend:
+                        logger.info(f"   -> [Skipped] Downtrend (Price {curr_p} < MA20 {ma20})")
+                        continue
+                        
+                    today_open = float(ohlc[0]['open'])
+                    target_price = calculate_target_price(today_open, ohlc, K_VALUE)
+                    
+                    monitoring_targets[ticker] = {
+                        'target': target_price,
+                        'status': 'monitoring',
+                        'buys': 0,
+                        'exchange': None,
+                        'ma20': ma20,
+                        'ohlc': ohlc,
+                        'source': 'scanner' 
+                    }
+                    # Update active count
+                    num_active_targets = len([t for t in monitoring_targets.values() if t['status'] == 'monitoring'])
+                    logger.info(f"   -> Added to Watch List. Target: {target_price}")
+                    
+            except Exception as e:
+                logger.error(f"Mid-session scan failed: {e}")
+
         for ticker, data in monitoring_targets.items():
             # --- [Rule No.1] Risk Management for Bought Positions ---
             if data['status'] == 'bought':

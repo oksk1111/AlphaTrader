@@ -6,7 +6,7 @@ class MarketScanner:
         self.kis = KisDomestic()
         self.discovered_tickers = []  # List of discovered tickers: [{'code': '005930', 'reason': 'Volume Spike'}]
 
-    def scan_volume_spikes(self, min_volume_increase_rate=300, min_price=1000):
+    def scan_volume_spikes(self, min_volume_increase_rate=200, min_price=1000):
         """
         Scan for tickers with sudden volume increase.
         - min_volume_increase_rate: Minimum volume increase rate (%) compared to previous day.
@@ -30,8 +30,14 @@ class MarketScanner:
             if price < min_price:
                 continue
             
-            # Additional check: Skip if ETN or SPAC (Improve filter later based on name)
-            if "ETN" in name or "스팩" in name or "우B" in name:
+            # Additional check: Skip if ETN or SPAC or Preferred Stock (우B)
+            # User requested general stocks, so we keep filtering noise but allow normal stocks
+            if any(x in name for x in ["ETN", "스팩", "우B", "ET", "인버스", "레버리지"]):
+                 # If user wanted ONLY individual stocks, we might filter ET/Leverage too
+                 # But sticking to "noise" cleaning for now.
+                 pass
+
+            if "스팩" in name or "ETN" in name: 
                 continue
 
             if vol_rate >= min_volume_increase_rate:
@@ -45,7 +51,7 @@ class MarketScanner:
         
         # Sort by rate desc
         candidates.sort(key=lambda x: x['rate'], reverse=True)
-        top_candidates = candidates[:5] # Take top 5
+        top_candidates = candidates[:10] # Increased to top 10
         
         if top_candidates:
              logger.info(f"🔎 Discovered {len(top_candidates)} Volume Spike Tickers: {[c['name'] for c in top_candidates]}")
