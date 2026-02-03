@@ -201,7 +201,7 @@ def calculate_order_quantity(available_cash, current_price, signal_strength=0.5,
     
     return max(qty, 1)  # 최소 1주
 
-def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_settings=None):
+def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_settings=None, market='US'):
     """
     DCA 전략용 매수 수량 계산
     - 매일 일정 비율/금액을 분할 매수
@@ -215,6 +215,14 @@ def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_set
     daily_pct = dca_settings.get("daily_investment_pct", 5) / 100
     min_investment = dca_settings.get("min_investment_usd", 10)
     max_investment = dca_settings.get("max_investment_usd", 100)
+
+    # KR Market Conversion
+    currency_symbol = "$"
+    if market != 'US':
+        exchange_rate = 1450 # Conservative Exchange Rate
+        min_investment *= exchange_rate
+        max_investment *= exchange_rate
+        currency_symbol = "₩"
     
     # 종목별 투자 금액 계산
     per_ticker_cash = available_cash / max(num_targets, 1)
@@ -225,7 +233,7 @@ def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_set
     
     qty = int(investment_amount / current_price)
     
-    logger.info(f"📈 DCA 매수: ${investment_amount:.2f} → {qty}주 (가격: ${current_price:.2f})")
+    logger.info(f"📈 DCA 매수: {currency_symbol}{investment_amount:,.0f} → {qty}주 (가격: {currency_symbol}{current_price:,.0f})")
     
     return max(qty, 1)
 
@@ -423,10 +431,14 @@ def job():
                 continue
             
             # DCA 수량 계산
-            qty = calculate_dca_quantity(available_cash, current_price, num_active_targets, DCA_SETTINGS)
+            qty = calculate_dca_quantity(available_cash, current_price, num_active_targets, DCA_SETTINGS, market)
             
             if qty > 0:
-                logger.info(f"[{ticker}] DCA Buy: {qty} shares at ${current_price:.2f}")
+                currency = "$" if market == 'US' else "₩"
+                if market == 'US':
+                     logger.info(f"[{ticker}] DCA Buy: {qty} shares at ${current_price:.2f}")
+                else:
+                     logger.info(f"[{ticker}] DCA Buy: {qty} shares at {currency}{current_price:,.0f}")
                 
                 if market == 'US':
                     res = kis.buy_market_order(ticker, qty, exchange)
