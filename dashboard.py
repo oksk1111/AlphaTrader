@@ -122,12 +122,12 @@ def restart_bot_process():
         st.error(f"Failed to start bot: {e}")
         return False
 
-def get_latest_log_file():
+def get_recent_log_files(limit=3):
     log_files = glob.glob("database/trading_*.log")
     if not log_files:
-        return None
-    # Sort by filename (date) descending
-    return sorted(log_files)[-1]
+        return []
+    # Sort by filename (date) ascending, take last N
+    return sorted(log_files)[-limit:]
 
 def parse_log_line(line):
     # Simple parser to extract timestamp and message
@@ -160,20 +160,23 @@ def get_bot_status(last_log_time_str):
 # --- Main Content ---
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "💰 Account & Portfolio", "📜 Logs & History", "📈 Analytics"])
 
-log_file = get_latest_log_file()
+recent_files = get_recent_log_files(3)
 parsed_lines = []
 
-if log_file:
+for log_file in recent_files:
     try:
         with open(log_file, "r", encoding="utf-8") as f:
             lines = f.readlines()
     except UnicodeDecodeError:
-        # Fallback to system encoding (cp949/euc-kr)
-        with open(log_file, "r", encoding="cp949") as f:
-            lines = f.readlines()
-        
-    parsed_lines = [parse_log_line(line) for line in lines]
-    parsed_lines = [x for x in parsed_lines if x is not None]
+        try:
+            with open(log_file, "r", encoding="cp949") as f:
+                lines = f.readlines()
+        except:
+            continue
+            
+    # Parse and append
+    file_parsed = [parse_log_line(line) for line in lines]
+    parsed_lines.extend([x for x in file_parsed if x is not None])
 
 # --- Tab 1: Overview ---
 with tab1:
