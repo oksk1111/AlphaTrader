@@ -34,20 +34,31 @@ class GeminiAnalyst:
             print(f"[Gemini] Failed to fetch news: {e}")
             return ""
 
-    def check_market_sentiment(self, news_text):
+    def check_market_sentiment(self, news_text, persona="aggressive"):
         if not self.model:
             return {"risk_level": "LOW", "can_buy": True, "reason": "API Key missing, skipping AI check."}
         
         if not news_text:
             return {"risk_level": "LOW", "can_buy": True, "reason": "No news found, skipping AI check."}
 
+        # Define Persona Prompts
+        persona_instructions = {
+            "aggressive": "You are an AGGRESSIVE trader. You ignore minor fears and focus on momentum. Only stop buying if there is a CONFIRMED GLOBAL CATASTROPHE (Nuclear War, Great Depression). Volatility is opportunity.",
+            "neutral": "You are a BALANCED trader. Weigh risks and rewards equally. Avoid buying during clear downtrends or major bad news, but don't panic over small corrections.",
+            "conservative": "You are a CONSERVATIVE trader. Preservation of capital is priority #1. If there is ANY hint of instability, rate hikes, or uncertainty, recommend HOLD or SELL. Do not buy unless the market is perfectly calm."
+        }
+        
+        selected_instruction = persona_instructions.get(persona, persona_instructions["aggressive"])
+
         prompt = f"""
-        Act as a aggressive stock trader.
+        Act as a stock trading AI assistant.
+        Persona: {selected_instruction}
+
         Here are the latest news headlines regarding US Tech Market & Fed:
         {news_text}
 
         Critical Check:
-        1. Is there any MAJOR crash signal (e.g. War, Unexpected Rate Hike)?
+        1. Is there any MAJOR crash signal matching your persona's risk tolerance?
         2. Is the sentiment predominantly Fear?
 
         Reply with JSON ONLY:

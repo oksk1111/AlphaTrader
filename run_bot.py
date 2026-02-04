@@ -43,7 +43,7 @@ def load_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r") as f:
             return json.load(f)
-    return {"trading_mode": "safe", "strategy": "day"}
+    return {"trading_mode": "safe", "strategy": "day", "persona": "aggressive"}
 
 def save_config(config):
     with open(CONFIG_FILE, "w") as f:
@@ -68,6 +68,8 @@ def check_and_upgrade_mode(total_asset_krw):
 user_config = load_config()
 IS_SAFE_MODE = True if user_config.get("trading_mode") == "safe" else False
 STRATEGY_MODE = user_config.get("strategy", "day")  # 'day', 'swing', or 'dca'
+PERSONA = user_config.get("persona", "aggressive") # 'aggressive', 'neutral', 'conservative'
+
 DCA_SETTINGS = user_config.get("dca_settings", {
     "enabled": True,
     "daily_investment_pct": 5,
@@ -76,7 +78,7 @@ DCA_SETTINGS = user_config.get("dca_settings", {
     "max_investment_usd": 100
 })
 
-logger.info(f"Loaded Config: Mode={user_config.get('trading_mode')}, Strategy={STRATEGY_MODE}")
+logger.info(f"Loaded Config: Mode={user_config.get('trading_mode')}, Strategy={STRATEGY_MODE}, Persona={PERSONA}")
 
 # 1. Leveraged Targets (Requires >10M KRW Deposit & Education)
 TARGET_TICKERS_US_3X = [
@@ -96,27 +98,24 @@ TARGET_TICKERS_KR_2X = [
     "449200", # KODEX US Tech Top10
 ]
 
-# 2. Non-Leveraged (1x) Targets (No Restrictions)
+# 2. Non-Leveraged (1x) Targets (Stock Centric for < 10M KRW restrictions)
 TARGET_TICKERS_US_1X = [
-    {'symbol': "NVDA", 'exchange': "NAS"},  # NVIDIA (Stock)
+    {'symbol': "NVDA", 'exchange': "NAS"},  # NVIDIA
     {'symbol': "MSFT", 'exchange': "NAS"},  # Microsoft
     {'symbol': "AAPL", 'exchange': "NAS"},  # Apple
-    {'symbol': "AMZN", 'exchange': "NAS"},  # Amazon
     {'symbol': "GOOGL", 'exchange': "NAS"}, # Google
-    {'symbol': "META", 'exchange': "NAS"},  # Meta
-    {'symbol': "SOXX", 'exchange': "NAS"},  # iShares Semiconductor ETF
-    {'symbol': "QQQ",  'exchange': "NAS"},  # Invesco QQQ Trust
-    {'symbol': "XLK",  'exchange': "AMS"},  # Technology Select Sector SPDR
-    {'symbol': "MAGS", 'exchange': "AMS"},  # Roundhill Magnificent Seven ETF (Big Tech)
-    {'symbol': "IBIT", 'exchange': "NAS"},  # iShares Bitcoin Trust (Spot Bitcoin ETF)
-    {'symbol': "COIN", 'exchange': "NAS"},  # Coinbase (Stock)
-    {'symbol': "TSLA", 'exchange': "NAS"},  # Tesla (Stock)
+    {'symbol': "TSLA", 'exchange': "NAS"},  # Tesla
+    {'symbol': "PLTR", 'exchange': "NAS"},  # Palantir
+    {'symbol': "TSM",  'exchange': "NAS"},  # TSMC
 ]
 
+# Changed from ETF to Blue Chip Logic for users with deposit restrictions
 TARGET_TICKERS_KR_1X = [
-    "069500", # KODEX 200 (KOSPI 200 1x)
-    "229200", # KODEX KOSDAQ150
-    "449200", # KODEX US Tech Top10
+    "000660", # SK Hynix (SK하이닉스)
+    "005930", # Samsung Electronics (삼성전자)
+    "012450", # Hanwha Aerospace (한화에어로스페이스)
+    "005380", # Hyundai Motor (현대차)
+    "035420", # Naver (네이버)
 ]
 
 # Select Tickers based on Mode
@@ -424,7 +423,7 @@ def job():
 
             # AI 체크 (DCA도 극단적 하락장은 피함)
             news = ai.fetch_news()
-            sentiment = ai.check_market_sentiment(news)
+            sentiment = ai.check_market_sentiment(news, persona=PERSONA)
             
             if sentiment.get('market_condition') == 'CRASH':
                 logger.warning(f"[{ticker}] DCA Paused - Market Crash Detected")
@@ -680,7 +679,7 @@ def job():
 
                 logger.info("Checking AI Sentiment...")
                 news = ai.fetch_news() # TODO: Improve AI news source for KR stocks later
-                sentiment = ai.check_market_sentiment(news)
+                sentiment = ai.check_market_sentiment(news, persona=PERSONA)
                 
                 logger.info(f"AI Result: {sentiment}")
                 
