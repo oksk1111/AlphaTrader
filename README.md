@@ -1,55 +1,49 @@
 # US-ETF-Sniper 🎯
 
-미국 주식 레버리지 ETF 자동매매 봇 (AI + 변동성 돌파 전략)
+미국/한국 주식 자동매매 봇 (AI + Hybrid 기술적 분석)
 
 ## 📊 프로젝트 개요
 
-나스닥/반도체 상승장에서 **3배 레버리지(3x)**로 수익을 극대화하되, AI로 하락장을 감지하여 **MDD(최대 낙폭)를 방어**하는 자동매매 시스템입니다.
-
-### 핵심 대상 종목
-- **TQQQ** (ProShares UltraPro QQQ) - 나스닥 100 지수 3배 추종
-- **SOXL** (Direxion Daily Semiconductor Bull 3X) - 반도체 지수 3배 추종
+변동성 돌파 전략과 AI(Gemini 1.5)를 결합하여 안정적인 수익을 추구하는 자동매매 시스템입니다.
+ETF 거래가 힘든 소액 자산가(<1000만원)를 위한 **우량주(Blue Chip) 모드**를 지원하며, 투자 성향(Persona)에 따라 AI의 판단 기준을 조절할 수 있습니다.
 
 ## 🎯 투자 전략
 
-1. **Trend Filter**: 20일 이동평균선 기반 추세 판단
-2. **Entry Trigger**: 변동성 돌파(VBO) 전략으로 진입 타점 포착
-3. **AI Macro Filter**: Google Gemini로 거시경제 뉴스 분석 및 리스크 필터링
-4. **Exit Rule**: 3% 손절 / 트레일링 스탑 / 장 마감 전 전량 청산
+1. **Hybrid Strategy**: 
+    - **Trader (Rule-based)**: 변동성 돌파(VBO) + 20일 이동평균선(MA20)으로 타점 포착
+    - **Analyst (AI-based)**: Gemini 1.5가 거시경제 뉴스를 분석하여 "잠재적 폭락" 위험 필터링
+2. **Dynamic Persona**: 사용자의 성향에 따라 AI의 거부권(Veto) 권한을 조정
+    - **Aggressive**: 사소한 악재 무시, 모멘텀 중시
+    - **Neutral**: 균형 잡힌 리스크 관리
+    - **Conservative**: 아주 작은 위험 신호에도 매수 중단
+3. **Adaptive Targets**:
+    - **Safe Mode (<1000만원)**: 우량주 중심 (NVDA, AAPL, 삼성전자, SK하이닉스 등)
+    - **Risky Mode (>=1000만원)**: 2x/3x 레버리지 ETF (TQQQ, SOXL, KODEX 레버리지)
 
 ## 🛠️ 기술 스택
 
-- **Broker**: 한국투자증권 해외주식 API
-- **AI Engine**: Google Gemini 1.5 Flash
+- **Broker**: 한국투자증권 (KIS) Open API
+- **AI Engine**: Google Gemini 1.5 Flash (비용 효율성 최적화)
 - **Language**: Python 3.10+
-- **Libraries**: pandas, requests, google-generativeai, schedule
+- **Database**: JSON File System (Local Cache)
 
-## 📋 사전 준비
+## 📋 환경 설정 (`config.py` 또는 `user_config.json`)
 
-### 1. 한국투자증권 API Key 발급
-1. [한국투자증권](https://www.koreainvestment.com/) 계좌 개설
-2. 해외주식 거래 신청
-3. Open API 신청 (모의투자 체크)
-4. APP Key와 APP Secret 발급
-
-### 2. Google Gemini API Key 발급
-1. [Google AI Studio](https://aistudio.google.com/) 접속
-2. API Key 발급 (무료 티어 사용 가능)
-
-### 3. 환경 설정
-`.env` 파일을 열어 다음 정보를 입력하세요:
-
-```env
-# 한국투자증권 API
-KIS_APP_KEY=YOUR_APP_KEY
-KIS_APP_SECRET=YOUR_APP_SECRET
-KIS_CANO=YOUR_ACCOUNT_NO_PREFIX  # 계좌번호 앞 8자리
-KIS_ACNT_PRDT_CD=YOUR_ACCOUNT_NO_SUFFIX  # 계좌번호 뒤 2자리
-KIS_MOCK=True  # 실전투자 시 False로 변경
-
-# Google Gemini API
-GEMINI_API_KEY=YOUR_GEMINI_API_KEY
+`user_config.json` 예시:
+```json
+{
+    "trading_mode": "safe", 
+    "strategy": "day",
+    "persona": "aggressive",
+    "dca_settings": {
+        "enabled": true,
+        "daily_investment_pct": 5
+    }
+}
 ```
+
+- **trading_mode**: `safe` (우량주), `risky` (레버리지)
+- **persona**: `aggressive`, `neutral`, `conservative`
 
 ## 🚀 실행 방법
 
@@ -58,47 +52,27 @@ GEMINI_API_KEY=YOUR_GEMINI_API_KEY
 pip install -r requirements.txt
 ```
 
+### 환경변수 (.env)
+```env
+KIS_APP_KEY=...
+KIS_APP_SECRET=...
+GEMINI_API_KEY=...
+```
+
 ### 실행
 ```bash
-# 스케줄러 모드 (매일 23:30 KST 자동 실행)
+# 메인 봇 실행
 python run_bot.py
-
-# 테스트 모드 (즉시 실행)
-python run_bot.py --test
 ```
 
-### 📊 대시보드 (Web UI)
-봇의 상태와 로그를 웹 브라우저에서 실시간으로 확인할 수 있습니다.
-
+### 📊 대시보드
 ```bash
+python web/app.py 
+# 또는
 streamlit run dashboard.py
-```
-
-## 📁 프로젝트 구조
-
-```
-US-ETF-Sniper/
-├── run_bot.py              # 메인 실행 파일
-├── config.py               # 환경변수 설정
-├── requirements.txt        # 필요 라이브러리
-├── .env                    # API Key 관리 (보안 주의)
-├── strategies/
-│   ├── volatility_breakout.py  # 변동성 돌파 전략
-│   └── technical.py        # 기술적 지표 계산
-├── modules/
-│   ├── kis_api.py          # 한국투자증권 API 래퍼
-│   ├── gemini_analyst.py   # AI 뉴스 분석기
-│   └── logger.py           # 로깅 시스템
-└── database/               # 거래 로그 저장
 ```
 
 ## ⚠️ 주의사항
 
-1. **리스크 관리**: 레버리지 ETF는 변동성이 크므로 소액으로 시작하세요.
-2. **모의투자 필수**: 실전 투자 전 충분한 모의투자로 검증하세요.
-3. **API 제한**: KIS API는 일일 호출 제한이 있으니 주의하세요.
-4. **시세 신청**: 해외주식 실시간 시세를 미리 신청해야 합니다.
-
-## 📝 라이센스
-
-이 프로젝트는 교육 목적으로 제작되었습니다. 투자 손실에 대한 책임은 사용자에게 있습니다.
+1. **투자 책임**: 모든 투자의 책임은 사용자에게 있습니다.
+2. **모의투자 권장**: 코드를 수정하거나 전략을 바꿀 때는 반드시 모의투자 계좌(`VTTC...`)로 테스트하세요.
