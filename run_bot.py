@@ -241,17 +241,23 @@ K_VALUE = 0.5
 def get_market_status():
     """
     Returns 'US', 'KR', or 'CLOSED' based on current KST time.
+    Includes weekday check (markets closed on weekends).
     """
     kst = pytz.timezone('Asia/Seoul')
     now = datetime.datetime.now(kst)
     t = int(now.strftime("%H%M"))
+    weekday = now.weekday()  # 0=Monday, 6=Sunday
     
-    # US Market: 23:30 ~ 06:00
-    if 2330 <= t <= 2400 or 0 <= t < 600:
+    # US Market: 23:30 ~ 06:00 KST
+    # Evening (23:30~23:59): Mon-Fri KST = US Mon-Fri sessions
+    # Morning (00:00~06:00): Tue-Sat KST = US Mon-Fri sessions (continued from prev night)
+    if 2330 <= t <= 2359 and weekday <= 4:  # Mon-Fri evening
+        return 'US'
+    if 0 <= t < 600 and 1 <= weekday <= 5:  # Tue-Sat morning
         return 'US'
     
-    # KR Market: 09:00 ~ 15:20 (Leave 10 mins for closing auction safely)
-    if 900 <= t <= 1520:
+    # KR Market: 09:00 ~ 15:20, Mon-Fri only
+    if 900 <= t <= 1520 and weekday <= 4:
         return 'KR'
         
     return 'CLOSED'
@@ -770,43 +776,87 @@ def job():
                     kis.sell_market_order(ticker, qty)
 
 def run_with_recovery():
-    """Wrapper function to run job with automatic recovery"""
+    """Wrapper function to run job with automatic recovery.
+    Uses KST timezone for all time comparisons.
+    Uses range-based triggers with daily flags to prevent duplicate execution.
+    """
     max_consecutive_errors = 5
     error_count = 0
+    kr_triggered_today = False
+    us_triggered_today = False
+    last_date = None
     
+    # --- Startup Check (runs once at boot) ---
+    kst = pytz.timezone('Asia/Seoul')
+    now_kst = datetime.datetime.now(kst)
+    ctx = get_market_status()
+    last_date = now_kst.strftime("%Y%m%d")
+    
+    if ctx != 'CLOSED':
+        logger.info(f"⚡ Bot started during {ctx} Trading Hours (KST: {now_kst.strftime('%H:%M:%S')}). Launching job immediately.")
+        try:
+            job()
+            error_count = 0
+            # Mark as triggered to prevent duplicate execution
+            if ctx == 'KR':
+                kr_triggered_today = True
+            elif ctx == 'US':
+                us_triggered_today = True
+        except Exception as e:
+            logger.critical(f"Startup Job Crashed: {e}", exc_info=True)
+            send_alert(f"Startup Job Crashed: {e}", is_error=True)
+    else:
+        logger.info(f"😴 Bot started during CLOSED hours (KST: {now_kst.strftime('%H:%M:%S')}). Waiting for market open...")
+    
+    # --- Main Loop ---
     while True:
         try:
             schedule.run_pending()
             
-            now = datetime.datetime.now()
+            kst = pytz.timezone('Asia/Seoul')
+            now = datetime.datetime.now(kst)
             t = int(now.strftime("%H%M"))
+            today_str = now.strftime("%Y%m%d")
             
-            # Trigger at 09:00 for KR
-            if t == 900:
+            # Reset daily triggers at date change
+            if last_date != today_str:
+                kr_triggered_today = False
+                us_triggered_today = False
+                last_date = today_str
+                logger.info(f"📅 New day: {today_str} (KST). Daily triggers reset.")
+            
+            # KR Market: Trigger between 09:00~09:05 KST (5-minute window)
+            if 900 <= t <= 905 and not kr_triggered_today:
+                kr_triggered_today = True
+                logger.info(f"⏰ KR Market trigger at KST {now.strftime('%Y-%m-%d %H:%M:%S')}")
                 try:
                     job()
-                    error_count = 0  # Reset on success
+                    error_count = 0
                 except Exception as e:
                     error_count += 1
                     logger.critical(f"KR Job Crashed (Attempt {error_count}/{max_consecutive_errors}): {e}", exc_info=True)
+                    send_alert(f"KR Job Crashed: {e}", is_error=True)
                     if error_count >= max_consecutive_errors:
                         logger.critical("Too many consecutive errors. Waiting 5 minutes before retry...")
+                        send_alert("Too many consecutive KR errors! Waiting 5 minutes...", is_error=True)
                         time.sleep(300)
                         error_count = 0
                 time.sleep(60)
                 
-            # Trigger at 23:30 for US
-            if t == 2330:
+            # US Market: Trigger between 23:30~23:35 KST (5-minute window)
+            if 2330 <= t <= 2335 and not us_triggered_today:
+                us_triggered_today = True
+                logger.info(f"⏰ US Market trigger at KST {now.strftime('%Y-%m-%d %H:%M:%S')}")
                 try:
                     job()
                     error_count = 0
                 except Exception as e:
                     error_count += 1
                     logger.critical(f"US Job Crashed (Attempt {error_count}/{max_consecutive_errors}): {e}", exc_info=True)
-                    send_alert(f"US Job Crashed (Attempt {error_count}/{max_consecutive_errors}): {e}", is_error=True)
+                    send_alert(f"US Job Crashed: {e}", is_error=True)
                     if error_count >= max_consecutive_errors:
                         logger.critical("Too many consecutive errors. Waiting 5 minutes before retry...")
-                        send_alert("Too many consecutive errors! Waiting 5 minutes...", is_error=True)
+                        send_alert("Too many consecutive US errors! Waiting 5 minutes...", is_error=True)
                         time.sleep(300)
                         error_count = 0
                 time.sleep(60)
@@ -880,15 +930,5 @@ if __name__ == "__main__":
     schedule.every(1).minutes.do(heartbeat)
     schedule.every(5).minutes.do(run_scanner) # Scan every 5 minutes
     
-    # Startup Check
-    ctx = get_market_status()
-    if ctx != 'CLOSED':
-        logger.info(f"Bot started during {ctx} Trading Hours. Launching job immediately.")
-        try:
-            job()
-        except Exception as e:
-            logger.critical(f"Startup Job Crashed: {e}", exc_info=True)
-            send_alert(f"Startup Job Crashed: {e}", is_error=True)
-
-    # Run main loop with automatic recovery
+    # Run main loop with automatic recovery (includes startup check)
     run_with_recovery()

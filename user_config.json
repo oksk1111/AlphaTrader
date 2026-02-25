@@ -1,6 +1,7 @@
 {
     "trading_mode": "safe",
     "strategy": "dca",
+    "persona": "aggressive",
     "leverage_threshold_krw": 10000000,
     "max_retries_per_ticker": 3,
     "signal_thresholds": {

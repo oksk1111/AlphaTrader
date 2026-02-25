@@ -145,7 +145,8 @@ class KisDomestic:
                     'clos': item['stck_clpr'],
                     'open': item['stck_oprc'],
                     'high': item['stck_hgpr'],
-                    'low': item['stck_lwpr']
+                    'low': item['stck_lwpr'],
+                    'tvol': item.get('acml_vol', '0')
                 })
             return output_list
         return None

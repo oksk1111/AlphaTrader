@@ -10,6 +10,9 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Force KST timezone for all date operations (Oracle Cloud default is UTC)
+export TZ='Asia/Seoul'
+
 LOG_DIR="$SCRIPT_DIR/database"
 RESTART_LOG="$LOG_DIR/restart.log"
 DAILY_REPORT_FLAG="$LOG_DIR/.daily_report_sent"
