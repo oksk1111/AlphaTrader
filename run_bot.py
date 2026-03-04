@@ -11,7 +11,10 @@ from modules.kis_domestic import KisDomestic
 from modules.gemini_analyst import GeminiAnalyst
 from modules.logger import logger
 from modules.telegram_notifier import TelegramNotifier
-from strategies.technical import calculate_ma, check_trend, check_volume_spike
+from strategies.technical import (
+    calculate_ma, calculate_short_ma, check_trend, check_volume_spike,
+    check_gap_down, check_consecutive_decline, check_portfolio_drawdown
+)
 from strategies.volatility_breakout import calculate_target_price
 from modules.account_manager import update_all_accounts
 from modules.market_scanner import scanner  # New scanner module
@@ -22,6 +25,16 @@ MAX_RETRIES_PER_TICKER = 3  # Maximum buy retries per ticker per session
 FAILED_TICKERS = set()  # Track permanently failed tickers (account restrictions)
 LEVERAGE_THRESHOLD_KRW = 10_000_000  # 1000만원 기준
 DYNAMIC_TARGETS = [] # Found by scanner
+
+# === Risk Management Constants ===
+STOP_LOSS_PCT = -3.0          # 손절매 기준 (%)
+TRAILING_STOP_ACTIVATION = 3.0 # 트레일링 스탑 활성화 기준 (%)
+TRAILING_STOP_DROP = 1.5       # 고점 대비 하락 기준 (%)
+GAP_DOWN_THRESHOLD = 3.0       # 갭다운 매수 차단 기준 (%)
+CONSECUTIVE_DECLINE_DAYS = 2   # 연속 하락 확인 일수
+CONSECUTIVE_DECLINE_PCT = 3.0  # 연속 하락 누적 기준 (%)
+PORTFOLIO_DRAWDOWN_PCT = 5.0   # 포트폴리오 전체 드로다운 차단 기준 (%)
+DCA_MONITOR_INTERVAL = 60      # DCA 감시 루프 주기 (초)
 
 # Telegram Notifier for alerts
 telegram = TelegramNotifier()
@@ -77,6 +90,18 @@ DCA_SETTINGS = user_config.get("dca_settings", {
     "min_investment_usd": 10,
     "max_investment_usd": 100
 })
+
+# Load Risk Management Settings from config (overrides defaults)
+risk_config = user_config.get("risk_management", {})
+if risk_config:
+    STOP_LOSS_PCT = risk_config.get("stop_loss_pct", STOP_LOSS_PCT)
+    TRAILING_STOP_ACTIVATION = risk_config.get("trailing_stop_activation_pct", TRAILING_STOP_ACTIVATION)
+    TRAILING_STOP_DROP = risk_config.get("trailing_stop_drop_pct", TRAILING_STOP_DROP)
+    GAP_DOWN_THRESHOLD = risk_config.get("gap_down_threshold_pct", GAP_DOWN_THRESHOLD)
+    CONSECUTIVE_DECLINE_DAYS = risk_config.get("consecutive_decline_days", CONSECUTIVE_DECLINE_DAYS)
+    CONSECUTIVE_DECLINE_PCT = risk_config.get("consecutive_decline_pct", CONSECUTIVE_DECLINE_PCT)
+    PORTFOLIO_DRAWDOWN_PCT = risk_config.get("portfolio_drawdown_pct", PORTFOLIO_DRAWDOWN_PCT)
+    DCA_MONITOR_INTERVAL = risk_config.get("dca_monitor_interval_sec", DCA_MONITOR_INTERVAL)
 
 logger.info(f"Loaded Config: Mode={user_config.get('trading_mode')}, Strategy={STRATEGY_MODE}, Persona={PERSONA}")
 
@@ -419,24 +444,114 @@ def job():
         # --- STRATEGY BRANCHING ---
         is_uptrend = check_trend(current_price, ma20)
         
-        # DCA 전략: 추세와 관계없이 매일 일정 금액 매수
+        # === [NEW] 단기 이동평균 (5MA) - 급락 조기 감지 ===
+        ma5 = calculate_short_ma(closes, 5)
+        is_short_uptrend = check_trend(current_price, ma5) if ma5 else True
+        
+        # === [NEW] 갭다운 감지 - 전일 종가 대비 급락 체크 ===
+        is_gap_down, gap_drop_pct = check_gap_down(current_price, ohlc, GAP_DOWN_THRESHOLD)
+        if is_gap_down:
+            logger.warning(f"[{ticker}] ⚠️ GAP DOWN detected! ({gap_drop_pct:.1f}% drop from prev close)")
+            send_alert(f"⚠️ [{ticker}] 갭다운 감지! 전일 대비 {gap_drop_pct:.1f}% 급락")
+        
+        # === [NEW] 연속 하락 감지 ===
+        is_consecutive_decline, cum_drop_pct = check_consecutive_decline(
+            ohlc, CONSECUTIVE_DECLINE_DAYS, CONSECUTIVE_DECLINE_PCT
+        )
+        if is_consecutive_decline:
+            logger.warning(f"[{ticker}] ⚠️ CONSECUTIVE DECLINE! ({cum_drop_pct:.1f}% over {CONSECUTIVE_DECLINE_DAYS} days)")
+            send_alert(f"⚠️ [{ticker}] {CONSECUTIVE_DECLINE_DAYS}일 연속 하락! 누적 {cum_drop_pct:.1f}%")
+
+        # DCA 전략
         if STRATEGY_MODE == 'dca':
-            # --- [New] Trend Filter for DCA ---
-            # 사용자 요청: 비율과 추세에 따른 거래 (하락장 매수 방지)
+            # === [NEW] Step 0: 기존 보유분 리스크 체크 (DCA도 반드시 실행) ===
+            if ticker in current_holdings:
+                holding_qty = 1
+                holding_avg_price = 0
+                try:
+                    for h in balance.get('output1', []):
+                        if h['pdno'] == ticker or h.get('ovrs_pdno') == ticker:
+                            holding_qty = int(float(h.get('hldg_qty', h.get('ovrs_cblc_qty', h.get('ord_psbl_qty', 1)))))
+                            holding_avg_price = float(h.get('pchs_avg_pric', h.get('avg_unpr3', 0)))
+                            break
+                except:
+                    pass
+                
+                if holding_avg_price > 0 and current_price > 0:
+                    pnl_pct = ((current_price - holding_avg_price) / holding_avg_price) * 100
+                    logger.info(f"[{ticker}] 📊 보유현황: {holding_qty}주, 평단가: {holding_avg_price:.2f}, 현재가: {current_price:.2f}, 손익: {pnl_pct:.2f}%")
+                    
+                    # Stop Loss (-3%) - 절대 원칙 (DCA도 예외 없음)
+                    if pnl_pct <= STOP_LOSS_PCT:
+                        logger.warning(f"[{ticker}] 🛑 DCA STOP LOSS! ({pnl_pct:.2f}% <= {STOP_LOSS_PCT}%). 즉시 매도 {holding_qty}주.")
+                        send_alert(f"🛑 [{ticker}] DCA 손절매 발동! {pnl_pct:.2f}%. {holding_qty}주 매도.")
+                        if market == 'US':
+                            kis.sell_market_order(ticker, holding_qty, exchange)
+                        else:
+                            kis.sell_market_order(ticker, holding_qty)
+                        monitoring_targets[ticker] = {
+                            'target': current_price, 'status': 'sold_sl',
+                            'buys': 0, 'exchange': exchange
+                        }
+                        continue  # 손절 후 추가 매수 안 함
+                else:
+                    # 평단가 정보 없으면 감시 대상에 추가 (감시 루프에서 처리)
+                    monitoring_targets[ticker] = {
+                        'target': current_price, 'status': 'bought',
+                        'buys': holding_qty, 'exchange': exchange,
+                        'buy_price': holding_avg_price if holding_avg_price > 0 else current_price,
+                        'highest_price': current_price
+                    }
+            
+            # === [NEW] Step 1: 매수 차단 조건 (Circuit Breaker) ===
+            buy_blocked = False
+            block_reasons = []
+            
+            # 1-a. 갭다운 시 매수 차단
+            if is_gap_down:
+                buy_blocked = True
+                block_reasons.append(f"갭다운 {gap_drop_pct:.1f}%")
+            
+            # 1-b. 연속 하락 시 매수 차단
+            if is_consecutive_decline:
+                buy_blocked = True
+                block_reasons.append(f"연속 {CONSECUTIVE_DECLINE_DAYS}일 하락 {cum_drop_pct:.1f}%")
+            
+            # 1-c. 20MA 하회 시 매수 차단 (기존 로직)
             if not is_uptrend:
-                logger.info(f"[{ticker}] DCA Skipped - Bear Market (Price < 20MA). Conserving capital.")
+                buy_blocked = True
+                block_reasons.append(f"20MA 하회")
+            
+            # 1-d. 5MA 하회 시 매수량 축소 (완전 차단은 아닌 경고)
+            dca_reduce_qty = False
+            if not is_short_uptrend and is_uptrend:
+                dca_reduce_qty = True
+                block_reasons.append(f"5MA 하회 (매수량 50% 축소)")
+            
+            if buy_blocked:
+                logger.info(f"[{ticker}] DCA 매수 차단 - {', '.join(block_reasons)}")
+                # 보유분은 감시 대상에 등록 (이미 위에서 처리)
                 continue
+            
+            if block_reasons:
+                logger.info(f"[{ticker}] DCA 경고: {', '.join(block_reasons)}")
 
             # AI 체크 (DCA도 극단적 하락장은 피함)
             news = ai.fetch_news()
             sentiment = ai.check_market_sentiment(news, persona=PERSONA)
             
-            if sentiment.get('market_condition') == 'CRASH':
-                logger.warning(f"[{ticker}] DCA Paused - Market Crash Detected")
+            if sentiment.get('market_condition') == 'CRASH' or sentiment.get('risk_level') == 'HIGH':
+                logger.warning(f"[{ticker}] DCA Paused - AI Risk HIGH: {sentiment.get('reason', 'N/A')}")
+                send_alert(f"⚠️ [{ticker}] DCA 중단 - AI 위험 감지: {sentiment.get('reason', 'N/A')}")
                 continue
             
             # DCA 수량 계산
             qty = calculate_dca_quantity(available_cash, current_price, num_active_targets, DCA_SETTINGS, market)
+            
+            # 5MA 하회 시 매수량 50% 축소
+            if dca_reduce_qty:
+                qty = max(1, qty // 2)
+                logger.info(f"[{ticker}] 📉 5MA 하회로 매수량 축소: {qty}주")
             
             if qty > 0:
                 currency = "$" if market == 'US' else "₩"
@@ -452,11 +567,25 @@ def job():
                 
                 if res and res.get('rt_cd') == '0':
                     logger.info(f"[{ticker}] ✅ DCA Buy Success! {qty} shares")
+                    
+                    # === [NEW] 감시 대상에 등록 (buy_price, highest_price 포함) ===
+                    existing = monitoring_targets.get(ticker, {})
+                    total_qty = existing.get('buys', 0) + qty
+                    # 기존 매수가와 블렌딩
+                    old_buy_price = existing.get('buy_price', 0)
+                    old_buys = existing.get('buys', 0)
+                    if old_buy_price > 0 and old_buys > 0:
+                        blended_price = ((old_buy_price * old_buys) + (current_price * qty)) / total_qty
+                    else:
+                        blended_price = current_price
+                    
                     monitoring_targets[ticker] = {
                         'target': current_price,
                         'status': 'bought',
-                        'buys': qty,
-                        'exchange': exchange
+                        'buys': total_qty,
+                        'exchange': exchange,
+                        'buy_price': blended_price,
+                        'highest_price': max(current_price, existing.get('highest_price', current_price))
                     }
                 else:
                     logger.error(f"[{ticker}] DCA Buy Failed: {res}")
@@ -516,10 +645,26 @@ def job():
         logger.info(f"[{market}] No targets found for today. Sleeping.")
         return
 
-    # DCA 모드는 Watch Loop 없이 바로 종료 (이미 매수 완료)
+    # === [NEW] 포트폴리오 드로다운 체크 ===
+    try:
+        holdings_for_check = []
+        if balance and 'output1' in balance:
+            holdings_for_check = balance['output1']
+        is_drawdown, total_loss_pct = check_portfolio_drawdown(holdings_for_check, PORTFOLIO_DRAWDOWN_PCT)
+        if is_drawdown:
+            logger.critical(f"🚨 PORTFOLIO DRAWDOWN ALERT! 전체 포트폴리오 손실 {total_loss_pct:.1f}% (기준: {PORTFOLIO_DRAWDOWN_PCT}%)")
+            send_alert(f"🚨 포트폴리오 드로다운 경고! 전체 손실 {total_loss_pct:.1f}%. 신규 매수 중단.")
+    except Exception as e:
+        logger.error(f"Portfolio drawdown check failed: {e}")
+
+    # DCA 모드: 매수 후에도 감시 루프 진입 (보유분 StopLoss/TrailingStop 모니터링)
     if STRATEGY_MODE == 'dca':
-        logger.info(f"[{market}] DCA Mode - Daily purchases complete. Skipping watch loop.")
-        return
+        bought_positions = {k: v for k, v in monitoring_targets.items() if v['status'] == 'bought'}
+        if bought_positions:
+            logger.info(f"[{market}] DCA Mode - Entering monitoring loop for {len(bought_positions)} positions: {list(bought_positions.keys())}")
+        else:
+            logger.info(f"[{market}] DCA Mode - No positions to monitor. Session complete.")
+            return
 
     # 활성 모니터링 대상 수 업데이트
     num_active_targets = len([t for t in monitoring_targets.values() if t['status'] == 'monitoring'])
@@ -617,9 +762,10 @@ def job():
                     # Calculate PnL
                     pnl_pct = ((curr - buy_price) / buy_price) * 100
                     
-                    # 1. Stop Loss (-3%) - ABSOLUTE RULE
-                    if pnl_pct <= -3.0:
-                        logger.warning(f"[{ticker}] 🛑 Stop Loss Triggered! ({pnl_pct:.2f}%). Selling {qty} shares.")
+                    # 1. Stop Loss - ABSOLUTE RULE
+                    if pnl_pct <= STOP_LOSS_PCT:
+                        logger.warning(f"[{ticker}] 🛑 Stop Loss Triggered! ({pnl_pct:.2f}% <= {STOP_LOSS_PCT}%). Selling {qty} shares.")
+                        send_alert(f"🛑 [{ticker}] 손절매 발동! {pnl_pct:.2f}%. {qty}주 매도.")
                         if market == 'US':
                             kis.sell_market_order(ticker, qty, data.get('exchange'))
                         else:
@@ -628,13 +774,13 @@ def job():
                         continue
                         
                     # 2. Trailing Stop
-                    # Condition: If profit was ever > 3%, and falls 1.5% from peak -> Sell
                     peak_pnl_pct = ((highest_price - buy_price) / buy_price) * 100
                     
-                    if peak_pnl_pct >= 3.0:
+                    if peak_pnl_pct >= TRAILING_STOP_ACTIVATION:
                         drop_from_peak = ((highest_price - curr) / highest_price) * 100
-                        if drop_from_peak >= 1.5:
-                            logger.info(f"[{ticker}] 💰 Trailing Stop Triggered! (Peak: {peak_pnl_pct:.2f}%, Drop: {drop_from_peak:.2f}%). Selling {qty} shares.")
+                        if drop_from_peak >= TRAILING_STOP_DROP:
+                            logger.info(f"[{ticker}] 💰 Trailing Stop Triggered! (Peak: {peak_pnl_pct:.2f}%, Drop: {drop_from_peak:.2f}% >= {TRAILING_STOP_DROP}%). Selling {qty} shares.")
+                            send_alert(f"💰 [{ticker}] 트레일링 스탑! 고점 대비 {drop_from_peak:.2f}% 하락. {qty}주 매도.")
                             if market == 'US':
                                 kis.sell_market_order(ticker, qty, data.get('exchange'))
                             else:
@@ -756,14 +902,27 @@ def job():
                     # Don't retry AI rejection immediately
                     data['status'] = 'ai_rejected'
 
-        time.sleep(1)  # Reduced polling frequency to avoid API overload
+        # DCA 모드는 감시 간격을 넓힘 (API 호출 절약)
+        if STRATEGY_MODE == 'dca':
+            time.sleep(DCA_MONITOR_INTERVAL)
+        else:
+            time.sleep(1)  # VBO/Day 모드는 1초 간격
         
     # 3. Market Close Sell-off
     logger.info(f"[{market}] Session End. Checking Exit Rules...")
     
-    if STRATEGY_MODE == 'swing':
-        logger.info(f"[{market}] Strategy is SWING. Skipping daily sell-off relative to Trend 20MA Check.")
-        # Actual selling happens at the START of next session if Trend Broken.
+    if STRATEGY_MODE in ('swing', 'dca'):
+        # DCA/Swing: 종가 청산하지 않음 (장기 보유 전략)
+        # 단, 손절매가 발동된 종목은 이미 매도됨
+        sold_sl = [t for t, d in monitoring_targets.items() if d['status'] == 'sold_sl']
+        sold_tp = [t for t, d in monitoring_targets.items() if d['status'] == 'sold_tp']
+        holding = [t for t, d in monitoring_targets.items() if d['status'] == 'bought']
+        logger.info(f"[{market}] Strategy is {STRATEGY_MODE.upper()}. Session summary:")
+        logger.info(f"   - 손절매: {sold_sl}")
+        logger.info(f"   - 트레일링 스탑: {sold_tp}")
+        logger.info(f"   - 계속 보유: {holding}")
+        if sold_sl or sold_tp:
+            send_alert(f"📊 [{market}] 세션 종료\n손절: {sold_sl}\n익절: {sold_tp}\n보유: {holding}")
     else:
         logger.info(f"[{market}] Strategy is DAY. Selling All Holdings.")
         for ticker, data in monitoring_targets.items():

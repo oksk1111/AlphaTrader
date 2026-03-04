@@ -16,6 +16,16 @@
         "min_investment_usd": 10,
         "max_investment_usd": 100
     },
+    "risk_management": {
+        "stop_loss_pct": -3.0,
+        "trailing_stop_activation_pct": 3.0,
+        "trailing_stop_drop_pct": 1.5,
+        "gap_down_threshold_pct": 3.0,
+        "consecutive_decline_days": 2,
+        "consecutive_decline_pct": 3.0,
+        "portfolio_drawdown_pct": 5.0,
+        "dca_monitor_interval_sec": 60
+    },
     "telegram": {
         "enabled": true,
         "daily_report_hour": 16,
