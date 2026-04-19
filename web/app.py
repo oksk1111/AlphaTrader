@@ -33,6 +33,9 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "web" / "templates"))
 # --- Config 관리 ---
 CONFIG_FILE = BASE_DIR / "user_config.json"
 CACHE_FILE = BASE_DIR / "database/account_cache.json"
+STRATEGY_HISTORY_FILE = BASE_DIR / "database/strategy_history.json"
+PROFIT_HISTORY_FILE = BASE_DIR / "database/profit_history.json"
+ASSET_SNAPSHOTS_FILE = BASE_DIR / "database/asset_snapshots.json"
 
 def load_config():
     if CONFIG_FILE.exists():
@@ -243,6 +246,7 @@ async def api_status():
         "last_update": last_update,
         "ticker_data": ticker_data,
         "recent_logs": parsed_lines[-20:][::-1],
+        "config": load_config(),
     })
 
 @app.get("/api/account")
@@ -277,12 +281,48 @@ async def api_account_kr(force: bool = False):
 async def update_config(request: Request):
     data = await request.json()
     config = load_config()
+    if "auto_strategy" in data:
+        config["auto_strategy"] = data["auto_strategy"]
     if "trading_mode" in data:
         config["trading_mode"] = data["trading_mode"]
     if "strategy" in data:
         config["strategy"] = data["strategy"]
+    if "persona" in data:
+        config["persona"] = data["persona"]
     save_config(config)
     return JSONResponse({"success": True, "config": config})
+
+@app.get("/api/strategy-history")
+async def api_strategy_history():
+    """전략 변경 히스토리 API"""
+    try:
+        if STRATEGY_HISTORY_FILE.exists():
+            with open(STRATEGY_HISTORY_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                changes = data.get("changes", [])
+                # 최근 10개만
+                return JSONResponse({"changes": changes[-10:][::-1]})
+    except Exception as e:
+        print(f"[Dashboard] Strategy history error: {e}")
+    return JSONResponse({"changes": []})
+
+@app.get("/api/profit-summary")
+async def api_profit_summary():
+    """수익 요약 API"""
+    result = {"profit_history": {}, "asset_snapshots": {}}
+    try:
+        if PROFIT_HISTORY_FILE.exists():
+            with open(PROFIT_HISTORY_FILE, "r", encoding="utf-8") as f:
+                result["profit_history"] = json.load(f)
+    except Exception:
+        pass
+    try:
+        if ASSET_SNAPSHOTS_FILE.exists():
+            with open(ASSET_SNAPSHOTS_FILE, "r", encoding="utf-8") as f:
+                result["asset_snapshots"] = json.load(f)
+    except Exception:
+        pass
+    return JSONResponse(result)
 
 @app.post("/api/restart")
 async def restart_bot():

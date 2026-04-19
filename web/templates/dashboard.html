@@ -11,28 +11,31 @@
             --text-color: #fafafa;
             --text-secondary: #a0a0a0;
             --accent: #4CAF50;
+            --accent-hover: #45a049;
             --danger: #f44336;
             --warning: #ff9800;
+            --info: #2196F3;
             --border: #333;
+            --bg-hover: rgba(255,255,255,0.02);
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: var(--bg-color);
             color: var(--text-color);
-            padding: 20px;
+            padding: 16px;
             line-height: 1.6;
         }
         .container { max-width: 1200px; margin: 0 auto; }
-        h1 { margin-bottom: 20px; font-size: 1.8em; }
-        h2 { font-size: 1.2em; margin-bottom: 15px; color: var(--text-secondary); }
+        h1 { margin-bottom: 16px; font-size: 1.6em; }
+        h2 { font-size: 1.15em; margin-bottom: 12px; color: var(--text-secondary); }
         
         /* Cards */
         .card {
             background: var(--card-bg);
             border-radius: 10px;
             padding: 20px;
-            margin-bottom: 20px;
+            margin-bottom: 16px;
             border: 1px solid var(--border);
         }
         .card-header {
@@ -40,106 +43,124 @@
             justify-content: space-between;
             align-items: center;
             margin-bottom: 15px;
+            flex-wrap: wrap;
+            gap: 8px;
         }
         
         /* Grid */
-        .grid { display: grid; gap: 15px; }
+        .grid { display: grid; gap: 12px; }
         .grid-2 { grid-template-columns: repeat(2, 1fr); }
         .grid-3 { grid-template-columns: repeat(3, 1fr); }
-        .grid-4 { grid-template-columns: repeat(4, 1fr); }
-        @media (max-width: 768px) {
-            .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+        .grid-5 { grid-template-columns: repeat(5, 1fr); }
+        @media (max-width: 900px) {
+            .grid-5 { grid-template-columns: repeat(3, 1fr); }
+        }
+        @media (max-width: 600px) {
+            .grid-2, .grid-3, .grid-5 { grid-template-columns: 1fr 1fr; }
+            body { padding: 10px; }
+            h1 { font-size: 1.3em; }
         }
         
         /* Metrics */
         .metric {
             background: var(--card-bg);
             border-radius: 8px;
-            padding: 15px;
+            padding: 14px 10px;
             text-align: center;
             border: 1px solid var(--border);
         }
-        .metric-label { font-size: 0.85em; color: var(--text-secondary); }
-        .metric-value { font-size: 1.5em; font-weight: bold; margin-top: 5px; }
+        .metric-label { font-size: 0.8em; color: var(--text-secondary); white-space: nowrap; }
+        .metric-value { font-size: 1.3em; font-weight: bold; margin-top: 4px; }
         .metric-value.success { color: var(--accent); }
         .metric-value.danger { color: var(--danger); }
+        .metric-sub { font-size: 0.75em; color: var(--text-secondary); margin-top: 2px; }
         
         /* Table */
         table { width: 100%; border-collapse: collapse; }
         th, td { 
-            padding: 12px 15px; 
+            padding: 10px 12px; 
             text-align: left; 
             border-bottom: 1px solid var(--border);
+            font-size: 0.9em;
         }
         th { 
             background: rgba(255,255,255,0.05); 
             font-weight: 600;
             color: var(--text-secondary);
         }
-        tr:hover { background: rgba(255,255,255,0.02); }
+        tr:hover { background: var(--bg-hover); }
         
         /* Buttons */
         .btn {
-            padding: 10px 20px;
+            padding: 8px 18px;
             border: none;
             border-radius: 6px;
             cursor: pointer;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 500;
             transition: all 0.2s;
         }
         .btn-primary { background: var(--accent); color: white; }
-        .btn-primary:hover { background: #45a049; }
+        .btn-primary:hover { background: var(--accent-hover); }
         .btn-danger { background: var(--danger); color: white; }
+        .btn-danger:hover { opacity: 0.9; }
+        .btn-sm { padding: 5px 12px; font-size: 12px; }
         
         /* Status Badge */
         .badge {
             display: inline-block;
-            padding: 4px 12px;
+            padding: 3px 10px;
             border-radius: 20px;
-            font-size: 0.85em;
+            font-size: 0.8em;
             font-weight: 500;
         }
         .badge-success { background: rgba(76, 175, 80, 0.2); color: var(--accent); }
         .badge-danger { background: rgba(244, 67, 54, 0.2); color: var(--danger); }
         .badge-warning { background: rgba(255, 152, 0, 0.2); color: var(--warning); }
+        .badge-info { background: rgba(33, 150, 243, 0.2); color: var(--info); }
         
         /* Logs */
         .log-container {
             max-height: 400px;
             overflow-y: auto;
             font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 0.85em;
+            font-size: 0.82em;
             background: #0a0a0a;
             border-radius: 6px;
-            padding: 15px;
+            padding: 12px;
         }
-        .log-line { padding: 3px 0; border-bottom: 1px solid #222; }
-        .log-time { color: #666; margin-right: 10px; }
-        .log-level-INFO { color: #4CAF50; }
-        .log-level-ERROR { color: #f44336; }
-        .log-level-WARNING { color: #ff9800; }
+        .log-line { padding: 2px 0; border-bottom: 1px solid #1a1a1a; word-break: break-all; }
+        .log-time { color: #555; margin-right: 8px; }
+        .log-level-INFO { color: #4CAF50; font-weight: 600; }
+        .log-level-ERROR { color: #f44336; font-weight: 600; }
+        .log-level-WARNING { color: #ff9800; font-weight: 600; }
         
         /* Select */
-        select {
+        select, input[type="text"] {
             padding: 8px 12px;
             border-radius: 6px;
             border: 1px solid var(--border);
-            background: var(--card-bg);
+            background: var(--bg-color);
             color: var(--text-color);
-            font-size: 14px;
+            font-size: 13px;
+            width: 100%;
+        }
+        select:disabled, input:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
         
         /* Tabs */
-        .tabs { display: flex; gap: 10px; margin-bottom: 20px; }
+        .tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
         .tab {
-            padding: 10px 20px;
+            padding: 8px 16px;
             border-radius: 8px;
             cursor: pointer;
             background: var(--card-bg);
             border: 1px solid var(--border);
             color: var(--text-secondary);
             transition: all 0.2s;
+            font-size: 0.9em;
         }
         .tab.active, .tab:hover {
             background: var(--accent);
@@ -149,150 +170,286 @@
         .tab-content { display: none; }
         .tab-content.active { display: block; }
         
-        /* Auto-refresh indicator */
-        .refresh-indicator {
-            font-size: 0.8em;
-            color: var(--text-secondary);
+        /* Toggle Switch */
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 48px;
+            height: 26px;
         }
-        .refresh-indicator.active { color: var(--accent); }
+        .toggle-switch input { opacity: 0; width: 0; height: 0; }
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: #555;
+            transition: 0.3s;
+            border-radius: 26px;
+        }
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 20px;
+            width: 20px;
+            left: 3px;
+            bottom: 3px;
+            background: white;
+            transition: 0.3s;
+            border-radius: 50%;
+        }
+        .toggle-switch input:checked + .toggle-slider {
+            background: var(--accent);
+        }
+        .toggle-switch input:checked + .toggle-slider:before {
+            transform: translateX(22px);
+        }
+        
+        /* Info Box */
+        .info-box {
+            background: rgba(33, 150, 243, 0.1);
+            border: 1px solid rgba(33, 150, 243, 0.3);
+            border-radius: 8px;
+            padding: 14px;
+            margin: 12px 0;
+            font-size: 0.9em;
+        }
+        .info-box.auto-active {
+            background: rgba(76, 175, 80, 0.1);
+            border-color: rgba(76, 175, 80, 0.3);
+        }
+
+        /* Strategy History */
+        .history-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.85em;
+        }
+        .history-item:last-child { border-bottom: none; }
+        .history-time { color: var(--text-secondary); font-size: 0.85em; }
+
+        /* Section label */
+        .section-label {
+            font-size: 0.85em;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+            display: block;
+        }
+        
+        /* Divider */
+        .divider {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 16px 0;
+        }
+
+        /* Read-only display */
+        .readonly-value {
+            padding: 8px 12px;
+            background: var(--bg-color);
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            color: var(--accent);
+            font-weight: 600;
+            font-size: 13px;
+        }
+
+        /* Responsive table wrapper */
+        .table-wrap { overflow-x: auto; }
+
+        /* Refresh indicator */
+        .refresh-dot {
+            display: inline-block;
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: var(--accent);
+            margin-right: 6px;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <header style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px;">
+        <!-- Header -->
+        <header style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 8px;">
             <h1>📈 US-ETF-Sniper</h1>
-            <div>
-                <span class="refresh-indicator" id="refreshIndicator">Auto-refresh: 5s</span>
+            <div style="font-size: 0.8em; color: var(--text-secondary);">
+                <span class="refresh-dot"></span>자동 새로고침 5초
             </div>
         </header>
 
-        <!-- Status Cards -->
-        <div class="grid grid-4">
+        <!-- Status Cards (5 columns) -->
+        <div class="grid grid-5" style="margin-bottom: 20px;">
             <div class="metric">
-                <div class="metric-label">Bot Status</div>
+                <div class="metric-label">봇 상태</div>
                 <div class="metric-value" id="botStatus">{{ bot_status }}</div>
             </div>
             <div class="metric">
-                <div class="metric-label">Market</div>
-                <div class="metric-value">{{ market_status }}</div>
+                <div class="metric-label">시장</div>
+                <div class="metric-value" id="marketStatus">{{ market_status }}</div>
             </div>
             <div class="metric">
-                <div class="metric-label">Mode</div>
-                <div class="metric-value">{{ config.trading_mode|upper }}</div>
+                <div class="metric-label">모드</div>
+                <div class="metric-value" id="modeDisplay">{{ config.trading_mode|upper }}</div>
             </div>
             <div class="metric">
-                <div class="metric-label">Strategy</div>
-                <div class="metric-value">{{ config.strategy|upper }}</div>
+                <div class="metric-label">전략</div>
+                <div class="metric-value" id="strategyDisplay">{{ config.strategy|upper }}</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">페르소나</div>
+                <div class="metric-value" id="personaDisplay">{{ config.get('persona', 'neutral')|upper }}</div>
             </div>
         </div>
+
+        {% if config.get('auto_strategy', false) %}
+        <div class="info-box auto-active" style="margin-bottom: 16px; display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 1.2em;">🤖</span>
+            <div>
+                <strong>자동 전략 모드 활성화</strong>
+                <span style="color: var(--text-secondary); font-size: 0.85em;"> — 시장 상황에 따라 전략/모드/페르소나가 자동 조정됩니다</span>
+            </div>
+        </div>
+        {% endif %}
 
         <!-- Tabs -->
         <div class="tabs">
-            <div class="tab active" onclick="switchTab('overview')">📊 Overview</div>
-            <div class="tab" onclick="switchTab('account')">💰 Account</div>
-            <div class="tab" onclick="switchTab('logs')">📜 Logs</div>
-            <div class="tab" onclick="switchTab('settings')">⚙️ Settings</div>
+            <div class="tab active" onclick="switchTab('overview')">📊 모니터링</div>
+            <div class="tab" onclick="switchTab('account')">💰 계좌</div>
+            <div class="tab" onclick="switchTab('performance')">📈 수익</div>
+            <div class="tab" onclick="switchTab('logs')">📜 로그</div>
+            <div class="tab" onclick="switchTab('settings')">⚙️ 설정</div>
         </div>
 
-        <!-- Overview Tab -->
+        <!-- ========== Overview Tab ========== -->
         <div class="tab-content active" id="tab-overview">
             <div class="card">
                 <div class="card-header">
-                    <h2>📡 Market Monitor</h2>
-                    <span style="color: var(--text-secondary);">Last Update: <span id="lastUpdate">{{ last_update }}</span></span>
+                    <h2>📡 시장 모니터</h2>
+                    <span style="color: var(--text-secondary); font-size: 0.85em;">최근 업데이트: <span id="lastUpdate">{{ last_update }}</span></span>
                 </div>
-                <table id="tickerTable">
-                    <thead>
-                        <tr>
-                            <th>Ticker</th>
-                            <th>Price</th>
-                            <th>Target</th>
-                            <th>MA20</th>
-                            <th>Trend</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for ticker, data in ticker_data.items() %}
-                        <tr>
-                            <td><strong>{{ ticker }}</strong></td>
-                            <td>{{ data.current }}</td>
-                            <td>{{ data.target }}</td>
-                            <td>{{ data.ma20 }}</td>
-                            <td>
-                                {% if 'Bull' in data.trend %}
-                                <span class="badge badge-success">{{ data.trend }}</span>
-                                {% elif 'Bear' in data.trend %}
-                                <span class="badge badge-danger">{{ data.trend }}</span>
-                                {% else %}
-                                <span class="badge badge-warning">{{ data.trend }}</span>
-                                {% endif %}
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
+                <div class="table-wrap">
+                    <table id="tickerTable">
+                        <thead>
+                            <tr>
+                                <th>종목</th>
+                                <th>현재가</th>
+                                <th>목표가</th>
+                                <th>MA20</th>
+                                <th>추세</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for ticker, data in ticker_data.items() %}
+                            <tr>
+                                <td><strong>{{ ticker }}</strong></td>
+                                <td>{{ data.current }}</td>
+                                <td>{{ data.target }}</td>
+                                <td>{{ data.ma20 }}</td>
+                                <td>
+                                    {% if 'Bull' in data.trend %}
+                                    <span class="badge badge-success">{{ data.trend }}</span>
+                                    {% elif 'Bear' in data.trend %}
+                                    <span class="badge badge-danger">{{ data.trend }}</span>
+                                    {% else %}
+                                    <span class="badge badge-warning">{{ data.trend }}</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
 
-        <!-- Account Tab -->
+        <!-- ========== Account Tab ========== -->
         <div class="tab-content" id="tab-account">
             <!-- US Account -->
             <div class="card">
                 <div class="card-header">
-                    <h2>🇺🇸 US Account (해외주식)</h2>
-                    <button class="btn btn-primary" onclick="refreshAccount(true)">Force Refresh</button>
+                    <h2>🇺🇸 해외주식 계좌</h2>
+                    <button class="btn btn-primary btn-sm" onclick="refreshAccount(true)">🔄 새로고침</button>
                 </div>
                 <div class="grid grid-3" id="accountMetrics">
                     <div class="metric">
-                        <div class="metric-label">예수금 (Cash)</div>
-                        <div class="metric-value" id="depositUsd">Loading...</div>
-                        <div class="metric-sub" id="depositUsdKrw" style="font-size: 0.8em; color: var(--text-secondary);"></div>
+                        <div class="metric-label">예수금</div>
+                        <div class="metric-value" id="depositUsd">로딩 중...</div>
+                        <div class="metric-sub" id="depositUsdKrw"></div>
                     </div>
                     <div class="metric">
-                        <div class="metric-label">평가손익 (P/L)</div>
+                        <div class="metric-label">평가손익</div>
                         <div class="metric-value" id="profitUsd">-</div>
-                        <div class="metric-sub" id="profitUsdKrw" style="font-size: 0.8em; color: var(--text-secondary);"></div>
+                        <div class="metric-sub" id="profitUsdKrw"></div>
                     </div>
                     <div class="metric">
-                        <div class="metric-label">총 자산 (Total)</div>
+                        <div class="metric-label">총 자산</div>
                         <div class="metric-value" id="totalAssetUsd">-</div>
-                        <div class="metric-sub" id="totalAssetUsdKrw" style="font-size: 0.8em; color: var(--text-secondary);"></div>
+                        <div class="metric-sub" id="totalAssetUsdKrw"></div>
                     </div>
                 </div>
-                <div style="margin-top: 10px; font-size: 0.85em; color: var(--text-secondary);">
+                <div style="margin-top: 8px; font-size: 0.8em; color: var(--text-secondary);">
                     환율: <span id="exchangeRate">1,450</span> KRW/USD
                 </div>
-                <div id="holdingsTableUs" style="margin-top: 20px;"></div>
+                <div class="table-wrap" id="holdingsTableUs" style="margin-top: 16px;"></div>
             </div>
             
             <!-- KR Account -->
             <div class="card">
                 <div class="card-header">
-                    <h2>🇰🇷 KR Account (국내주식)</h2>
+                    <h2>🇰🇷 국내주식 계좌</h2>
                 </div>
                 <div class="grid grid-3" id="krAccountMetrics">
                     <div class="metric">
-                        <div class="metric-label">예수금 (KRW)</div>
-                        <div class="metric-value" id="depositKrw">Loading...</div>
+                        <div class="metric-label">예수금</div>
+                        <div class="metric-value" id="depositKrw">로딩 중...</div>
                     </div>
                     <div class="metric">
-                        <div class="metric-label">평가손익 (KRW)</div>
+                        <div class="metric-label">평가손익</div>
                         <div class="metric-value" id="profitKrw">-</div>
                     </div>
                     <div class="metric">
-                        <div class="metric-label">총 자산 (KRW)</div>
+                        <div class="metric-label">총 자산</div>
                         <div class="metric-value" id="totalAssetKrw">-</div>
                     </div>
                 </div>
-                <div id="holdingsTableKr" style="margin-top: 20px;"></div>
+                <div class="table-wrap" id="holdingsTableKr" style="margin-top: 16px;"></div>
             </div>
         </div>
 
-        <!-- Logs Tab -->
+        <!-- ========== Performance Tab ========== -->
+        <div class="tab-content" id="tab-performance">
+            <div class="card">
+                <div class="card-header">
+                    <h2>📈 수익 현황</h2>
+                    <button class="btn btn-primary btn-sm" onclick="loadProfitData()">🔄 새로고침</button>
+                </div>
+                <div id="profitContent">
+                    <p style="color: var(--text-secondary); text-align: center; padding: 30px;">탭을 선택하면 데이터를 불러옵니다.</p>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h2>🔄 전략 변경 이력</h2>
+                </div>
+                <div id="strategyHistoryContent">
+                    <p style="color: var(--text-secondary); text-align: center; padding: 20px;">탭을 선택하면 이력을 불러옵니다.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== Logs Tab ========== -->
         <div class="tab-content" id="tab-logs">
             <div class="card">
                 <div class="card-header">
-                    <h2>📜 System Logs</h2>
+                    <h2>📜 시스템 로그</h2>
                 </div>
                 <div class="log-container" id="logContainer">
                     {% for log in recent_logs %}
@@ -306,38 +463,96 @@
             </div>
         </div>
 
-        <!-- Settings Tab -->
+        <!-- ========== Settings Tab ========== -->
         <div class="tab-content" id="tab-settings">
             <div class="card">
-                <h2>⚙️ Bot Settings</h2>
-                <div class="grid grid-2" style="margin-top: 20px;">
+                <h2>⚙️ 봇 설정</h2>
+                
+                <!-- Auto Strategy Toggle -->
+                <div style="display: flex; align-items: center; gap: 12px; margin: 16px 0;">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="autoStrategyToggle" 
+                               {% if config.get('auto_strategy', false) %}checked{% endif %}
+                               onchange="toggleAutoStrategy()">
+                        <span class="toggle-slider"></span>
+                    </label>
                     <div>
-                        <label style="display: block; margin-bottom: 8px; color: var(--text-secondary);">Trading Mode</label>
-                        <select id="tradingMode" style="width: 100%;">
-                            <option value="safe" {% if config.trading_mode == 'safe' %}selected{% endif %}>Safe (1x ETF)</option>
-                            <option value="risky" {% if config.trading_mode == 'risky' %}selected{% endif %}>Risky (3x Lev ETF)</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label style="display: block; margin-bottom: 8px; color: var(--text-secondary);">Strategy</label>
-                        <select id="strategyMode" style="width: 100%;">
-                            <option value="day" {% if config.strategy == 'day' %}selected{% endif %}>Day Trading</option>
-                            <option value="swing" {% if config.strategy == 'swing' %}selected{% endif %}>Swing/Hold</option>
-                            <option value="dca" {% if config.strategy == 'dca' %}selected{% endif %}>DCA (분할매수)</option>
-                        </select>
+                        <strong>🤖 자동 전략 모드</strong>
+                        <div style="font-size: 0.8em; color: var(--text-secondary);">시장 분석 기반으로 전략/모드/페르소나를 자동 결정합니다</div>
                     </div>
                 </div>
-                <div style="margin-top: 20px; display: flex; gap: 10px;">
-                    <button class="btn btn-primary" onclick="saveConfig()">Save Settings</button>
-                    <button class="btn btn-danger" onclick="restartBot()">🔄 Restart Bot</button>
+
+                <hr class="divider">
+                
+                <!-- Auto Mode: Read-only display -->
+                <div id="autoSettingsDisplay" style="{% if not config.get('auto_strategy', false) %}display:none;{% endif %}">
+                    <div class="info-box auto-active">
+                        <div style="margin-bottom: 8px;"><strong>🤖 자동 모드 활성화 중</strong></div>
+                        <div style="font-size: 0.85em; color: var(--text-secondary);">
+                            시장 상황에 따라 자동으로 설정이 변경됩니다. 수동 변경은 자동 모드를 꺼야 가능합니다.
+                        </div>
+                    </div>
+                    <div class="grid grid-3" style="margin-top: 12px;">
+                        <div>
+                            <span class="section-label">트레이딩 모드</span>
+                            <div class="readonly-value" id="autoModeVal">{{ config.trading_mode|upper }}</div>
+                        </div>
+                        <div>
+                            <span class="section-label">전략</span>
+                            <div class="readonly-value" id="autoStrategyVal">{{ config.strategy|upper }}</div>
+                        </div>
+                        <div>
+                            <span class="section-label">페르소나</span>
+                            <div class="readonly-value" id="autoPersonaVal">{{ config.get('persona', 'neutral')|upper }}</div>
+                        </div>
+                    </div>
                 </div>
-                <div id="settingsMessage" style="margin-top: 15px;"></div>
+                
+                <!-- Manual Mode: Selectable controls -->
+                <div id="manualSettingsControls" style="{% if config.get('auto_strategy', false) %}display:none;{% endif %}">
+                    <div class="grid grid-3" style="margin-top: 12px;">
+                        <div>
+                            <label class="section-label">트레이딩 모드</label>
+                            <select id="tradingMode">
+                                <option value="safe" {% if config.trading_mode == 'safe' %}selected{% endif %}>Safe (1x ETF)</option>
+                                <option value="risky" {% if config.trading_mode == 'risky' %}selected{% endif %}>Risky (3x 레버리지)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="section-label">전략</label>
+                            <select id="strategyMode">
+                                <option value="day" {% if config.strategy == 'day' %}selected{% endif %}>Day Trading (당일매매)</option>
+                                <option value="swing" {% if config.strategy == 'swing' %}selected{% endif %}>Swing (스윙)</option>
+                                <option value="dca" {% if config.strategy == 'dca' %}selected{% endif %}>DCA (분할매수)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="section-label">페르소나</label>
+                            <select id="personaMode">
+                                <option value="aggressive" {% if config.get('persona') == 'aggressive' %}selected{% endif %}>Aggressive (공격적)</option>
+                                <option value="neutral" {% if config.get('persona', 'neutral') == 'neutral' %}selected{% endif %}>Neutral (중립)</option>
+                                <option value="conservative" {% if config.get('persona') == 'conservative' %}selected{% endif %}>Conservative (보수적)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div style="margin-top: 16px;">
+                        <button class="btn btn-primary" onclick="saveConfig()">💾 설정 저장</button>
+                    </div>
+                </div>
+
+                <hr class="divider">
+                
+                <!-- Bot Control -->
+                <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                    <button class="btn btn-danger" onclick="restartBot()">🔄 봇 재시작</button>
+                    <span id="settingsMessage" style="font-size: 0.85em;"></span>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
-        // Tab switching
+        // ===== Tab switching =====
         function switchTab(tabName) {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
@@ -345,9 +560,10 @@
             document.getElementById(`tab-${tabName}`).classList.add('active');
             
             if (tabName === 'account') refreshAccount();
+            if (tabName === 'performance') { loadProfitData(); loadStrategyHistory(); }
         }
 
-        // Auto-refresh status
+        // ===== Auto-refresh status (every 5s) =====
         async function refreshStatus() {
             try {
                 const res = await fetch('/api/status');
@@ -355,6 +571,26 @@
                 
                 document.getElementById('botStatus').textContent = data.bot_status;
                 document.getElementById('lastUpdate').textContent = data.last_update;
+                
+                // Update top status cards from live config
+                if (data.config) {
+                    document.getElementById('modeDisplay').textContent = (data.config.trading_mode || 'safe').toUpperCase();
+                    document.getElementById('strategyDisplay').textContent = (data.config.strategy || 'day').toUpperCase();
+                    document.getElementById('personaDisplay').textContent = (data.config.persona || 'neutral').toUpperCase();
+                    
+                    // Update auto settings read-only values
+                    const autoModeEl = document.getElementById('autoModeVal');
+                    const autoStratEl = document.getElementById('autoStrategyVal');
+                    const autoPersonaEl = document.getElementById('autoPersonaVal');
+                    if (autoModeEl) autoModeEl.textContent = (data.config.trading_mode || 'safe').toUpperCase();
+                    if (autoStratEl) autoStratEl.textContent = (data.config.strategy || 'day').toUpperCase();
+                    if (autoPersonaEl) autoPersonaEl.textContent = (data.config.persona || 'neutral').toUpperCase();
+                }
+                
+                // Update market status
+                if (data.market_status) {
+                    document.getElementById('marketStatus').textContent = data.market_status;
+                }
                 
                 // Update ticker table
                 const tbody = document.querySelector('#tickerTable tbody');
@@ -383,10 +619,11 @@
                     </div>
                 `).join('');
             } catch (e) {
-                console.error('Failed to refresh:', e);
+                console.error('Status refresh failed:', e);
             }
         }
 
+        // ===== Utility =====
         function safeNum(val) {
             if (typeof val === 'number') return val;
             if (typeof val === 'string') {
@@ -396,50 +633,37 @@
             return 0;
         }
 
-        // Refresh account data (US + KR)
+        // ===== Account Data =====
         async function refreshAccount(force = false) {
             const urlParams = force ? '?force=true' : '';
             
-            // Refresh US Account
-            if (force) document.getElementById('depositUsd').textContent = 'Refreshing...';
+            // US Account
+            if (force) document.getElementById('depositUsd').textContent = '새로고침 중...';
             try {
                 const res = await fetch('/api/account' + urlParams);
-                if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-                
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const data = await res.json();
-                console.log('US Account Data:', data); // Debugging
-                
-                if (data.error) {
-                    console.error('API Error:', data.error);
-                }
 
-                // 예수금 (USD + KRW)
                 const depUsd = safeNum(data.deposit_usd);
                 const depKrw = safeNum(data.deposit_krw);
                 document.getElementById('depositUsd').textContent = '$' + depUsd.toLocaleString(undefined, {minimumFractionDigits: 2});
                 document.getElementById('depositUsdKrw').textContent = '₩' + depKrw.toLocaleString();
                 
-                // 평가손익
                 const profUsd = safeNum(data.profit_usd);
                 const profKrw = safeNum(data.profit_krw);
-                
                 const profitEl = document.getElementById('profitUsd');
                 profitEl.textContent = (profUsd >= 0 ? '+$' : '-$') + Math.abs(profUsd).toLocaleString(undefined, {minimumFractionDigits: 2});
                 document.getElementById('profitUsdKrw').textContent = (profKrw >= 0 ? '+₩' : '-₩') + Math.abs(profKrw).toLocaleString();
                 profitEl.className = 'metric-value ' + (profUsd >= 0 ? 'success' : 'danger');
                 
-                // 총 자산
                 const totUsd = safeNum(data.total_asset_usd);
                 const totKrw = safeNum(data.total_asset_krw);
-                
                 document.getElementById('totalAssetUsd').textContent = '$' + totUsd.toLocaleString(undefined, {minimumFractionDigits: 2});
                 document.getElementById('totalAssetUsdKrw').textContent = '₩' + totKrw.toLocaleString();
                 
-                // 환율
-                const exRate = safeNum(data.exchange_rate);
-                document.getElementById('exchangeRate').textContent = exRate.toLocaleString();
+                document.getElementById('exchangeRate').textContent = safeNum(data.exchange_rate).toLocaleString();
                 
-                // Holdings 테이블 (통일된 포맷)
+                // Holdings table
                 if (data.holdings && Array.isArray(data.holdings) && data.holdings.length > 0) {
                     let html = '<table><thead><tr><th>종목</th><th>종목명</th><th>수량</th><th>평단가</th><th>현재가</th><th>평가손익</th></tr></thead><tbody>';
                     data.holdings.forEach(h => {
@@ -447,7 +671,6 @@
                         const profitPct = safeNum(h.profit_pct);
                         const profitClass = profit >= 0 ? 'success' : 'danger';
                         const profitSign = profit >= 0 ? '+' : '';
-                        
                         html += `<tr>
                             <td><strong>${h.ticker || 'N/A'}</strong></td>
                             <td>${h.name || 'N/A'}</td>
@@ -460,27 +683,20 @@
                     html += '</tbody></table>';
                     document.getElementById('holdingsTableUs').innerHTML = html;
                 } else {
-                    document.getElementById('holdingsTableUs').innerHTML = '<p style="color: var(--text-secondary);">보유 해외주식 없음</p>';
+                    document.getElementById('holdingsTableUs').innerHTML = '<p style="color: var(--text-secondary); padding: 10px;">보유 해외주식 없음</p>';
                 }
             } catch (e) {
-                document.getElementById('depositUsd').textContent = 'Error';
+                document.getElementById('depositUsd').textContent = '오류';
                 console.error('US Account Error:', e);
             }
             
-            // Refresh KR Account
-            if (force) document.getElementById('depositKrw').textContent = 'Refreshing...';
+            // KR Account
+            if (force) document.getElementById('depositKrw').textContent = '새로고침 중...';
             try {
                 const res = await fetch('/api/account/kr' + urlParams);
-                if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-                
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const data = await res.json();
-                console.log('KR Account Data:', data);
-                
-                // KRW logic (Already strings mostly in backend but let's be safe)
-                // Backend returns strings for KRW values except holdings numbers might be...
-                // Wait, get_kr_account_data returns strings for top level fields?
-                // "deposit_krw": "0" (String)
-                
+
                 const parseKrw = (val) => {
                     if (typeof val === 'number') return val;
                     if (typeof val === 'string') return parseInt(val.replace(/,/g, '')) || 0;
@@ -492,18 +708,10 @@
                 const totKrw = parseKrw(data.total_asset_krw);
 
                 document.getElementById('depositKrw').textContent = '₩' + depKrw.toLocaleString();
-                document.getElementById('profitKrw').textContent = '₩' + profKrw.toLocaleString();
+                const profitKrwEl = document.getElementById('profitKrw');
+                profitKrwEl.textContent = (profKrw >= 0 ? '+₩' : '-₩') + Math.abs(profKrw).toLocaleString();
+                profitKrwEl.className = 'metric-value ' + (profKrw >= 0 ? 'success' : 'danger');
                 document.getElementById('totalAssetKrw').textContent = '₩' + totKrw.toLocaleString();
-                
-                // Color for profit
-                const profitEl = document.getElementById('profitKrw');
-                if (profKrw > 0) {
-                    profitEl.classList.add('success');
-                    profitEl.classList.remove('danger');
-                } else if (profKrw < 0) {
-                    profitEl.classList.remove('success');
-                    profitEl.classList.add('danger');
-                }
                 
                 if (data.holdings && Array.isArray(data.holdings) && data.holdings.length > 0) {
                     let html = '<table><thead><tr><th>종목코드</th><th>종목명</th><th>수량</th><th>평가손익</th></tr></thead><tbody>';
@@ -515,21 +723,147 @@
                     html += '</tbody></table>';
                     document.getElementById('holdingsTableKr').innerHTML = html;
                 } else {
-                    document.getElementById('holdingsTableKr').innerHTML = '<p style="color: var(--text-secondary);">보유 국내주식 없음</p>';
+                    document.getElementById('holdingsTableKr').innerHTML = '<p style="color: var(--text-secondary); padding: 10px;">보유 국내주식 없음</p>';
                 }
             } catch (e) {
                 console.error('KR Account Error:', e);
-                document.getElementById('depositKrw').textContent = 'Error';
-                document.getElementById('profitKrw').textContent = '-';
-                document.getElementById('totalAssetKrw').textContent = '-';
+                document.getElementById('depositKrw').textContent = '오류';
             }
         }
 
-        // Save config
+        // ===== Performance / Profit Data =====
+        async function loadProfitData() {
+            const container = document.getElementById('profitContent');
+            try {
+                const res = await fetch('/api/profit-summary');
+                const data = await res.json();
+                
+                const ph = data.profit_history || {};
+                const snapshots = data.asset_snapshots || {};
+                
+                let html = '';
+                
+                // Asset Snapshots
+                const snapshotKeys = Object.keys(snapshots).sort().reverse();
+                if (snapshotKeys.length > 0) {
+                    html += '<h3 style="margin-bottom:10px; color:var(--text-secondary);">📊 자산 스냅샷</h3>';
+                    html += '<div class="table-wrap"><table><thead><tr><th>날짜</th><th>US 자산</th><th>KR 자산</th><th>합산 (KRW)</th></tr></thead><tbody>';
+                    snapshotKeys.slice(0, 15).forEach(key => {
+                        const s = snapshots[key];
+                        const usTotal = safeNum(s.us_total_usd || s.us_total || 0);
+                        const krTotal = safeNum(s.kr_total_krw || s.kr_total || 0);
+                        const combined = safeNum(s.combined_krw || 0);
+                        html += `<tr>
+                            <td>${key}</td>
+                            <td>$${usTotal.toLocaleString(undefined, {minimumFractionDigits:2})}</td>
+                            <td>₩${krTotal.toLocaleString()}</td>
+                            <td><strong>₩${combined.toLocaleString()}</strong></td>
+                        </tr>`;
+                    });
+                    html += '</tbody></table></div>';
+                }
+                
+                // Profit History (trades)
+                const profitKeys = Object.keys(ph).sort().reverse();
+                if (profitKeys.length > 0) {
+                    html += '<h3 style="margin: 20px 0 10px; color:var(--text-secondary);">💰 실현손익 기록</h3>';
+                    html += '<div class="table-wrap"><table><thead><tr><th>날짜</th><th>시장</th><th>실현손익</th><th>거래 수</th></tr></thead><tbody>';
+                    profitKeys.slice(0, 20).forEach(key => {
+                        const p = ph[key];
+                        const realized = safeNum(p.realized_profit || 0);
+                        const trades = (p.trades || []).length;
+                        const profitClass = realized >= 0 ? 'success' : 'danger';
+                        const sign = realized >= 0 ? '+' : '';
+                        const market = p.market || '-';
+                        html += `<tr>
+                            <td>${key}</td>
+                            <td>${market}</td>
+                            <td class="${profitClass}">${sign}${realized.toLocaleString()}</td>
+                            <td>${trades}건</td>
+                        </tr>`;
+                    });
+                    html += '</tbody></table></div>';
+                }
+                
+                if (!html) {
+                    html = '<p style="color: var(--text-secondary); text-align: center; padding: 30px;">아직 수익 데이터가 없습니다. 봇이 거래를 시작하면 기록됩니다.</p>';
+                }
+                
+                container.innerHTML = html;
+            } catch (e) {
+                container.innerHTML = '<p style="color: var(--danger); text-align:center;">수익 데이터 로드 실패</p>';
+                console.error('Profit data error:', e);
+            }
+        }
+
+        // ===== Strategy History =====
+        async function loadStrategyHistory() {
+            const container = document.getElementById('strategyHistoryContent');
+            try {
+                const res = await fetch('/api/strategy-history');
+                const data = await res.json();
+                const changes = data.changes || [];
+                
+                if (changes.length === 0) {
+                    container.innerHTML = '<p style="color: var(--text-secondary); text-align: center; padding: 20px;">전략 변경 이력이 없습니다.</p>';
+                    return;
+                }
+                
+                let html = '';
+                changes.forEach(c => {
+                    const time = c.timestamp || c.time || '-';
+                    const mode = (c.mode || c.trading_mode || '-').toUpperCase();
+                    const strategy = (c.strategy || '-').toUpperCase();
+                    const persona = (c.persona || '-').toUpperCase();
+                    const reason = c.reason || c.details || '';
+                    
+                    html += `<div class="history-item">
+                        <div>
+                            <span class="badge badge-info">${mode}</span>
+                            <span class="badge badge-success">${strategy}</span>
+                            <span class="badge badge-warning">${persona}</span>
+                            ${reason ? `<div style="font-size:0.8em; color:var(--text-secondary); margin-top:4px;">${reason}</div>` : ''}
+                        </div>
+                        <div class="history-time">${time}</div>
+                    </div>`;
+                });
+                
+                container.innerHTML = html;
+            } catch (e) {
+                container.innerHTML = '<p style="color: var(--danger);">이력 로드 실패</p>';
+                console.error('Strategy history error:', e);
+            }
+        }
+
+        // ===== Auto Strategy Toggle =====
+        async function toggleAutoStrategy() {
+            const isAuto = document.getElementById('autoStrategyToggle').checked;
+            
+            try {
+                const res = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ auto_strategy: isAuto })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    document.getElementById('autoSettingsDisplay').style.display = isAuto ? '' : 'none';
+                    document.getElementById('manualSettingsControls').style.display = isAuto ? 'none' : '';
+                    showMessage(isAuto ? '✅ 자동 전략 모드 활성화' : '✅ 수동 모드 전환 — 설정을 직접 변경하세요', 'accent');
+                }
+            } catch (e) {
+                showMessage('❌ 설정 변경 실패', 'danger');
+                console.error('Toggle auto strategy error:', e);
+            }
+        }
+
+        // ===== Save Manual Config =====
         async function saveConfig() {
             const config = {
                 trading_mode: document.getElementById('tradingMode').value,
-                strategy: document.getElementById('strategyMode').value
+                strategy: document.getElementById('strategyMode').value,
+                persona: document.getElementById('personaMode').value
             };
             
             try {
@@ -540,43 +874,42 @@
                 });
                 const data = await res.json();
                 if (data.success) {
-                    document.getElementById('settingsMessage').innerHTML = 
-                        '<span style="color: var(--accent);">✅ Settings saved! Restart bot to apply.</span>';
+                    showMessage('✅ 설정이 저장되었습니다. 봇을 재시작하면 적용됩니다.', 'accent');
                 }
             } catch (e) {
-                document.getElementById('settingsMessage').innerHTML = 
-                    '<span style="color: var(--danger);">❌ Failed to save settings</span>';
+                showMessage('❌ 설정 저장 실패', 'danger');
             }
         }
 
-        // Restart bot
+        // ===== Restart Bot =====
         async function restartBot() {
-            if (!confirm('Restart the bot?')) return;
+            if (!confirm('봇을 재시작하시겠습니까?')) return;
             
-            document.getElementById('settingsMessage').innerHTML = 
-                '<span style="color: var(--warning);">⏳ Restarting bot...</span>';
+            showMessage('⏳ 봇 재시작 중...', 'warning');
             
             try {
                 const res = await fetch('/api/restart', {method: 'POST'});
                 const data = await res.json();
                 if (data.success) {
-                    document.getElementById('settingsMessage').innerHTML = 
-                        '<span style="color: var(--accent);">✅ Bot restarted successfully!</span>';
+                    showMessage('✅ 봇이 재시작되었습니다!', 'accent');
                     setTimeout(refreshStatus, 2000);
                 } else {
-                    document.getElementById('settingsMessage').innerHTML = 
-                        `<span style="color: var(--danger);">❌ ${data.error}</span>`;
+                    showMessage(`❌ ${data.error}`, 'danger');
                 }
             } catch (e) {
-                document.getElementById('settingsMessage').innerHTML = 
-                    '<span style="color: var(--danger);">❌ Failed to restart</span>';
+                showMessage('❌ 봇 재시작 실패', 'danger');
             }
         }
 
-        // Auto-refresh every 5 seconds
+        // ===== Show Message =====
+        function showMessage(text, color) {
+            const el = document.getElementById('settingsMessage');
+            el.innerHTML = `<span style="color: var(--${color});">${text}</span>`;
+            setTimeout(() => { el.innerHTML = ''; }, 5000);
+        }
+
+        // ===== Init =====
         setInterval(refreshStatus, 5000);
-        
-        // Load account data on page load
         refreshAccount();
     </script>
 </body>
