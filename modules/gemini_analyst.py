@@ -12,7 +12,7 @@ class GeminiAnalyst:
             self.available = False
         else:
             genai.configure(api_key=GEMINI_API_KEY)
-            self.model = genai.GenerativeModel('gemini-1.5-flash')
+            self.model = genai.GenerativeModel('gemini-2.0-flash')
             self.available = True
 
     def fetch_news(self):

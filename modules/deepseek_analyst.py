@@ -11,7 +11,7 @@ from config import DEEPSEEK_API_KEY
 class DeepSeekAnalyst:
     def __init__(self):
         self.api_key = DEEPSEEK_API_KEY
-        self.base_url = "https://api.deepseek.com/v1"
+        self.base_url = "https://api.deepseek.com"
         self.model = "deepseek-chat"
         
         if not self.api_key or self.api_key.strip() == "":

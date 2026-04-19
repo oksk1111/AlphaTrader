@@ -102,6 +102,10 @@ class MultiLLMAnalyst:
                 try:
                     result = future.result()
                     if result is not None:
+                        # API 에러(UNKNOWN)는 투표에서 제외 - 실패한 LLM이 반대표로 집계되는 것 방지
+                        if result.get('risk_level') == 'UNKNOWN':
+                            logger.warning(f"[MultiLLM] {name}: API 에러로 투표 제외 - {result.get('reason', 'N/A')[:80]}")
+                            continue
                         result["_name"] = name
                         results.append(result)
                         logger.info(f"[MultiLLM] {name}: risk={result.get('risk_level')}, buy={result.get('can_buy')}, reason={result.get('reason', 'N/A')[:50]}")

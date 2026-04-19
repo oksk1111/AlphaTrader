@@ -12,7 +12,7 @@ class GrokAnalyst:
     def __init__(self):
         self.api_key = GROK_API_KEY
         self.base_url = "https://api.x.ai/v1"
-        self.model = "grok-3-mini"  # 무료 티어 모델
+        self.model = "grok-3-mini-fast"  # 무료 티어 모델
         
         if not self.api_key or self.api_key.strip() == "":
             print("[Grok] API Key is missing. Grok analysis will be skipped.")
