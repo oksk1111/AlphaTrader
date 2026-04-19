@@ -1,0 +1,32 @@
+{
+  "changes": [
+    {
+      "timestamp": "2026-04-20 01:28:06",
+      "market": "KR",
+      "old": {
+        "strategy": "dca",
+        "mode": "safe",
+        "persona": "aggressive"
+      },
+      "new": {
+        "strategy": "day",
+        "mode": "safe",
+        "persona": "neutral"
+      },
+      "reason": "상승세 but 고변동성(vol=0.75) → Day Trading | KR 자산 3,360,000원 (기준 미달) → 안전 모드 | 혼조세 → Neutral 페르소나",
+      "confidence": 0.7,
+      "signals": {
+        "trend": 1.0,
+        "volatility": 0.751,
+        "momentum": 0.99,
+        "risk": 0.225,
+        "ai_condition": "NEUTRAL",
+        "ai_risk": "LOW",
+        "ai_can_buy": true
+      }
+    }
+  ],
+  "last_strategy": "day",
+  "last_mode": "safe",
+  "last_persona": "neutral"
+}

@@ -1,4 +1,5 @@
 {
+    "auto_strategy": true,
     "trading_mode": "safe",
     "strategy": "dca",
     "persona": "aggressive",

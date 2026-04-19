@@ -19,6 +19,7 @@ from strategies.volatility_breakout import calculate_target_price
 from modules.account_manager import update_all_accounts
 from modules.market_scanner import scanner  # New scanner module
 from modules.multi_llm import MultiLLMAnalyst
+from modules.auto_strategy import AutoStrategyOptimizer
 
 # Configuration
 CONFIG_FILE = "user_config.json"
@@ -302,10 +303,11 @@ def get_market_status():
 
 def job():
     # Reload config dynamically
-    global IS_SAFE_MODE, STRATEGY_MODE, TARGET_TICKERS_US, TARGET_TICKERS_KR
+    global IS_SAFE_MODE, STRATEGY_MODE, PERSONA, TARGET_TICKERS_US, TARGET_TICKERS_KR
     user_config = load_config()
     IS_SAFE_MODE = True if user_config.get("trading_mode") == "safe" else False
     STRATEGY_MODE = user_config.get("strategy", "day")
+    PERSONA = user_config.get("persona", "aggressive")
     
     # Update Target Tickers based on new config
     # US 시장은 항상 3X + 1X 모두 사용 (레버리지 제한 없음)
@@ -419,6 +421,67 @@ def job():
         logger.error(f"Failed to parse holdings: {e}")
 
     logger.info(f"Current Holdings: {current_holdings}")
+
+    # --- [NEW] 자동 전략 최적화 ---
+    is_auto_strategy = user_config.get("auto_strategy", False)
+    if is_auto_strategy:
+        try:
+            optimizer = AutoStrategyOptimizer()
+            
+            # AI 감성 분석 (자동 전략 결정에 활용)
+            ai_for_strategy = ai
+            auto_sentiment = None
+            try:
+                news_for_strategy = ai_for_strategy.fetch_news()
+                if news_for_strategy:
+                    auto_sentiment = ai_for_strategy.check_market_sentiment(news_for_strategy, persona=PERSONA)
+                    logger.info(f"[AutoStrategy] AI 감성: condition={auto_sentiment.get('market_condition')}, "
+                                f"risk={auto_sentiment.get('risk_level')}, buy={auto_sentiment.get('can_buy')}")
+            except Exception as e:
+                logger.warning(f"[AutoStrategy] AI 감성 분석 실패 (기술적 분석만 사용): {e}")
+            
+            # 자동 최적화 실행
+            opt_result = optimizer.optimize(
+                market=market,
+                kis=kis,
+                ai_sentiment=auto_sentiment,
+                total_asset_krw=total_asset_krw,
+                num_holdings=len(current_holdings),
+                leverage_threshold=LEVERAGE_THRESHOLD_KRW
+            )
+            
+            # 결과 적용 (globals 업데이트)
+            new_cfg = opt_result.get('current', {})
+            IS_SAFE_MODE = new_cfg.get('trading_mode', 'safe') == 'safe'
+            STRATEGY_MODE = new_cfg.get('strategy', STRATEGY_MODE)
+            PERSONA = new_cfg.get('persona', PERSONA)
+            
+            # KR 타겟 재설정
+            TARGET_TICKERS_KR = TARGET_TICKERS_KR_1X if IS_SAFE_MODE else TARGET_TICKERS_KR_2X
+            if market == 'KR':
+                current_dynamic_targets = [t for t in DYNAMIC_TARGETS if t.get('exchange') == 'KR']
+                tickers = TARGET_TICKERS_KR + current_dynamic_targets
+            
+            # 변경 알림
+            if opt_result.get('changed'):
+                change_msg = (f"🤖 [자동전략] 전략 변경!\n"
+                              f"전략: {STRATEGY_MODE.upper()}\n"
+                              f"모드: {'Safe' if IS_SAFE_MODE else 'Risky'}\n"
+                              f"페르소나: {PERSONA}\n"
+                              f"사유: {opt_result['decision'].get('reason', '')}\n"
+                              f"신뢰도: {opt_result['decision'].get('confidence', 0):.0%}")
+                send_alert(change_msg)
+                logger.info(f"[AutoStrategy] 전략 변경 알림 발송 완료")
+            else:
+                logger.info(f"[AutoStrategy] 현재 전략 유지: {STRATEGY_MODE}/{('safe' if IS_SAFE_MODE else 'risky')}/{PERSONA}")
+            
+            # DCA 전략 선택 시 buy_delay 재적용
+            if STRATEGY_MODE == 'dca':
+                buy_delay = DCA_SETTINGS.get("buy_delay_minutes", 0)
+                # (이미 위에서 delay를 처리했다면 중복 방지)
+            
+        except Exception as e:
+            logger.error(f"[AutoStrategy] 자동 전략 최적화 실패 (기존 설정 유지): {e}")
     
     # 활성 타겟 수 (분산 투자 계산용)
     num_active_targets = len(tickers)
@@ -1073,10 +1136,11 @@ if __name__ == "__main__":
     logger.info("=== Global ETF Sniper Bot Started ===")
     logger.info(f"US Targets: {TARGET_TICKERS_US}")
     logger.info(f"KR Targets: {TARGET_TICKERS_KR}")
-    logger.info(f"Safe Mode: {IS_SAFE_MODE}, Strategy: {STRATEGY_MODE}")
+    logger.info(f"Safe Mode: {IS_SAFE_MODE}, Strategy: {STRATEGY_MODE}, Auto: {user_config.get('auto_strategy', False)}")
     
     # Startup notification
-    send_alert(f"🚀 Bot Started!\nMode: {'Safe' if IS_SAFE_MODE else 'Leverage'}\nStrategy: {STRATEGY_MODE.upper()}")
+    auto_label = "🤖 Auto" if user_config.get('auto_strategy', False) else "Manual"
+    send_alert(f"🚀 Bot Started!\nMode: {'Safe' if IS_SAFE_MODE else 'Leverage'}\nStrategy: {STRATEGY_MODE.upper()}\n전략모드: {auto_label}")
     
     # Heartbeat & Data Collection
     def heartbeat():

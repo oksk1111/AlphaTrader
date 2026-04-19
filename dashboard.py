@@ -137,25 +137,71 @@ if auth.get("name") and auth["name"] != "Local User":
 # 1. Config Management
 config = load_config()
 
-new_trading_mode = st.sidebar.selectbox(
-    "Target Mode (ETF Type)", 
-    ["safe", "risky"], 
-    index=0 if config.get("trading_mode") == "safe" else 1,
-    format_func=lambda x: "Safe Mode (1x Stock/ETF)" if x == "safe" else "Risky Mode (3x Lev ETF)"
+# --- 자동 전략 토글 ---
+is_auto_strategy = st.sidebar.toggle(
+    "🤖 자동 전략 (Auto Strategy)", 
+    value=config.get("auto_strategy", False),
+    help="시장 상황에 따라 전략/모드/페르소나를 자동으로 최적화합니다"
 )
 
-new_strategy_mode = st.sidebar.selectbox(
-    "Strategy (Exit Rule)",
-    ["day", "swing"],
-    index=0 if config.get("strategy", "day") == "day" else 1,
-    format_func=lambda x: "Day Trading (Sell at Close)" if x == "day" else "Swing/Hold (Trend Following)"
-)
-
-if new_trading_mode != config.get("trading_mode") or new_strategy_mode != config.get("strategy"):
-    config["trading_mode"] = new_trading_mode
-    config["strategy"] = new_strategy_mode
+if is_auto_strategy != config.get("auto_strategy", False):
+    config["auto_strategy"] = is_auto_strategy
     save_config(config)
-    st.sidebar.success("Settings Saved! Restart Bot to Apply.")
+    st.sidebar.success("Auto Strategy " + ("ON ✅" if is_auto_strategy else "OFF"))
+
+if is_auto_strategy:
+    # 자동 모드: 현재 AI가 선택한 설정 표시 (읽기 전용)
+    st.sidebar.info(
+        f"📊 현재 자동 설정\n"
+        f"- 모드: **{config.get('trading_mode', 'safe').upper()}**\n"
+        f"- 전략: **{config.get('strategy', 'dca').upper()}**\n"
+        f"- 페르소나: **{config.get('persona', 'neutral')}**"
+    )
+    
+    # 전략 히스토리 표시
+    try:
+        history_file = "database/strategy_history.json"
+        if os.path.exists(history_file):
+            import json as _json
+            with open(history_file, "r") as f:
+                history = _json.load(f)
+            recent = history.get("changes", [])[-3:]  # 최근 3건
+            if recent:
+                st.sidebar.markdown("**📋 최근 전략 변경:**")
+                for ch in reversed(recent):
+                    ts = ch.get('timestamp', '')[:16]
+                    new = ch.get('new', {})
+                    st.sidebar.caption(
+                        f"📌 {ts} | {new.get('strategy','?').upper()} / "
+                        f"{new.get('mode','?')} / {new.get('persona','?')}"
+                    )
+    except:
+        pass
+    
+    # 자동 모드에서도 수동으로 끄려면 위 토글만 끄면 됨
+    new_trading_mode = config.get("trading_mode", "safe")
+    new_strategy_mode = config.get("strategy", "dca")
+else:
+    # 수동 모드: 기존 selectbox 유지
+    new_trading_mode = st.sidebar.selectbox(
+        "Target Mode (ETF Type)", 
+        ["safe", "risky"], 
+        index=0 if config.get("trading_mode") == "safe" else 1,
+        format_func=lambda x: "Safe Mode (1x Stock/ETF)" if x == "safe" else "Risky Mode (3x Lev ETF)"
+    )
+
+    new_strategy_mode = st.sidebar.selectbox(
+        "Strategy (Exit Rule)",
+        ["day", "swing", "dca"],
+        index=["day", "swing", "dca"].index(config.get("strategy", "day")) if config.get("strategy", "day") in ["day", "swing", "dca"] else 0,
+        format_func=lambda x: {"day": "Day Trading (Sell at Close)", "swing": "Swing/Hold (Trend Following)", "dca": "DCA (분할매수)"}[x]
+    )
+
+    if new_trading_mode != config.get("trading_mode") or new_strategy_mode != config.get("strategy"):
+        config["trading_mode"] = new_trading_mode
+        config["strategy"] = new_strategy_mode
+        save_config(config)
+        st.sidebar.success("Settings Saved! Restart Bot to Apply.")
     
 refresh_rate = st.sidebar.slider("Refresh Rate (sec)", 1, 60, 5)
 auto_refresh = st.sidebar.checkbox("Auto Refresh", value=True)
