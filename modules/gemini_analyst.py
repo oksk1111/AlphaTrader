@@ -44,9 +44,12 @@ class GeminiAnalyst:
             
             headlines = []
             for item in root.findall('./channel/item'):
-                title = item.find('title').text
-                description = item.find('description').text
-                headlines.append(f"- {title}: {description}")
+                title_el = item.find('title')
+                desc_el = item.find('description')
+                title = title_el.text if title_el is not None else ""
+                description = desc_el.text if desc_el is not None else ""
+                if title:
+                    headlines.append(f"- {title}: {description}")
                 if len(headlines) >= 10: # Top 10 only
                     break
             
