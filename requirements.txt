@@ -9,3 +9,6 @@ fastapi
 uvicorn[standard]
 jinja2
 pytz
+groq
+streamlit
+openai

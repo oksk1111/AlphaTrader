@@ -13,6 +13,15 @@ KIS_MOCK = os.getenv("KIS_MOCK", "True").lower() == "true"
 # Gemini API Config
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+# Multi-LLM API Keys
+GROK_API_KEY = os.getenv("GROK_API_KEY")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+# Google OAuth Config
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+
 # Base URLs
 KIS_URL_REAL = "https://openapi.koreainvestment.com:9443"
 KIS_URL_MOCK = "https://openapivts.koreainvestment.com:29443"

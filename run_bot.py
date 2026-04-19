@@ -18,12 +18,13 @@ from strategies.technical import (
 from strategies.volatility_breakout import calculate_target_price
 from modules.account_manager import update_all_accounts
 from modules.market_scanner import scanner  # New scanner module
+from modules.multi_llm import MultiLLMAnalyst
 
 # Configuration
 CONFIG_FILE = "user_config.json"
 MAX_RETRIES_PER_TICKER = 3  # Maximum buy retries per ticker per session
 FAILED_TICKERS = set()  # Track permanently failed tickers (account restrictions)
-LEVERAGE_THRESHOLD_KRW = 10_000_000  # 1000만원 기준
+LEVERAGE_THRESHOLD_KRW = 10_000_000  # 1000만원 기준 (KR 시장만 적용)
 DYNAMIC_TARGETS = [] # Found by scanner
 
 # === Risk Management Constants ===
@@ -64,14 +65,15 @@ def save_config(config):
 
 def check_and_upgrade_mode(total_asset_krw):
     """
-    예치금이 1000만원 이상이면 자동으로 레버리지 모드로 전환
+    KR 시장 전용: 예치금이 1000만원 이상이면 자동으로 레버리지 모드로 전환
+    US 시장은 3배 ETF 제한이 없으므로 이 함수는 KR에만 영향
     """
     config = load_config()
     current_mode = config.get("trading_mode", "safe")
     
     if total_asset_krw >= LEVERAGE_THRESHOLD_KRW and current_mode == "safe":
         logger.info(f"🎉 축하합니다! 총 자산이 {total_asset_krw:,.0f}원으로 1000만원을 달성했습니다!")
-        logger.info("🚀 자동으로 레버리지 모드(risky)로 전환합니다.")
+        logger.info("🚀 KR 시장 레버리지 ETF 해제! (US 시장은 이미 제한 없음)")
         config["trading_mode"] = "risky"
         save_config(config)
         return True
@@ -144,8 +146,19 @@ TARGET_TICKERS_KR_1X = [
 ]
 
 # Select Tickers based on Mode
-TARGET_TICKERS_US = TARGET_TICKERS_US_1X if IS_SAFE_MODE else TARGET_TICKERS_US_3X
+# US 시장은 3배 ETF 제한 없음 - 항상 3X + 1X 모두 사용
+TARGET_TICKERS_US = TARGET_TICKERS_US_3X + [t for t in TARGET_TICKERS_US_1X if t not in TARGET_TICKERS_US_3X]
+# KR 시장만 예탁금 기준으로 safe/risky 분리
 TARGET_TICKERS_KR = TARGET_TICKERS_KR_1X if IS_SAFE_MODE else TARGET_TICKERS_KR_2X
+
+# === KR 시장별 차별화된 리스크 관리 상수 ===
+KR_STOCK_STOP_LOSS_PCT = -5.0       # KR 개별주 손절 (ETF 대비 완화)
+KR_STOCK_TRAILING_ACTIVATION = 5.0  # KR 개별주 트레일링 활성화
+KR_STOCK_TRAILING_DROP = 2.5        # KR 개별주 고점 대비 하락
+KR_STOCK_GAP_DOWN_THRESHOLD = 4.0   # KR 개별주 갭다운 기준
+
+# KR ETF 종목 코드 (ETF인지 개별주인지 구분용)
+KR_ETF_CODES = {'122630', '233740', '449200', '069500', '229200', '114800'}
 
 def calculate_signal_strength(current_price, target_price, ma20, ohlc_data):
     """
@@ -295,7 +308,9 @@ def job():
     STRATEGY_MODE = user_config.get("strategy", "day")
     
     # Update Target Tickers based on new config
-    TARGET_TICKERS_US = TARGET_TICKERS_US_1X if IS_SAFE_MODE else TARGET_TICKERS_US_3X
+    # US 시장은 항상 3X + 1X 모두 사용 (레버리지 제한 없음)
+    TARGET_TICKERS_US = TARGET_TICKERS_US_3X + [t for t in TARGET_TICKERS_US_1X if t not in TARGET_TICKERS_US_3X]
+    # KR만 예탁금 기준 safe/risky 분리
     TARGET_TICKERS_KR = TARGET_TICKERS_KR_1X if IS_SAFE_MODE else TARGET_TICKERS_KR_2X
 
     market = get_market_status()
@@ -351,7 +366,7 @@ def job():
         if current_dynamic_targets:
             logger.info(f"   - Dynamic Targets (Scanner): {[t['symbol'] for t in current_dynamic_targets]}")
             
-    ai = GeminiAnalyst()
+    ai = MultiLLMAnalyst()
     
     # Dictionary to store monitoring targets
     monitoring_targets = {}
@@ -380,13 +395,13 @@ def job():
         
         # 자동 모드 전환 체크 (1000만원 달성 시 레버리지 모드로)
         if check_and_upgrade_mode(total_asset_krw):
-            # 모드가 변경되었으면 설정 다시 로드
+            # 모드가 변경되었으면 KR 설정만 다시 로드 (US는 항상 3X)
             user_config = load_config()
             IS_SAFE_MODE = user_config.get("trading_mode") == "safe"
-            TARGET_TICKERS_US = TARGET_TICKERS_US_1X if IS_SAFE_MODE else TARGET_TICKERS_US_3X
             TARGET_TICKERS_KR = TARGET_TICKERS_KR_1X if IS_SAFE_MODE else TARGET_TICKERS_KR_2X
-            tickers = TARGET_TICKERS_US if market == 'US' else TARGET_TICKERS_KR
-            logger.info(f"🔄 모드 전환 완료! 새로운 타겟: {tickers}")
+            if market == 'KR':
+                tickers = TARGET_TICKERS_KR
+            logger.info(f"🔄 KR 모드 전환 완료! 새로운 KR 타겟: {TARGET_TICKERS_KR}")
             
     except Exception as e:
         logger.error(f"Failed to fetch balance: {e}")
@@ -395,7 +410,11 @@ def job():
     current_holdings = []
     try:
         if balance and 'output1' in balance:
-            current_holdings = [h['pdno'] for h in balance['output1']]
+            for h in balance['output1']:
+                # US 종목은 ovrs_pdno 필드를 사용
+                ticker_id = h.get('ovrs_pdno', '') or h.get('pdno', '')
+                if ticker_id:
+                    current_holdings.append(ticker_id)
     except Exception as e:
         logger.error(f"Failed to parse holdings: {e}")
 
@@ -441,6 +460,19 @@ def job():
 
         logger.info(f"[{ticker}] Current: {current_price}, MA20: {ma20}")
         
+        # --- 시장/종목별 리스크 파라미터 결정 ---
+        is_kr_stock = (market == 'KR' and ticker not in KR_ETF_CODES)
+        if is_kr_stock:
+            eff_stop_loss = KR_STOCK_STOP_LOSS_PCT
+            eff_trailing_activation = KR_STOCK_TRAILING_ACTIVATION
+            eff_trailing_drop = KR_STOCK_TRAILING_DROP
+            eff_gap_down_threshold = KR_STOCK_GAP_DOWN_THRESHOLD
+        else:
+            eff_stop_loss = STOP_LOSS_PCT
+            eff_trailing_activation = TRAILING_STOP_ACTIVATION
+            eff_trailing_drop = TRAILING_STOP_DROP
+            eff_gap_down_threshold = GAP_DOWN_THRESHOLD
+        
         # --- STRATEGY BRANCHING ---
         is_uptrend = check_trend(current_price, ma20)
         
@@ -449,7 +481,7 @@ def job():
         is_short_uptrend = check_trend(current_price, ma5) if ma5 else True
         
         # === [NEW] 갭다운 감지 - 전일 종가 대비 급락 체크 ===
-        is_gap_down, gap_drop_pct = check_gap_down(current_price, ohlc, GAP_DOWN_THRESHOLD)
+        is_gap_down, gap_drop_pct = check_gap_down(current_price, ohlc, eff_gap_down_threshold)
         if is_gap_down:
             logger.warning(f"[{ticker}] ⚠️ GAP DOWN detected! ({gap_drop_pct:.1f}% drop from prev close)")
             send_alert(f"⚠️ [{ticker}] 갭다운 감지! 전일 대비 {gap_drop_pct:.1f}% 급락")
@@ -481,9 +513,9 @@ def job():
                     pnl_pct = ((current_price - holding_avg_price) / holding_avg_price) * 100
                     logger.info(f"[{ticker}] 📊 보유현황: {holding_qty}주, 평단가: {holding_avg_price:.2f}, 현재가: {current_price:.2f}, 손익: {pnl_pct:.2f}%")
                     
-                    # Stop Loss (-3%) - 절대 원칙 (DCA도 예외 없음)
-                    if pnl_pct <= STOP_LOSS_PCT:
-                        logger.warning(f"[{ticker}] 🛑 DCA STOP LOSS! ({pnl_pct:.2f}% <= {STOP_LOSS_PCT}%). 즉시 매도 {holding_qty}주.")
+                    # Stop Loss - 시장/종목별 차별화 (KR 개별주는 완화)
+                    if pnl_pct <= eff_stop_loss:
+                        logger.warning(f"[{ticker}] 🛑 DCA STOP LOSS! ({pnl_pct:.2f}% <= {eff_stop_loss}%). 즉시 매도 {holding_qty}주.")
                         send_alert(f"🛑 [{ticker}] DCA 손절매 발동! {pnl_pct:.2f}%. {holding_qty}주 매도.")
                         if market == 'US':
                             kis.sell_market_order(ticker, holding_qty, exchange)
@@ -762,9 +794,15 @@ def job():
                     # Calculate PnL
                     pnl_pct = ((curr - buy_price) / buy_price) * 100
                     
-                    # 1. Stop Loss - ABSOLUTE RULE
-                    if pnl_pct <= STOP_LOSS_PCT:
-                        logger.warning(f"[{ticker}] 🛑 Stop Loss Triggered! ({pnl_pct:.2f}% <= {STOP_LOSS_PCT}%). Selling {qty} shares.")
+                    # 시장/종목별 리스크 파라미터
+                    is_kr_stock_pos = (market == 'KR' and ticker not in KR_ETF_CODES)
+                    pos_stop_loss = KR_STOCK_STOP_LOSS_PCT if is_kr_stock_pos else STOP_LOSS_PCT
+                    pos_trailing_act = KR_STOCK_TRAILING_ACTIVATION if is_kr_stock_pos else TRAILING_STOP_ACTIVATION
+                    pos_trailing_drop = KR_STOCK_TRAILING_DROP if is_kr_stock_pos else TRAILING_STOP_DROP
+                    
+                    # 1. Stop Loss - ABSOLUTE RULE (시장별 차별화)
+                    if pnl_pct <= pos_stop_loss:
+                        logger.warning(f"[{ticker}] 🛑 Stop Loss Triggered! ({pnl_pct:.2f}% <= {pos_stop_loss}%). Selling {qty} shares.")
                         send_alert(f"🛑 [{ticker}] 손절매 발동! {pnl_pct:.2f}%. {qty}주 매도.")
                         if market == 'US':
                             kis.sell_market_order(ticker, qty, data.get('exchange'))
@@ -773,13 +811,13 @@ def job():
                         data['status'] = 'sold_sl' # Mark as Sold (Stop Loss)
                         continue
                         
-                    # 2. Trailing Stop
+                    # 2. Trailing Stop (시장별 차별화)
                     peak_pnl_pct = ((highest_price - buy_price) / buy_price) * 100
                     
-                    if peak_pnl_pct >= TRAILING_STOP_ACTIVATION:
+                    if peak_pnl_pct >= pos_trailing_act:
                         drop_from_peak = ((highest_price - curr) / highest_price) * 100
-                        if drop_from_peak >= TRAILING_STOP_DROP:
-                            logger.info(f"[{ticker}] 💰 Trailing Stop Triggered! (Peak: {peak_pnl_pct:.2f}%, Drop: {drop_from_peak:.2f}% >= {TRAILING_STOP_DROP}%). Selling {qty} shares.")
+                        if drop_from_peak >= pos_trailing_drop:
+                            logger.info(f"[{ticker}] 💰 Trailing Stop Triggered! (Peak: {peak_pnl_pct:.2f}%, Drop: {drop_from_peak:.2f}% >= {pos_trailing_drop}%). Selling {qty} shares.")
                             send_alert(f"💰 [{ticker}] 트레일링 스탑! 고점 대비 {drop_from_peak:.2f}% 하락. {qty}주 매도.")
                             if market == 'US':
                                 kis.sell_market_order(ticker, qty, data.get('exchange'))

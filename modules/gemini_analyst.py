@@ -9,9 +9,11 @@ class GeminiAnalyst:
         if not GEMINI_API_KEY or "INSERT" in GEMINI_API_KEY:
             print("[Gemini] API Key is missing. AI analysis will be skipped (Defaulting to Neutral/Positive).")
             self.model = None
+            self.available = False
         else:
             genai.configure(api_key=GEMINI_API_KEY)
             self.model = genai.GenerativeModel('gemini-1.5-flash')
+            self.available = True
 
     def fetch_news(self):
         """CNBC Finance RSS Feed Fetch"""
@@ -36,10 +38,10 @@ class GeminiAnalyst:
 
     def check_market_sentiment(self, news_text, persona="aggressive"):
         if not self.model:
-            return {"risk_level": "LOW", "can_buy": True, "reason": "API Key missing, skipping AI check."}
+            return {"risk_level": "LOW", "can_buy": True, "market_condition": "NEUTRAL", "reason": "API Key missing, skipping AI check.", "source": "gemini"}
         
         if not news_text:
-            return {"risk_level": "LOW", "can_buy": True, "reason": "No news found, skipping AI check."}
+            return {"risk_level": "LOW", "can_buy": True, "market_condition": "NEUTRAL", "reason": "No news found, skipping AI check.", "source": "gemini"}
 
         # Define Persona Prompts
         persona_instructions = {
@@ -65,6 +67,7 @@ class GeminiAnalyst:
         {{
             "risk_level": "HIGH" or "LOW",
             "can_buy": boolean,
+            "market_condition": "CRASH" or "BEARISH" or "NEUTRAL" or "BULLISH",
             "reason": "short summary"
         }}
         """
@@ -78,10 +81,12 @@ class GeminiAnalyst:
             if text.endswith("```"):
                 text = text[:-3]
             
-            return json.loads(text)
+            result = json.loads(text)
+            # 일관성을 위해 source/market_condition 보장
+            result["source"] = "gemini"
+            if "market_condition" not in result:
+                result["market_condition"] = "BEARISH" if result.get("risk_level") == "HIGH" else "NEUTRAL"
+            return result
         except Exception as e:
             print(f"[Gemini] AI Analysis failed: {e}")
-            # Fail safe: Do not buy if AI fails? Or buy? 
-            # Strategy says: "AI filters bad news". If AI fails, maybe we should be cautious.
-            # But for now, let's return False to be safe.
-            return {"risk_level": "UNKNOWN", "can_buy": False, "reason": f"AI Error: {e}"}
+            return {"risk_level": "UNKNOWN", "can_buy": False, "market_condition": "UNKNOWN", "reason": f"AI Error: {e}", "source": "gemini"}

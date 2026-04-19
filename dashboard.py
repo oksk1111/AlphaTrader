@@ -9,6 +9,74 @@ import signal
 import json
 from modules.kis_api import KisOverseas
 from modules.kis_domestic import KisDomestic
+from config import GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
+
+# ===== Google OAuth 인증 =====
+def check_google_auth():
+    """Google OAuth 로그인 확인. 설정되지 않았으면 건너뜁니다."""
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        # OAuth 미설정 시 인증 없이 진행 (개발/로컬 모드)
+        return {"authenticated": True, "email": "local@dev", "name": "Local User"}
+    
+    # 세션 상태에서 인증 확인
+    if "google_auth" not in st.session_state:
+        st.session_state["google_auth"] = None
+    
+    if st.session_state["google_auth"]:
+        return st.session_state["google_auth"]
+    
+    # Google OAuth 로그인 UI
+    st.markdown("## 🔐 로그인이 필요합니다")
+    st.markdown("Google 계정으로 로그인하세요.")
+    st.markdown(f"""
+    <a href="https://accounts.google.com/o/oauth2/v2/auth?client_id={GOOGLE_CLIENT_ID}&redirect_uri=http://localhost:8501&response_type=code&scope=email%20profile" target="_self">
+        <button style="background-color:#4285F4;color:white;padding:12px 24px;border:none;border-radius:4px;font-size:16px;cursor:pointer;">
+            🔑 Google 로그인
+        </button>
+    </a>
+    """, unsafe_allow_html=True)
+    
+    # URL에서 인증 코드 확인 (OAuth redirect 후)
+    query_params = st.query_params
+    auth_code = query_params.get("code", None)
+    
+    if auth_code:
+        try:
+            import requests as req
+            # 인증 코드로 토큰 교환
+            token_resp = req.post("https://oauth2.googleapis.com/token", data={
+                "code": auth_code,
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "redirect_uri": "http://localhost:8501",
+                "grant_type": "authorization_code"
+            })
+            token_data = token_resp.json()
+            
+            if "access_token" in token_data:
+                # 사용자 정보 조회
+                user_resp = req.get("https://www.googleapis.com/oauth2/v2/userinfo",
+                    headers={"Authorization": f"Bearer {token_data['access_token']}"})
+                user_info = user_resp.json()
+                
+                auth_result = {
+                    "authenticated": True,
+                    "email": user_info.get("email", "unknown"),
+                    "name": user_info.get("name", "User"),
+                    "picture": user_info.get("picture", "")
+                }
+                st.session_state["google_auth"] = auth_result
+                st.query_params.clear()
+                st.rerun()
+        except Exception as e:
+            st.error(f"인증 실패: {e}")
+    
+    return None  # 인증 안됨
+
+# OAuth 체크
+auth = check_google_auth()
+if not auth:
+    st.stop()  # 인증 안되면 여기서 멈춤
 
 # Load Config
 CONFIG_FILE = "user_config.json"
@@ -51,6 +119,15 @@ except Exception as e:
 
 # --- Sidebar ---
 st.sidebar.header("Settings")
+
+# User Info (Google OAuth)
+if auth.get("name") and auth["name"] != "Local User":
+    st.sidebar.markdown(f"👤 **{auth['name']}**")
+    st.sidebar.markdown(f"📧 {auth['email']}")
+    if st.sidebar.button("🚪 로그아웃"):
+        st.session_state["google_auth"] = None
+        st.rerun()
+    st.sidebar.divider()
 
 # 1. Config Management
 config = load_config()
@@ -207,6 +284,23 @@ with tab1:
         
         st.metric("Bot Status", status)
         st.markdown(f"Last Update: `{last_log['timestamp']}`")
+        
+        # === Multi-LLM 합의 상태 ===
+        llm_logs = [l for l in parsed_lines if '[MultiLLM]' in l['message']]
+        if llm_logs:
+            st.subheader("🧠 AI Multi-LLM 합의")
+            last_consensus = None
+            for l in reversed(llm_logs):
+                if '합의 결과' in l['message']:
+                    last_consensus = l
+                    break
+            if last_consensus:
+                st.info(f"최근 판단: {last_consensus['message']}")
+            
+            # 활성 LLM 표시
+            active_llm_log = [l for l in llm_logs if '활성 LLM' in l['message']]
+            if active_llm_log:
+                st.caption(active_llm_log[-1]['message'])
         
         # 2. Key Metrics by Ticker
         # We will scan lines to find the LATEST info for each ticker
@@ -532,6 +626,41 @@ with tab4:
                     st.text(f"  • {row['timestamp']} - {market}")
     else:
         st.warning("No log files found.")
+
+# === 광고 영역 (Ad Revenue) ===
+st.divider()
+st.markdown("### 📢 Sponsored")
+
+ad_col1, ad_col2, ad_col3 = st.columns(3)
+
+with ad_col1:
+    st.markdown("""
+    <div style="border:1px solid #ddd;padding:16px;border-radius:8px;text-align:center;min-height:120px;background:#f9f9f9;">
+        <p style="color:#888;font-size:12px;">광고 영역 1</p>
+        <p style="color:#aaa;font-size:10px;">Google AdSense / 제휴 광고</p>
+        <!-- AD_SLOT_1: Google AdSense 코드 삽입 위치 -->
+    </div>
+    """, unsafe_allow_html=True)
+
+with ad_col2:
+    st.markdown("""
+    <div style="border:1px solid #ddd;padding:16px;border-radius:8px;text-align:center;min-height:120px;background:#f9f9f9;">
+        <p style="color:#888;font-size:12px;">광고 영역 2</p>
+        <p style="color:#aaa;font-size:10px;">증권사 제휴 / 투자 교육</p>
+        <!-- AD_SLOT_2: 증권사 제휴 배너 위치 -->
+    </div>
+    """, unsafe_allow_html=True)
+
+with ad_col3:
+    st.markdown("""
+    <div style="border:1px solid #ddd;padding:16px;border-radius:8px;text-align:center;min-height:120px;background:#f9f9f9;">
+        <p style="color:#888;font-size:12px;">광고 영역 3</p>
+        <p style="color:#aaa;font-size:10px;">프리미엄 기능 안내</p>
+        <!-- AD_SLOT_3: 프리미엄 업그레이드 안내 위치 -->
+    </div>
+    """, unsafe_allow_html=True)
+
+st.caption("투자는 무료입니다. 광고 수익으로 서비스를 운영합니다.")
 
 # Auto Refresh logic
 if auto_refresh:
