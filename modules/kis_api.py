@@ -366,6 +366,40 @@ class KisOverseas:
         
         return None
 
+    def get_executed_orders(self, start_date, end_date, sell_buy="00"):
+        """해외주식 주문체결내역 - TTTS3035R
+        
+        Args:
+            start_date: 조회시작일자 (YYYYMMDD)
+            end_date: 조회종료일자 (YYYYMMDD)
+            sell_buy: 매도매수구분 (00:전체, 01:매도, 02:매수)
+        Returns:
+            체결 내역 dict (output: 개별체결 내역)
+        """
+        tr_id = "VTTS3035R" if "openapivts" in self.url else "TTTS3035R"
+        path = "/uapi/overseas-stock/v1/trading/inquire-ccnl"
+        headers = self._get_headers(tr_id)
+        
+        params = {
+            "CANO": self.acc_no_prefix,
+            "ACNT_PRDT_CD": self.acc_no_suffix,
+            "PDNO": "",
+            "ORD_STRT_DT": start_date,
+            "ORD_END_DT": end_date,
+            "SLL_BUY_DVSN_CD": sell_buy,
+            "CCLD_NCCS_DVSN": "01",
+            "OVRS_EXCG_CD": "%",
+            "SORT_SQN": "DS",
+            "ORD_DT": "",
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": ""
+        }
+        
+        res = self._request("GET", path, headers=headers, params=params)
+        return res
+
     def get_foreign_balance(self):
         """외화예수금 조회 (USD) - CTRP6504R"""
         # 실전: CTRP6504R / 모의: VTTC8434R

@@ -1,0 +1,19 @@
+{
+    "2026-04-20": {
+        "date": "2026-04-20",
+        "timestamp": 1776615343.194378,
+        "kr": {
+            "deposit": 593954,
+            "eval_total": 2768004,
+            "eval_profit": 210720,
+            "holdings_count": 3
+        },
+        "us": {
+            "deposit_usd": 134.25,
+            "eval_total_usd": 1531.13,
+            "eval_profit_usd": 148.15,
+            "holdings_count": 3
+        },
+        "total_krw": 5776759
+    }
+}

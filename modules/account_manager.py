@@ -171,6 +171,16 @@ def update_all_accounts():
     update_us_account()
     time.sleep(1) # Rate limit safe
     update_kr_account()
+    
+    # 자산 스냅샷도 자동으로 기록 (일 1회)
+    try:
+        from modules.profit_tracker import take_asset_snapshot
+        kis_us = KisOverseas()
+        kis_kr = KisDomestic()
+        time.sleep(1)
+        take_asset_snapshot(kis_kr, kis_us)
+    except Exception as e:
+        logger.warning(f"[AccountManager] 자산 스냅샷 자동 기록 실패 (무시): {e}")
 
 if __name__ == "__main__":
     update_all_accounts()

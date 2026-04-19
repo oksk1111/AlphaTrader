@@ -175,6 +175,40 @@ class KisDomestic:
         res = self._request("GET", path, headers=headers, params=params)
         return res
 
+    def get_executed_orders(self, start_date, end_date, sell_buy="00"):
+        """주식일별주문체결조회 - TTTC8001R
+        
+        Args:
+            start_date: 조회시작일자 (YYYYMMDD)
+            end_date: 조회종료일자 (YYYYMMDD)
+            sell_buy: 매도매수구분 (00:전체, 01:매도, 02:매수)
+        Returns:
+            체결 내역 dict (output1: 개별체결, output2: 합산)
+        """
+        tr_id = "VTTC8001R" if "openapivts" in self.url else "TTTC8001R"
+        path = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+        headers = self._get_headers(tr_id)
+        
+        params = {
+            "CANO": self.acc_no_prefix,
+            "ACNT_PRDT_CD": self.acc_no_suffix,
+            "INQR_STRT_DT": start_date,
+            "INQR_END_DT": end_date,
+            "SLL_BUY_DVSN_CD": sell_buy,
+            "INQR_DVSN": "00",
+            "PDNO": "",
+            "CCLD_DVSN": "01",
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "INQR_DVSN_3": "00",
+            "INQR_DVSN_1": "",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": ""
+        }
+        
+        res = self._request("GET", path, headers=headers, params=params)
+        return res
+
     def buy_market_order(self, ticker, qty):
         """국내주식 시장가 매수"""
         # 실전: TTTC0802U / 모의: VTTC0802U

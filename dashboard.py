@@ -7,8 +7,13 @@ import time
 import subprocess
 import signal
 import json
+from datetime import datetime, timedelta
 from modules.kis_api import KisOverseas
 from modules.kis_domestic import KisDomestic
+from modules.profit_tracker import (
+    take_asset_snapshot, get_monthly_summary, get_asset_history,
+    fetch_all_trades, fetch_kr_realized_profit, fetch_us_realized_profit
+)
 from config import GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
 
 # ===== Google OAuth 인증 =====
@@ -235,7 +240,7 @@ def get_bot_status(last_log_time_str):
         return "Unknown"
 
 # --- Main Content ---
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "💰 Account & Portfolio", "📜 Logs & History", "📈 Analytics"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Overview", "💰 Account & Portfolio", "💹 Performance", "📜 Logs & History", "📈 Analytics"])
 
 recent_files = get_recent_log_files(3)
 parsed_lines = []
@@ -489,8 +494,204 @@ with tab2:
     else:
         st.warning("KR API not connected.")
 
-# --- Tab 3: Logs ---
+# --- Tab 3: Performance (수익 현황) ---
 with tab3:
+    st.subheader("💹 수익 현황 (Performance)")
+    st.caption("실현손익(매도 완료) + 평가손익(보유 중)을 통합하여 실제 수익률을 표시합니다.")
+    
+    # --- 자산 스냅샷 ---
+    if kis_kr and kis_us:
+        # 스냅샷 저장 버튼
+        snap_col1, snap_col2 = st.columns([1, 3])
+        with snap_col1:
+            if st.button("📸 자산 스냅샷 저장", help="현재 자산 현황을 기록합니다. 일 1회 권장."):
+                with st.spinner("자산 현황 조회 중..."):
+                    snap = take_asset_snapshot(kis_kr, kis_us)
+                    if snap:
+                        st.success(f"스냅샷 저장 완료! 총자산: {snap.get('total_krw', 0):,}원")
+        
+        # --- 현재 수익 현황 (실시간) ---
+        st.subheader("📊 현재 수익 현황")
+        
+        # KR 현재 상태
+        kr_unrealized = 0
+        kr_deposit = 0
+        kr_total_asset = 0
+        try:
+            kr_bal = kis_kr.get_balance()
+            if kr_bal and kr_bal.get('rt_cd') == '0' and 'output2' in kr_bal and kr_bal['output2']:
+                kr_summary = kr_bal['output2'][0]
+                kr_deposit = int(kr_summary.get('dnca_tot_amt', '0') or '0')
+                kr_unrealized = int(kr_summary.get('evlu_pfls_smtl_amt', '0') or '0')
+                kr_total_asset = int(kr_summary.get('tot_evlu_amt', '0') or '0')
+        except Exception as e:
+            st.error(f"KR 잔고 조회 실패: {e}")
+        
+        # US 현재 상태
+        us_unrealized = 0.0
+        us_deposit = 0.0
+        us_total_asset = 0.0
+        try:
+            us_fb = kis_us.get_foreign_balance()
+            if us_fb and 'deposit' in us_fb:
+                us_deposit = float(us_fb['deposit'])
+            
+            us_bal = kis_us.get_balance()
+            if us_bal and 'output1' in us_bal:
+                for h in us_bal['output1']:
+                    qty = int(float(h.get('ovrs_cblc_qty', h.get('ord_psbl_qty', '0')) or '0'))
+                    if qty <= 0:
+                        continue
+                    us_unrealized += float(h.get('frcr_evlu_pfls_amt', h.get('evlu_pfls_amt', '0')) or '0')
+                    us_total_asset += float(h.get('ovrs_stck_evlu_amt', h.get('frcr_evlu_amt', '0')) or '0')
+            us_total_asset += us_deposit
+        except Exception as e:
+            st.error(f"US 잔고 조회 실패: {e}")
+        
+        # 평가손익 표시
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("##### 🇰🇷 KR 시장")
+            kc1, kc2, kc3 = st.columns(3)
+            kc1.metric("예수금", f"{kr_deposit:,}원")
+            kr_profit_color = "normal" if kr_unrealized >= 0 else "inverse"
+            kc2.metric("평가손익 (보유중)", f"{kr_unrealized:,}원", 
+                       delta=f"{kr_unrealized:,}원", delta_color=kr_profit_color)
+            kc3.metric("총 자산", f"{kr_total_asset:,}원")
+        
+        with col2:
+            st.markdown("##### 🇺🇸 US 시장")
+            uc1, uc2, uc3 = st.columns(3)
+            uc1.metric("예수금", f"${us_deposit:,.2f}")
+            us_profit_color = "normal" if us_unrealized >= 0 else "inverse"
+            uc2.metric("평가손익 (보유중)", f"${us_unrealized:,.2f}", 
+                       delta=f"${us_unrealized:,.2f}", delta_color=us_profit_color)
+            uc3.metric("총 자산", f"${us_total_asset:,.2f}")
+        
+        st.divider()
+        
+        # --- 체결 내역 (실현손익 추적) ---
+        st.subheader("📋 체결 내역 (Trade History)")
+        
+        period_col1, period_col2 = st.columns(2)
+        with period_col1:
+            period_option = st.selectbox("조회 기간", [
+                "최근 7일", "최근 30일", "최근 90일", "이번 달", "지난 달", "직접 입력"
+            ])
+        
+        today = datetime.now()
+        
+        if period_option == "최근 7일":
+            start_dt = today - timedelta(days=7)
+            end_dt = today
+        elif period_option == "최근 30일":
+            start_dt = today - timedelta(days=30)
+            end_dt = today
+        elif period_option == "최근 90일":
+            start_dt = today - timedelta(days=90)
+            end_dt = today
+        elif period_option == "이번 달":
+            start_dt = today.replace(day=1)
+            end_dt = today
+        elif period_option == "지난 달":
+            first_this_month = today.replace(day=1)
+            end_dt = first_this_month - timedelta(days=1)
+            start_dt = end_dt.replace(day=1)
+        else:
+            with period_col2:
+                date_range = st.date_input("기간 선택", 
+                    value=(today - timedelta(days=30), today),
+                    max_value=today)
+                if isinstance(date_range, tuple) and len(date_range) == 2:
+                    start_dt, end_dt = date_range[0], date_range[1]
+                else:
+                    start_dt = today - timedelta(days=30)
+                    end_dt = today
+        
+        start_str = start_dt.strftime("%Y%m%d") if hasattr(start_dt, 'strftime') else start_dt.strftime("%Y%m%d")
+        end_str = end_dt.strftime("%Y%m%d") if hasattr(end_dt, 'strftime') else end_dt.strftime("%Y%m%d")
+        
+        if st.button("🔍 체결 내역 조회"):
+            with st.spinner(f"체결 내역 조회 중... ({start_str} ~ {end_str})"):
+                trades_data = fetch_all_trades(kis_kr, kis_us, start_str, end_str)
+                
+                # KR 체결 내역
+                if trades_data["kr_trades"]:
+                    st.markdown("##### 🇰🇷 KR 체결 내역")
+                    df_kr_trades = pd.DataFrame(trades_data["kr_trades"])
+                    df_kr_trades.columns = ["날짜", "종목코드", "종목명", "매매", "수량", "체결가", "체결금액"]
+                    
+                    # 매도/매수 색상 구분
+                    sell_count = len(df_kr_trades[df_kr_trades["매매"] == "매도"])
+                    buy_count = len(df_kr_trades[df_kr_trades["매매"] == "매수"])
+                    st.caption(f"매수 {buy_count}건 / 매도 {sell_count}건")
+                    st.dataframe(df_kr_trades, hide_index=True, use_container_width=True)
+                else:
+                    st.info("KR 체결 내역이 없습니다.")
+                
+                # US 체결 내역
+                if trades_data["us_trades"]:
+                    st.markdown("##### 🇺🇸 US 체결 내역")
+                    df_us_trades = pd.DataFrame(trades_data["us_trades"])
+                    df_us_trades.columns = ["날짜", "종목코드", "종목명", "매매", "수량", "체결가($)", "체결금액($)"]
+                    
+                    sell_count = len(df_us_trades[df_us_trades["매매"] == "매도"])
+                    buy_count = len(df_us_trades[df_us_trades["매매"] == "매수"])
+                    st.caption(f"매수 {buy_count}건 / 매도 {sell_count}건")
+                    st.dataframe(df_us_trades, hide_index=True, use_container_width=True)
+                else:
+                    st.info("US 체결 내역이 없습니다.")
+                
+                if not trades_data["kr_trades"] and not trades_data["us_trades"]:
+                    st.warning("해당 기간에 체결 내역이 없습니다.")
+        
+        st.divider()
+        
+        # --- 월별 자산 추이 (스냅샷 기반) ---
+        st.subheader("📈 자산 추이 (Asset Trend)")
+        
+        history = get_asset_history()
+        if history:
+            df_history = pd.DataFrame(history)
+            df_history['date'] = pd.to_datetime(df_history['date'])
+            
+            # 총 자산 추이 차트
+            st.markdown("##### 총 자산 추이 (KRW 환산)")
+            st.line_chart(df_history.set_index('date')['total_krw'], use_container_width=True)
+            
+            # KR/US 손익 추이
+            col_chart1, col_chart2 = st.columns(2)
+            with col_chart1:
+                st.markdown("##### 🇰🇷 KR 평가손익")
+                st.bar_chart(df_history.set_index('date')['kr_profit'], use_container_width=True)
+            with col_chart2:
+                st.markdown("##### 🇺🇸 US 평가손익 (USD)")
+                st.bar_chart(df_history.set_index('date')['us_profit_usd'], use_container_width=True)
+            
+            # 월별 요약 테이블
+            monthly = get_monthly_summary()
+            if monthly:
+                st.markdown("##### 월별 요약")
+                df_monthly = pd.DataFrame(monthly)
+                display_cols = {
+                    "month": "월",
+                    "kr_deposit": "KR 예수금",
+                    "kr_eval_profit": "KR 평가손익",
+                    "us_deposit_usd": "US 예수금($)",
+                    "us_eval_profit_usd": "US 평가손익($)",
+                    "total_krw": "총자산(KRW)"
+                }
+                df_display = df_monthly[[c for c in display_cols.keys() if c in df_monthly.columns]]
+                df_display = df_display.rename(columns=display_cols)
+                st.dataframe(df_display, hide_index=True, use_container_width=True)
+        else:
+            st.info("📸 아직 자산 스냅샷이 없습니다. 위의 '자산 스냅샷 저장' 버튼을 눌러 기록을 시작하세요.")
+            st.caption("매일 1회 스냅샷을 저장하면 자산 추이 차트가 표시됩니다.")
+    else:
+        st.warning("API가 연결되지 않았습니다.")
+
+# --- Tab 4: Logs ---
+with tab4:
     st.subheader("Recent Trades")
     if parsed_lines:
         trades = []
@@ -509,8 +710,8 @@ with tab3:
         df = pd.DataFrame(parsed_lines)
         st.dataframe(df.iloc[::-1], hide_index=True) # Show newest first
 
-# --- Tab 4: Analytics ---
-with tab4:
+# --- Tab 5: Analytics ---
+with tab5:
     st.subheader("📊 Log Analytics")
     
     # Get all log files
