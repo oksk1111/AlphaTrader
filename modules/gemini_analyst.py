@@ -15,6 +15,25 @@ class GeminiAnalyst:
             self.model = genai.GenerativeModel('gemini-2.0-flash')
             self.available = True
 
+    def health_check(self):
+        """API 연결 상태 확인 (최소 비용 요청)"""
+        if not self.model:
+            return False
+        try:
+            response = self.model.generate_content("hi")
+            _ = response.text
+            print("[Gemini] Health check PASSED ✓")
+            return True
+        except Exception as e:
+            error_str = str(e)
+            # 429 quota exceeded는 일시적 → available 유지하되 경고
+            if "429" in error_str or "quota" in error_str.lower():
+                print(f"[Gemini] Health check WARNING: 일일 할당량 초과 (일시적). 투표에는 포함하되 실패 시 제외됩니다.")
+                return True  # 일시적이므로 available 유지
+            print(f"[Gemini] Health check FAILED: {e}")
+            self.available = False
+            return False
+
     def fetch_news(self):
         """CNBC Finance RSS Feed Fetch"""
         url = "https://www.cnbc.com/id/10000664/device/rss/rss.html" # Finance

@@ -20,6 +20,39 @@ class GrokAnalyst:
         else:
             self.available = True
 
+    def health_check(self):
+        """API 연결 상태 확인 (최소 비용 요청)"""
+        if not self.available:
+            return False
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            data = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 3
+            }
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=10
+            )
+            if response.status_code in (401, 402, 403):
+                error_msg = response.text[:200]
+                print(f"[Grok] Health check FAILED ({response.status_code}): {error_msg}")
+                self.available = False
+                return False
+            response.raise_for_status()
+            print("[Grok] Health check PASSED ✓")
+            return True
+        except Exception as e:
+            print(f"[Grok] Health check FAILED: {e}")
+            self.available = False
+            return False
+
     def check_market_sentiment(self, news_text, persona="aggressive"):
         """Grok을 사용한 시장 감성 분석"""
         if not self.available:

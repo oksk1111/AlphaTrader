@@ -26,28 +26,54 @@ class MultiLLMAnalyst:
         self.analysts = []
         self.analyst_names = []
         
-        # Gemini (기본, 필수)
+        logger.info("[MultiLLM] LLM 초기화 및 헬스체크 시작...")
+        
+        # 후보 LLM 목록 (이름, 인스턴스, 필수 여부)
+        candidates = []
+        
+        # Gemini (기본)
         gemini = GeminiAnalyst()
-        self.analysts.append(gemini)
-        self.analyst_names.append("Gemini")
+        candidates.append(("Gemini", gemini))
         
         # Grok (선택)
         grok = GrokAnalyst()
         if grok.available:
-            self.analysts.append(grok)
-            self.analyst_names.append("Grok")
+            candidates.append(("Grok", grok))
         
         # DeepSeek (선택)
         deepseek = DeepSeekAnalyst()
         if deepseek.available:
-            self.analysts.append(deepseek)
-            self.analyst_names.append("DeepSeek")
+            candidates.append(("DeepSeek", deepseek))
         
         # Groq (선택)
         groq = GroqAnalyst()
         if groq.available:
-            self.analysts.append(groq)
-            self.analyst_names.append("Groq")
+            candidates.append(("Groq", groq))
+        
+        # 헬스체크: 실제 API 호출로 사용 가능 여부 확인
+        failed_llms = []
+        for name, analyst in candidates:
+            if hasattr(analyst, 'health_check'):
+                passed = analyst.health_check()
+                if passed and analyst.available:
+                    self.analysts.append(analyst)
+                    self.analyst_names.append(name)
+                else:
+                    failed_llms.append(name)
+                    logger.warning(f"[MultiLLM] {name} 헬스체크 실패 → 합의 투표에서 제외")
+            else:
+                # health_check 미구현 시 available 플래그만 확인
+                if analyst.available:
+                    self.analysts.append(analyst)
+                    self.analyst_names.append(name)
+        
+        if failed_llms:
+            logger.warning(f"[MultiLLM] 제외된 LLM: {failed_llms}")
+        
+        if not self.analysts:
+            logger.error("[MultiLLM] ⚠️ 활성 LLM이 없습니다! Gemini를 기본으로 추가합니다.")
+            self.analysts.append(gemini)
+            self.analyst_names.append("Gemini(fallback)")
         
         logger.info(f"[MultiLLM] 활성 LLM: {self.analyst_names} ({len(self.analysts)}개)")
 
