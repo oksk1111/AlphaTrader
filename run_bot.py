@@ -21,6 +21,15 @@ from modules.market_scanner import scanner  # New scanner module
 from modules.multi_llm import MultiLLMAnalyst
 from modules.auto_strategy import AutoStrategyOptimizer
 
+def safe_float(value, default=0.0):
+    """빈 문자열이나 None을 안전하게 float로 변환"""
+    try:
+        if value is None or value == '':
+            return default
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
 # Configuration
 CONFIG_FILE = "user_config.json"
 MAX_RETRIES_PER_TICKER = 3  # Maximum buy retries per ticker per session
@@ -190,8 +199,8 @@ def calculate_signal_strength(current_price, target_price, ma20, ohlc_data):
         try:
             recent_ranges = []
             for i in range(min(5, len(ohlc_data))):
-                high = float(ohlc_data[i]['high'])
-                low = float(ohlc_data[i]['low'])
+                high = safe_float(ohlc_data[i]['high'])
+                low = safe_float(ohlc_data[i]['low'])
                 recent_ranges.append(high - low)
             avg_range = sum(recent_ranges) / len(recent_ranges)
             today_move = current_price - target_price
@@ -385,14 +394,14 @@ def job():
             # US 시장은 get_foreign_balance()로 정확한 USD 잔고 조회
             foreign_bal = kis.get_foreign_balance()
             if foreign_bal and 'deposit' in foreign_bal:
-                available_cash = float(foreign_bal['deposit'])
+                available_cash = safe_float(foreign_bal['deposit'])
             # US 계좌는 환율 적용하여 원화 환산 (대략 1350원)
             total_asset_krw = available_cash * 1350
         else:
             if balance and 'output2' in balance and balance['output2']:
                 if isinstance(balance['output2'], list) and len(balance['output2']) > 0:
-                    available_cash = float(balance['output2'][0].get('dnca_tot_amt', 0))
-                    total_asset_krw = float(balance['output2'][0].get('tot_evlu_amt', available_cash))
+                    available_cash = safe_float(balance['output2'][0].get('dnca_tot_amt', 0))
+                    total_asset_krw = safe_float(balance['output2'][0].get('tot_evlu_amt', available_cash))
         logger.info(f"Available Cash: {available_cash:,.2f}, Total Asset (KRW): {total_asset_krw:,.0f}")
         
         # 자동 모드 전환 체크 (1000만원 달성 시 레버리지 모드로)
@@ -507,7 +516,7 @@ def job():
             logger.error(f"[{ticker}] Failed to get OHLC. Skipping.")
             continue
 
-        closes = [float(x['clos']) for x in ohlc]
+        closes = [safe_float(x['clos']) for x in ohlc]
         closes.reverse() 
         
         ma20 = calculate_ma(closes, 20)
@@ -566,8 +575,8 @@ def job():
                 try:
                     for h in balance.get('output1', []):
                         if h['pdno'] == ticker or h.get('ovrs_pdno') == ticker:
-                            holding_qty = int(float(h.get('hldg_qty', h.get('ovrs_cblc_qty', h.get('ord_psbl_qty', 1)))))
-                            holding_avg_price = float(h.get('pchs_avg_pric', h.get('avg_unpr3', 0)))
+                            holding_qty = int(safe_float(h.get('hldg_qty', h.get('ovrs_cblc_qty', h.get('ord_psbl_qty', 1)))))
+                            holding_avg_price = safe_float(h.get('pchs_avg_pric', h.get('avg_unpr3', 0)))
                             break
                 except:
                     pass
@@ -723,7 +732,7 @@ def job():
             continue
 
          # B. Calculate Target Price (Volatility Breakout)
-        today_open = float(ohlc[0]['open']) 
+        today_open = safe_float(ohlc[0]['open']) 
         target_price = calculate_target_price(today_open, ohlc, K_VALUE)
         logger.info(f"[{ticker}] Bull Market! Target Price: {target_price} (Open: {today_open})")
         
@@ -798,7 +807,7 @@ def job():
                     ohlc = kis.get_daily_ohlc(ticker)
                     if not ohlc: continue
                     
-                    closes = [float(x['clos']) for x in ohlc]
+                    closes = [safe_float(x['clos']) for x in ohlc]
                     closes.reverse()
                     ma20 = calculate_ma(closes, 20)
                     
@@ -813,7 +822,7 @@ def job():
                         logger.info(f"   -> [Skipped] Downtrend (Price {curr_p} < MA20 {ma20})")
                         continue
                         
-                    today_open = float(ohlc[0]['open'])
+                    today_open = safe_float(ohlc[0]['open'])
                     target_price = calculate_target_price(today_open, ohlc, K_VALUE)
                     
                     monitoring_targets[ticker] = {
@@ -839,7 +848,7 @@ def job():
                     # Fetch current price
                     if market == 'US':
                         quote = kis.get_quote(ticker, data.get('exchange'))
-                        curr = float(quote['last']) if quote else 0
+                        curr = safe_float(quote.get('last')) if quote else 0
                     else:
                         curr = kis.get_current_price(ticker)
                         
@@ -904,8 +913,8 @@ def job():
             if market == 'US':
                 # Use get_quote to get real-time volume (tvol) + price (last)
                 quote = kis.get_quote(ticker, exchange)
-                current_price = float(quote['last']) if quote else 0
-                current_vol = float(quote['tvol']) if quote else 0
+                current_price = safe_float(quote.get('last')) if quote else 0
+                current_vol = safe_float(quote.get('tvol')) if quote else 0
             else:
                 current_price = kis.get_current_price(ticker)
                 # KR API might need separate call for volume if get_current_price doesn't return it

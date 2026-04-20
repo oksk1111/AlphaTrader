@@ -120,7 +120,9 @@ class KisDomestic:
         
         res = self._request("GET", path, headers=headers, params=params)
         if res and res['rt_cd'] == '0':
-            return float(res['output']['stck_prpr']) # 현재가
+            val = res['output'].get('stck_prpr', '')
+            if val and val != '':
+                return float(val)
         return None
 
     def get_daily_ohlc(self, ticker):

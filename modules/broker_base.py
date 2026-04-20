@@ -11,6 +11,15 @@
 from abc import ABC, abstractmethod
 from typing import Optional, List, Dict, Any
 
+def _safe_float(value, default=0.0):
+    """빈 문자열이나 None을 안전하게 float로 변환"""
+    try:
+        if value is None or value == '':
+            return default
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
 
 class BrokerBase(ABC):
     """
@@ -169,7 +178,7 @@ class BrokerBase(ABC):
         balance = self.get_balance()
         if not balance:
             return 0.0
-        return float(balance.get('deposit', 0))
+        return _safe_float(balance.get('deposit', 0))
     
     def __repr__(self):
         return f"<{self.__class__.__name__} broker={self.broker_name} market={self.market}>"
@@ -210,7 +219,7 @@ class KISBrokerUS(BrokerBase):
         if not raw:
             return None
         
-        deposit = float(foreign.get('deposit', 0)) if foreign else 0
+        deposit = _safe_float(foreign.get('deposit', 0)) if foreign else 0
         
         holdings = []
         for h in raw.get('output1', []):
@@ -218,11 +227,11 @@ class KISBrokerUS(BrokerBase):
             holdings.append({
                 'ticker': ticker_id,
                 'name': h.get('prdt_name', ''),
-                'quantity': int(float(h.get('ccld_qty_smtl1', h.get('ord_psbl_qty', 0)))),
-                'avg_price': float(h.get('frcr_pchs_amt1', 0)),
-                'current_price': float(h.get('ovrs_now_pric1', 0)),
-                'profit': float(h.get('evlu_pfls_amt', 0)),
-                'profit_pct': float(h.get('evlu_pfls_rt', 0))
+                'quantity': int(_safe_float(h.get('ccld_qty_smtl1', h.get('ord_psbl_qty', 0)))),
+                'avg_price': _safe_float(h.get('frcr_pchs_amt1', 0)),
+                'current_price': _safe_float(h.get('ovrs_now_pric1', 0)),
+                'profit': _safe_float(h.get('evlu_pfls_amt', 0)),
+                'profit_pct': _safe_float(h.get('evlu_pfls_rt', 0))
             })
         
         summary_list = raw.get('output2', [{}])
@@ -231,8 +240,8 @@ class KISBrokerUS(BrokerBase):
         return {
             'deposit': deposit,
             'total_asset': deposit,  # US는 환산 필요
-            'total_profit': float(summary.get('tot_evlu_pfls_amt', 0)),
-            'total_profit_pct': float(summary.get('ovrs_tot_pfls', 0)),
+            'total_profit': _safe_float(summary.get('tot_evlu_pfls_amt', 0)),
+            'total_profit_pct': _safe_float(summary.get('ovrs_tot_pfls', 0)),
             'holdings': holdings,
             'raw': raw
         }
@@ -287,24 +296,24 @@ class KISBrokerKR(BrokerBase):
         summary_list = raw.get('output2', [{}])
         summary: dict = summary_list[0] if isinstance(summary_list, list) and summary_list else {}
         
-        deposit = float(summary.get('dnca_tot_amt', 0))
+        deposit = _safe_float(summary.get('dnca_tot_amt', 0))
         
         holdings = []
         for h in raw.get('output1', []):
             holdings.append({
                 'ticker': h.get('pdno', ''),
                 'name': h.get('prdt_name', ''),
-                'quantity': int(float(h.get('hldg_qty', 0))),
-                'avg_price': float(h.get('pchs_avg_pric', 0)),
-                'current_price': float(h.get('prpr', 0)),
-                'profit': float(h.get('evlu_pfls_amt', 0)),
-                'profit_pct': float(h.get('evlu_pfls_rt', 0))
+                'quantity': int(_safe_float(h.get('hldg_qty', 0))),
+                'avg_price': _safe_float(h.get('pchs_avg_pric', 0)),
+                'current_price': _safe_float(h.get('prpr', 0)),
+                'profit': _safe_float(h.get('evlu_pfls_amt', 0)),
+                'profit_pct': _safe_float(h.get('evlu_pfls_rt', 0))
             })
         
         return {
             'deposit': deposit,
-            'total_asset': float(summary.get('tot_evlu_amt', deposit)),
-            'total_profit': float(summary.get('evlu_pfls_smtl_amt', 0)),
+            'total_asset': _safe_float(summary.get('tot_evlu_amt', deposit)),
+            'total_profit': _safe_float(summary.get('evlu_pfls_smtl_amt', 0)),
             'total_profit_pct': 0,  # KR API에 총 수익률 필드 없음
             'holdings': holdings,
             'raw': raw

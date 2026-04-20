@@ -13,8 +13,8 @@ def calculate_target_price(today_open, ohlc_data, k=0.5):
     
     try:
         yesterday = ohlc_data[0]
-        prev_high = float(yesterday['high'])
-        prev_low = float(yesterday['low'])
+        prev_high = float(yesterday['high']) if yesterday.get('high') not in (None, '') else 0.0
+        prev_low = float(yesterday['low']) if yesterday.get('low') not in (None, '') else 0.0
         
         rng = prev_high - prev_low
         target_price = today_open + (rng * k)

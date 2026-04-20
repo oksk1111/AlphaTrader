@@ -124,13 +124,13 @@ class AutoStrategyOptimizer:
                 if not ohlc or len(ohlc) < 10:
                     continue
                 
-                closes = [float(x['clos']) for x in ohlc]
+                closes = [float(x['clos']) if x.get('clos') not in (None, '') else 0.0 for x in ohlc]
                 closes.reverse()
                 
-                highs = [float(x['high']) for x in ohlc]
+                highs = [float(x['high']) if x.get('high') not in (None, '') else 0.0 for x in ohlc]
                 highs.reverse()
                 
-                lows = [float(x['low']) for x in ohlc]
+                lows = [float(x['low']) if x.get('low') not in (None, '') else 0.0 for x in ohlc]
                 lows.reverse()
                 
                 current = closes[-1] if closes else 0

@@ -461,7 +461,7 @@ with tab2:
             total_return = summary.get('ovrs_tot_pfls', '0')
             
             # Fallback buying power logic: if 0, use deposit
-            if float(buying_power) == 0 and deposit_usd != "N/A":
+            if float(buying_power or '0') == 0 and deposit_usd != "N/A":
                 buying_power = deposit_usd + " (Est)"
         elif deposit_usd != "N/A":
              buying_power = deposit_usd + " (Est)"

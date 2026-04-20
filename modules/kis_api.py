@@ -5,6 +5,15 @@ import os
 from collections import deque
 from config import KIS_BASE_URL, KIS_APP_KEY, KIS_APP_SECRET, KIS_CANO, KIS_ACNT_PRDT_CD
 
+def _safe_float(value, default=0.0):
+    """빈 문자열이나 None을 안전하게 float로 변환"""
+    try:
+        if value is None or value == '':
+            return default
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
 class RateLimiter:
     """
     Token Bucket / Sliding Window Rate Limiter
@@ -158,7 +167,11 @@ class KisOverseas:
         res = self._request("GET", path, headers=headers, params=params)
         
         if res and res['rt_cd'] == '0':
-            return float(res['output']['last'])
+            last = res['output'].get('last', '')
+            val = _safe_float(last)
+            if val > 0:
+                return val
+            return None
         
         if res:
             print(f"[KIS] Current Price Error: {res.get('msg1')} (Code: {res.get('msg_cd')})")
@@ -438,8 +451,8 @@ class KisOverseas:
                 for item in data['output2']:
                     if item['crcy_cd'].strip() == 'USD':
                         return {
-                            'deposit': float(item['frcr_dncl_amt_2']), # 예수금
-                            'withdraw_possible': float(item['frcr_drwg_psbl_amt_1']) # 출금가능
+                            'deposit': _safe_float(item.get('frcr_dncl_amt_2', 0)), # 예수금
+                            'withdraw_possible': _safe_float(item.get('frcr_drwg_psbl_amt_1', 0)) # 출금가능
                         }
                 # If USD not found, return raw for debugging
                 return {'debug_raw': data['output2'], 'deposit': 0}

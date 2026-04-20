@@ -43,7 +43,7 @@ def check_volume_spike(current_vol, ohlc_data, window=5, threshold=1.5):
     # We want average of [Yesterday...D-5]
     
     try:
-        past_volumes = [float(x['tvol']) for x in ohlc_data[1:window+1]]
+        past_volumes = [float(x['tvol']) if x.get('tvol') not in (None, '') else 0.0 for x in ohlc_data[1:window+1]]
         if not past_volumes:
             return False
             
@@ -75,7 +75,7 @@ def check_gap_down(current_price, ohlc_data, threshold_pct=3.0):
         return False, 0.0
     
     try:
-        prev_close = float(ohlc_data[0]['clos'])
+        prev_close = float(ohlc_data[0]['clos']) if ohlc_data[0].get('clos') not in (None, '') else 0.0
         if prev_close <= 0:
             return False, 0.0
         
@@ -105,14 +105,14 @@ def check_consecutive_decline(ohlc_data, days=2, threshold_pct=3.0):
         # Check each day was a decline (close < open or close < prev_close)
         consecutive_drops = 0
         for i in range(days):
-            close = float(ohlc_data[i]['clos'])
-            open_price = float(ohlc_data[i]['open'])
+            close = float(ohlc_data[i]['clos']) if ohlc_data[i].get('clos') not in (None, '') else 0.0
+            open_price = float(ohlc_data[i]['open']) if ohlc_data[i].get('open') not in (None, '') else 0.0
             if close < open_price:
                 consecutive_drops += 1
         
         # Calculate cumulative drop from N days ago to latest
-        latest_close = float(ohlc_data[0]['clos'])
-        oldest_close = float(ohlc_data[days]['clos'])
+        latest_close = float(ohlc_data[0]['clos']) if ohlc_data[0].get('clos') not in (None, '') else 0.0
+        oldest_close = float(ohlc_data[days]['clos']) if ohlc_data[days].get('clos') not in (None, '') else 0.0
         
         if oldest_close <= 0:
             return False, 0.0
@@ -166,14 +166,14 @@ def check_portfolio_drawdown(holdings, threshold_pct=5.0):
         for h in holdings:
             # US holdings format
             if 'avg_price' in h and 'cur_price' in h:
-                qty = float(h.get('qty', 0))
-                avg = float(h.get('avg_price', 0))
-                cur = float(h.get('cur_price', 0))
+                qty = float(h.get('qty', 0)) if h.get('qty') not in (None, '') else 0.0
+                avg = float(h.get('avg_price', 0)) if h.get('avg_price') not in (None, '') else 0.0
+                cur = float(h.get('cur_price', 0)) if h.get('cur_price') not in (None, '') else 0.0
             # KR holdings format
             elif 'pchs_avg_pric' in h:
-                qty = float(h.get('hldg_qty', h.get('ord_psbl_qty', 0)))
-                avg = float(h.get('pchs_avg_pric', 0))
-                cur = float(h.get('prpr', h.get('now_pric2', 0)))
+                qty = float(h.get('hldg_qty', h.get('ord_psbl_qty', 0))) if h.get('hldg_qty', h.get('ord_psbl_qty', '')) not in (None, '') else 0.0
+                avg = float(h.get('pchs_avg_pric', 0)) if h.get('pchs_avg_pric') not in (None, '') else 0.0
+                cur = float(h.get('prpr', h.get('now_pric2', 0))) if h.get('prpr', h.get('now_pric2', '')) not in (None, '') else 0.0
             else:
                 continue
             
