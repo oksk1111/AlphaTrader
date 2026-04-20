@@ -375,7 +375,10 @@
             <div class="card">
                 <div class="card-header">
                     <h2>🇺🇸 해외주식 계좌</h2>
-                    <button class="btn btn-primary btn-sm" onclick="refreshAccount(true)">🔄 새로고침</button>
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span id="usCacheAge" style="font-size:0.75em; color:var(--text-secondary);"></span>
+                        <button class="btn btn-primary btn-sm" onclick="refreshAccount(true)">🔄 실시간 조회</button>
+                    </div>
                 </div>
                 <div class="grid grid-3" id="accountMetrics">
                     <div class="metric">
@@ -404,6 +407,7 @@
             <div class="card">
                 <div class="card-header">
                     <h2>🇰🇷 국내주식 계좌</h2>
+                    <span id="krCacheAge" style="font-size:0.75em; color:var(--text-secondary);"></span>
                 </div>
                 <div class="grid grid-3" id="krAccountMetrics">
                     <div class="metric">
@@ -649,6 +653,13 @@
                 document.getElementById('depositUsd').textContent = '$' + depUsd.toLocaleString(undefined, {minimumFractionDigits: 2});
                 document.getElementById('depositUsdKrw').textContent = '₩' + depKrw.toLocaleString();
                 
+                // Cache age display
+                const usCacheEl = document.getElementById('usCacheAge');
+                if (data._cache_age) {
+                    const sourceIcon = data._source === 'live' ? '🟢' : '🟡';
+                    usCacheEl.textContent = `${sourceIcon} ${data._cache_age}`;
+                }
+                
                 const profUsd = safeNum(data.profit_usd);
                 const profKrw = safeNum(data.profit_krw);
                 const profitEl = document.getElementById('profitUsd');
@@ -708,6 +719,14 @@
                 const totKrw = parseKrw(data.total_asset_krw);
 
                 document.getElementById('depositKrw').textContent = '₩' + depKrw.toLocaleString();
+                
+                // Cache age display
+                const krCacheEl = document.getElementById('krCacheAge');
+                if (data._cache_age) {
+                    const sourceIcon = data._source === 'live' ? '🟢' : '🟡';
+                    krCacheEl.textContent = `${sourceIcon} ${data._cache_age}`;
+                }
+                
                 const profitKrwEl = document.getElementById('profitKrw');
                 profitKrwEl.textContent = (profKrw >= 0 ? '+₩' : '-₩') + Math.abs(profKrw).toLocaleString();
                 profitKrwEl.className = 'metric-value ' + (profKrw >= 0 ? 'success' : 'danger');
@@ -910,6 +929,7 @@
 
         // ===== Init =====
         setInterval(refreshStatus, 5000);
+        setInterval(() => refreshAccount(false), 60000);  // 계좌 정보 60초마다 자동 갱신
         refreshAccount();
     </script>
 </body>

@@ -17,6 +17,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+import time as _time
 
 # 프로젝트 루트 설정
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -147,32 +148,115 @@ def parse_ticker_data(parsed_lines):
 # 환율 설정
 USD_KRW_RATE = 1450.0
 
+# 캐시 최대 유효 시간 (초) - 이보다 오래된 캐시는 자동 갱신 시도
+CACHE_MAX_AGE_SECONDS = 300  # 5분
+
+def _is_cache_stale(cache_entry, max_age=CACHE_MAX_AGE_SECONDS):
+    """캐시가 max_age초 이상 오래되었는지 확인"""
+    ts = cache_entry.get("timestamp", 0)
+    if ts == 0:
+        return True
+    return (_time.time() - ts) > max_age
+
+def _get_cache_age_str(cache_entry):
+    """캐시 나이를 사람이 읽기 쉬운 문자열로 반환"""
+    ts = cache_entry.get("timestamp", 0)
+    if ts == 0:
+        return "알 수 없음"
+    age = _time.time() - ts
+    if age < 60:
+        return f"{int(age)}초 전"
+    elif age < 3600:
+        return f"{int(age / 60)}분 전"
+    elif age < 86400:
+        return f"{int(age / 3600)}시간 전"
+    else:
+        return f"{int(age / 86400)}일 전"
+
+def _refresh_us_live():
+    """US 계좌를 API에서 실시간 조회하여 캐시 갱신"""
+    try:
+        from modules.account_manager import update_us_account
+        result = update_us_account()
+        if result:
+            print(f"[Dashboard] US Account LIVE refresh OK: deposit=${result.get('deposit_usd')}")
+            return result
+        print("[Dashboard] US Account LIVE refresh returned None")
+    except Exception as e:
+        print(f"[Dashboard] US Account LIVE refresh FAILED: {e}")
+    return None
+
+def _refresh_kr_live():
+    """KR 계좌를 API에서 실시간 조회하여 캐시 갱신"""
+    try:
+        from modules.account_manager import update_kr_account
+        result = update_kr_account()
+        if result:
+            print(f"[Dashboard] KR Account LIVE refresh OK: deposit={result.get('deposit_krw')}")
+            return result
+        print("[Dashboard] KR Account LIVE refresh returned None")
+    except Exception as e:
+        print(f"[Dashboard] KR Account LIVE refresh FAILED: {e}")
+    return None
+
 def get_account_data(force_update=False):
-    """US 계좌 정보 조회 (Cache Only)"""
+    """US 계좌 정보 조회 (필요 시 실시간 갱신)"""
     cache = load_cache()
-    us_data = cache.get("us", {}).get("data")
+    us_entry = cache.get("us", {})
+    us_data = us_entry.get("data")
+    cache_age = _get_cache_age_str(us_entry)
+    
+    # force 요청이거나 캐시가 오래된 경우 실시간 조회
+    if force_update or _is_cache_stale(us_entry):
+        print(f"[Dashboard] US Account cache stale ({cache_age}), refreshing live...")
+        live_data = _refresh_us_live()
+        if live_data:
+            live_data["_cache_age"] = "방금 갱신"
+            live_data["_source"] = "live"
+            return live_data
+        # 실패 시 캐시 fallback
+        print("[Dashboard] US live refresh failed, using stale cache")
+    
     if us_data:
-        # Debug output
-        print(f"[Dashboard] US Account: deposit_usd={us_data.get('deposit_usd')}, total_asset_usd={us_data.get('total_asset_usd')}")
+        us_data["_cache_age"] = cache_age
+        us_data["_source"] = "cache"
         return us_data
-    print("[Dashboard] US Account data not found in cache")
+    
+    print("[Dashboard] US Account data not found")
     return {
         "deposit_usd": 0.0, "deposit_krw": 0, "total_asset_usd": 0.0, "total_asset_krw": 0,
         "profit_usd": 0.0, "profit_krw": 0, "exchange_rate": USD_KRW_RATE, "holdings": [],
-        "msg": "Waiting for Bot..."
+        "_cache_age": "데이터 없음", "_source": "none",
+        "msg": "Waiting for data..."
     }
 
 def get_kr_account_data(force_update=False):
-    """KR 계좌 정보 조회 (Cache Only)"""
+    """KR 계좌 정보 조회 (필요 시 실시간 갱신)"""
     cache = load_cache()
-    kr_data = cache.get("kr", {}).get("data")
+    kr_entry = cache.get("kr", {})
+    kr_data = kr_entry.get("data")
+    cache_age = _get_cache_age_str(kr_entry)
+    
+    # force 요청이거나 캐시가 오래된 경우 실시간 조회
+    if force_update or _is_cache_stale(kr_entry):
+        print(f"[Dashboard] KR Account cache stale ({cache_age}), refreshing live...")
+        live_data = _refresh_kr_live()
+        if live_data:
+            live_data["_cache_age"] = "방금 갱신"
+            live_data["_source"] = "live"
+            return live_data
+        print("[Dashboard] KR live refresh failed, using stale cache")
+    
     if kr_data:
-        print(f"[Dashboard] KR Account: deposit_krw={kr_data.get('deposit_krw')}, total_asset_krw={kr_data.get('total_asset_krw')}")
+        kr_data["_cache_age"] = cache_age
+        kr_data["_source"] = "cache"
         return kr_data
-    print("[Dashboard] KR Account data not found in cache")
+    
+    print("[Dashboard] KR Account data not found")
     return {
         "deposit_krw": "0", "total_asset_krw": "0", "profit_krw": "0", "holdings": [],
-        "msg": "Waiting for Bot..."
+        "_cache_age": "데이터 없음", "_source": "none",
+        "msg": "Waiting for data..."
     }
 
 # --- API 엔드포인트 ---
@@ -251,26 +335,7 @@ async def api_status():
 
 @app.get("/api/account")
 async def api_account(force: bool = False):
-    # Read raw cache for debugging
-    raw_cache = {}
-    try:
-        if CACHE_FILE.exists():
-            with open(CACHE_FILE, "r") as f:
-                raw_cache = json.load(f)
-    except Exception as e:
-        raw_cache = {"error": str(e)}
-    
     data = get_account_data(force)
-    # Add debug info
-    data["_debug"] = {
-        "cache_file": str(CACHE_FILE),
-        "cache_exists": CACHE_FILE.exists(),
-        "base_dir": str(BASE_DIR),
-        "cwd": os.getcwd(),
-        "raw_cache_keys": list(raw_cache.keys()) if isinstance(raw_cache, dict) else str(raw_cache),
-        "us_data_exists": "us" in raw_cache and "data" in raw_cache.get("us", {}),
-        "us_deposit": raw_cache.get("us", {}).get("data", {}).get("deposit_usd", "NOT_FOUND")
-    }
     return JSONResponse(data)
 
 @app.get("/api/account/kr")

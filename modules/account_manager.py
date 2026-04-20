@@ -12,6 +12,15 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 CACHE_FILE = BASE_DIR / "database/account_cache.json"
 USD_KRW_RATE = 1450.0
 
+def _safe_float(value, default=0.0):
+    """빈 문자열이나 None을 안전하게 float로 변환"""
+    try:
+        if value is None or value == '':
+            return default
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
 def load_cache():
     if CACHE_FILE.exists():
         try:
@@ -58,7 +67,7 @@ def update_us_account():
         
         # 외화 예수금
         if foreign_bal and 'deposit' in foreign_bal:
-            result["deposit_usd"] = float(foreign_bal['deposit'])
+            result["deposit_usd"] = _safe_float(foreign_bal['deposit'])
             result["deposit_krw"] = int(result["deposit_usd"] * USD_KRW_RATE)
         
         # 보유 종목 집계
@@ -71,15 +80,15 @@ def update_us_account():
                 name = h.get('ovrs_item_name', h.get('prdt_name', 'N/A'))
                 
                 qty_raw = h.get('ovrs_cblc_qty', h.get('ord_psbl_qty', h.get('cblc_qty13', '0')))
-                qty = int(float(qty_raw or '0'))
+                qty = int(_safe_float(qty_raw or '0'))
                 
                 if qty <= 0: continue
                 
-                avg_price = float(h.get('pchs_avg_pric', h.get('avg_unpr3', '0')) or '0')
-                cur_price = float(h.get('now_pric2', h.get('ovrs_now_pric1', '0')) or '0')
-                profit = float(h.get('frcr_evlu_pfls_amt', h.get('evlu_pfls_amt', '0')) or '0')
-                profit_pct = float(h.get('evlu_pfls_rt1', h.get('evlu_pfls_rt', '0')) or '0')
-                eval_amt = float(h.get('ovrs_stck_evlu_amt', h.get('frcr_evlu_amt', '0')) or '0')
+                avg_price = _safe_float(h.get('pchs_avg_pric', h.get('avg_unpr3', '0')) or '0')
+                cur_price = _safe_float(h.get('now_pric2', h.get('ovrs_now_pric1', '0')) or '0')
+                profit = _safe_float(h.get('frcr_evlu_pfls_amt', h.get('evlu_pfls_amt', '0')) or '0')
+                profit_pct = _safe_float(h.get('evlu_pfls_rt1', h.get('evlu_pfls_rt', '0')) or '0')
+                eval_amt = _safe_float(h.get('ovrs_stck_evlu_amt', h.get('frcr_evlu_amt', '0')) or '0')
                 
                 # Fallback calculations
                 if cur_price == 0 and qty > 0 and eval_amt > 0:
