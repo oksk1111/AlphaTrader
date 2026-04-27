@@ -170,6 +170,9 @@ KR_STOCK_GAP_DOWN_THRESHOLD = 4.0   # KR 개별주 갭다운 기준
 # KR ETF 종목 코드 (ETF인지 개별주인지 구분용)
 KR_ETF_CODES = {'122630', '233740', '449200', '069500', '229200', '114800'}
 
+# US 레버리지 ETF 심볼 목록 (3X ETF는 DCA 매수 조건 완화 적용)
+US_LEVERAGED_ETF_SYMBOLS = {t['symbol'] for t in TARGET_TICKERS_US_3X}
+
 def calculate_signal_strength(current_price, target_price, ma20, ohlc_data):
     """
     매수 신호 강도 계산 (0.0 ~ 1.0)
@@ -611,20 +614,42 @@ def job():
             buy_blocked = False
             block_reasons = []
             
-            # 1-a. 갭다운 시 매수 차단
-            if is_gap_down:
+            # US 레버리지 ETF 여부 확인 (3X ETF는 매수 조건 완화)
+            is_us_leveraged_etf = (market == 'US' and ticker in US_LEVERAGED_ETF_SYMBOLS)
+            
+            # 1-a. 갭다운 시 매수 차단 (US 레버리지 ETF는 임계치 2배로 완화)
+            effective_gap_threshold = eff_gap_down_threshold * 2 if is_us_leveraged_etf else eff_gap_down_threshold
+            if is_gap_down and gap_drop_pct >= effective_gap_threshold:
                 buy_blocked = True
                 block_reasons.append(f"갭다운 {gap_drop_pct:.1f}%")
+            elif is_gap_down and is_us_leveraged_etf:
+                block_reasons.append(f"갭다운 {gap_drop_pct:.1f}% (레버리지 ETF 완화 적용)")
             
-            # 1-b. 연속 하락 시 매수 차단
+            # 1-b. 연속 하락 시 매수 차단 (US 레버리지 ETF는 조건 완화: 3일 연속 또는 5% 이상만 차단)
             if is_consecutive_decline:
-                buy_blocked = True
-                block_reasons.append(f"연속 {CONSECUTIVE_DECLINE_DAYS}일 하락 {cum_drop_pct:.1f}%")
+                if is_us_leveraged_etf:
+                    # US 레버리지 ETF: 3일 연속 또는 누적 5% 이상만 차단
+                    if CONSECUTIVE_DECLINE_DAYS >= 3 or cum_drop_pct >= 5.0:
+                        buy_blocked = True
+                        block_reasons.append(f"연속 {CONSECUTIVE_DECLINE_DAYS}일 하락 {cum_drop_pct:.1f}%")
+                    else:
+                        block_reasons.append(f"연속 하락 {cum_drop_pct:.1f}% (레버리지 ETF 완화 적용)")
+                else:
+                    buy_blocked = True
+                    block_reasons.append(f"연속 {CONSECUTIVE_DECLINE_DAYS}일 하락 {cum_drop_pct:.1f}%")
             
-            # 1-c. 20MA 하회 시 매수 차단 (기존 로직)
-            if not is_uptrend:
-                buy_blocked = True
-                block_reasons.append(f"20MA 하회")
+            # 1-c. 20MA 하회 시 매수 차단 (US 레버리지 ETF는 10MA로 완화)
+            if is_us_leveraged_etf:
+                # US 레버리지 ETF: 10MA 기준 사용 (더 단기 추세)
+                ma10 = calculate_ma(closes, 10) if len(closes) >= 10 else ma20
+                is_uptrend_for_buy = check_trend(current_price, ma10) if ma10 else is_uptrend
+                if not is_uptrend_for_buy:
+                    buy_blocked = True
+                    block_reasons.append(f"10MA 하회 (레버리지 ETF)")
+            else:
+                if not is_uptrend:
+                    buy_blocked = True
+                    block_reasons.append(f"20MA 하회")
             
             # 1-d. 5MA 하회 시 매수량 축소 (완전 차단은 아닌 경고)
             dca_reduce_qty = False
