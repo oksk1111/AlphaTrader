@@ -1,6 +1,7 @@
 {
     "auto_strategy": true,
     "trading_mode": "safe",
+    "theme_mode": "light",
     "strategy": "dca",
     "persona": "aggressive",
     "leverage_threshold_krw": 10000000,

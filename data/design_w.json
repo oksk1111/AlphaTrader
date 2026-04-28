@@ -1,0 +1,638 @@
+{
+  "designSystem": {
+    "meta": {
+      "theme": "light fintech dashboard",
+      "analysisSource": "single screenshot",
+      "precisionMode": "high-confidence visual approximation",
+      "notes": [
+        "Hover, focus, disabled, and loading states are inferred from visible patterns.",
+        "Typography family appears to be a modern sans-serif similar to Inter or SF Pro.",
+        "Spacing, shadow blur, and radius values are estimated from rendered proportions."
+      ]
+    },
+    "globalTokens": {
+      "colors": {
+        "canvas": "#F3F5F9",
+        "sidebarSurface": "#FBFBFD",
+        "topbarSurface": "#FFFFFF",
+        "contentSurface": "#F7F9FC",
+        "cardSurface": "#FFFFFF",
+        "cardSurfaceElevated": "#FFFFFF",
+        "cardSurfaceAlt": "#F8FAFC",
+        "inputSurface": "#FFFFFF",
+        "segmentedSurface": "#F3F5F9",
+        "divider": "#EEF2F6",
+        "borderSubtle": "#E7EBF2",
+        "textPrimary": "#202534",
+        "textSecondary": "#6E768A",
+        "textMuted": "#98A1B3",
+        "textInverse": "#FFFFFF",
+        "accentGold": "#6C4CF6",
+        "accentGoldStrong": "#5937E8",
+        "accentGoldSoft": "#EEE9FF",
+        "positive": "#58C98B",
+        "negative": "#F05A67",
+        "whiteSoft": "#F8FAFC",
+        "blackSoft": "#1F2433",
+        "chartGrid": "#EDF1F6",
+        "accentOrange": "#F6A623",
+        "accentTeal": "#21B7B7",
+        "accentYellow": "#F6C445"
+      },
+      "gradients": {
+        "ctaGold": {
+          "type": "linear",
+          "angle": "180deg",
+          "stops": [
+            { "color": "#7C61FF", "position": "0%" },
+            { "color": "#6C4CF6", "position": "55%" },
+            { "color": "#5B3DE8", "position": "100%" }
+          ],
+          "css": "linear-gradient(180deg, #7C61FF 0%, #6C4CF6 55%, #5B3DE8 100%)"
+        },
+        "chartAreaGold": {
+          "type": "linear",
+          "angle": "180deg",
+          "stops": [
+            { "color": "rgba(102,210,141,0.22)", "position": "0%" },
+            { "color": "rgba(102,210,141,0.10)", "position": "60%" },
+            { "color": "rgba(102,210,141,0.01)", "position": "100%" }
+          ],
+          "css": "linear-gradient(180deg, rgba(102,210,141,0.22) 0%, rgba(102,210,141,0.10) 60%, rgba(102,210,141,0.01) 100%)"
+        },
+        "sidebarWalletPanel": {
+          "type": "linear",
+          "angle": "180deg",
+          "stops": [
+            { "color": "#151A2B", "position": "0%" },
+            { "color": "#111728", "position": "100%" }
+          ],
+          "css": "linear-gradient(180deg, #151A2B 0%, #111728 100%)"
+        }
+      },
+      "shadows": {
+        "cardLow": "0 2px 10px rgba(31,36,51,0.05)",
+        "cardMedium": "0 8px 24px rgba(31,36,51,0.08)",
+        "buttonGlowGold": "0 8px 20px rgba(108,76,246,0.16)",
+        "chartGlowGold": "0 10px 24px rgba(102,210,141,0.16)",
+        "overlayInset": "inset 0 1px 0 rgba(255,255,255,0.65)"
+      },
+      "radii": {
+        "shell": "0px",
+        "panel": "12px",
+        "control": "8px",
+        "pill": "999px",
+        "small": "6px"
+      },
+      "borders": {
+        "default": "1px solid #EEF2F6",
+        "activeAccent": "1px solid #6C4CF6",
+        "softLight": "1px solid rgba(32,37,52,0.06)"
+      },
+      "typography": {
+        "display": {
+          "color": "#202534",
+          "weight": 700,
+          "tracking": "-0.02em"
+        },
+        "heading": {
+          "color": "#202534",
+          "weight": 600
+        },
+        "body": {
+          "color": "#6E768A",
+          "weight": 400
+        },
+        "label": {
+          "color": "#98A1B3",
+          "weight": 500,
+          "sizeBehavior": "small uppercase or compact sentence case"
+        },
+        "numericEmphasis": {
+          "color": "#202534",
+          "weight": 700
+        },
+        "positiveInline": {
+          "color": "#58C98B",
+          "weight": 600
+        },
+        "negativeInline": {
+          "color": "#F05A67",
+          "weight": 600
+        }
+      }
+    },
+    "layoutArchitecture": {
+      "structure": [
+        {
+          "region": "appShell",
+          "surface": "#F3F5F9",
+          "children": ["sidebar", "mainColumn"]
+        },
+        {
+          "region": "sidebar",
+          "surface": "#FBFBFD",
+          "widthBehavior": "fixed",
+          "children": ["brand", "primaryNav", "walletPanel"]
+        },
+        {
+          "region": "mainColumn",
+          "surface": "#F7F9FC",
+          "children": ["topbar", "assetHeader", "tabNav", "contentGrid"]
+        },
+        {
+          "region": "contentGrid",
+          "layout": "2-column desktop",
+          "leftColumn": ["chartCard", "marketStatsCard"],
+          "rightColumn": ["tradeCard", "newsCard"]
+        }
+      ],
+      "spacingSystem": {
+        "outerPadding": "16-24px",
+        "cardGap": "16px",
+        "internalCardPadding": "18-24px",
+        "compactControlGap": "8-12px"
+      },
+      "layering": {
+        "zIndexOrder": [
+          { "layer": "baseShell", "z": 0 },
+          { "layer": "cards", "z": 1 },
+          { "layer": "stickyTopbar", "z": 2 },
+          { "layer": "floatingControlsBadges", "z": 3 },
+          { "layer": "menusTooltips", "z": 10 }
+        ]
+      }
+    },
+    "componentStyles": {
+      "sidebar": {
+        "container": {
+          "surfaceColor": "#FBFBFD",
+          "borderRight": "1px solid #E7EBF2",
+          "shadow": "none"
+        },
+        "brandMark": {
+          "logoColor": "#6C4CF6",
+          "wordmarkColor": "#202534"
+        },
+        "navItem": {
+          "default": {
+            "surface": "transparent",
+            "textColor": "#6E768A",
+            "iconColor": "#6E768A",
+            "radius": "8px"
+          },
+          "active": {
+            "surface": "#EEE9FF",
+            "textColor": "#5A41E8",
+            "iconColor": "#6C4CF6",
+            "indicator": "no left rail; full-row filled state"
+          },
+          "hover": {
+            "surface": "#F5F3FF",
+            "textColor": "#4D3BD7",
+            "iconColor": "#6C4CF6"
+          },
+          "disabled": {
+            "surface": "transparent",
+            "textColor": "#BEC5D1",
+            "iconColor": "#BEC5D1",
+            "opacity": 0.55
+          }
+        },
+        "walletPanel": {
+          "surfaceColor": "linear-gradient(180deg, #151A2B 0%, #111728 100%)",
+          "borderTreatment": "#1A2235",
+          "elevationShadow": "0 8px 24px rgba(31,36,51,0.14)",
+          "radius": "14px",
+          "tokenBubble": {
+            "surface": "#2A3147",
+            "iconContainer": "solid circular swatch",
+            "iconBorder": "none"
+          },
+          "balancePanel": {
+            "surface": "#FFFFFF",
+            "textPrimary": "#202534",
+            "textSecondary": "#6E768A",
+            "radius": "10px"
+          }
+        }
+      },
+      "topbar": {
+        "container": {
+          "surfaceColor": "#FFFFFF",
+          "borderBottom": "1px solid #EEF2F6"
+        },
+        "breadcrumb": {
+          "primaryText": "#202534",
+          "secondaryText": "#6E768A"
+        },
+        "marketTicker": {
+          "labelColor": "#6E768A",
+          "positiveValue": "#58C98B",
+          "negativeValue": "#F05A67",
+          "separator": "#D9E0EA"
+        },
+        "utilityIcons": {
+          "defaultSurface": "#FFFFFF",
+          "iconColor": "#4E5668",
+          "radius": "999px",
+          "hoverSurface": "#F8FAFC"
+        }
+      },
+      "assetHeader": {
+        "assetIdentity": {
+          "iconContainer": {
+            "surface": "#F6A623",
+            "iconColor": "#FFFFFF",
+            "shape": "circle"
+          },
+          "nameText": "#202534",
+          "tickerText": "#98A1B3"
+        },
+        "priceBlock": {
+          "priceColor": "#202534",
+          "deltaPositive": "#58C98B",
+          "deltaNegative": "#F05A67"
+        },
+        "utilityActions": {
+          "secondaryButton": {
+            "surface": "#F5F3FF",
+            "textColor": "#6C4CF6",
+            "iconColor": "#6C4CF6",
+            "border": "1px solid #E7EBF2",
+            "radius": "8px"
+          },
+          "secondaryButtonHover": {
+            "surface": "#EEE9FF"
+          },
+          "iconOnlyButton": {
+            "surface": "#FFFFFF",
+            "iconColor": "#6E768A"
+          }
+        }
+      },
+      "tabNavigation": {
+        "underlineTabs": {
+          "defaultText": "#98A1B3",
+          "activeText": "#202534",
+          "activeUnderline": "#202534",
+          "hoverText": "#6E768A",
+          "underlineThickness": "2px"
+        }
+      },
+      "cards": {
+        "baseCard": {
+          "surfaceColor": "#FFFFFF",
+          "borderTreatment": "#E7EBF2",
+          "elevationShadow": "0 2px 10px rgba(31,36,51,0.05)",
+          "radius": "12px"
+        },
+        "chartCard": {
+          "surfaceColor": "#FFFFFF",
+          "contentElements": {
+            "segmentedControl": {
+              "containerSurface": "#F3F5F9",
+              "defaultText": "#6E768A",
+              "activeSurface": "#FFFFFF",
+              "activeText": "#202534",
+              "hoverSurface": "#F8FAFC",
+              "radius": "8px"
+            },
+            "chartGrid": {
+              "lineColor": "#EDF1F6",
+              "emphasisAxis": "#D9E0EA"
+            },
+            "chartSeries": {
+              "lineColor": "#66D28D",
+              "lineWidth": "3px",
+              "pointStroke": "#66D28D",
+              "pointFill": "#FFFFFF",
+              "pointHoverFill": "#66D28D",
+              "glow": "0 10px 24px rgba(102,210,141,0.16)"
+            },
+            "chartArea": {
+              "fill": "linear-gradient(180deg, rgba(102,210,141,0.22) 0%, rgba(102,210,141,0.10) 60%, rgba(102,210,141,0.01) 100%)"
+            },
+            "tooltip": {
+              "surface": "#1F2433",
+              "textColor": "#FFFFFF",
+              "shadow": "0 10px 24px rgba(31,36,51,0.18)",
+              "radius": "999px"
+            },
+            "miniRangeOverview": {
+              "baseArea": "#F3F5F9",
+              "activityArea": "#D9E0EA",
+              "handle": "#98A1B3"
+            }
+          }
+        },
+        "tradeCard": {
+          "surfaceColor": "#FFFFFF",
+          "tabSwitcher": {
+            "containerSurface": "#F3F5F9",
+            "activeSurface": "#FFFFFF",
+            "activeText": "#202534",
+            "inactiveText": "#98A1B3"
+          },
+          "conversionText": {
+            "primaryValue": "#202534",
+            "secondaryValue": "#6E768A"
+          },
+          "fieldGroup": {
+            "labelColor": "#98A1B3",
+            "fieldSurface": "#FFFFFF",
+            "fieldBorder": "#E7EBF2",
+            "fieldText": "#202534",
+            "suffixControlSurface": "transparent",
+            "suffixText": "#4E5668",
+            "tokenBadgeAccent": "#21B7B7"
+          },
+          "primaryCta": {
+            "surfaceColor": "linear-gradient(180deg, #7C61FF 0%, #6C4CF6 55%, #5B3DE8 100%)",
+            "textColor": "#FFFFFF",
+            "shadow": "0 8px 20px rgba(108,76,246,0.16)",
+            "radius": "999px"
+          },
+          "primaryCtaHover": {
+            "surfaceColor": "linear-gradient(180deg, #866DFF 0%, #7355F7 55%, #6245EB 100%)",
+            "transform": "translateY(-1px)"
+          },
+          "primaryCtaPressed": {
+            "surfaceColor": "#5B3DE8",
+            "shadow": "0 4px 10px rgba(108,76,246,0.14)"
+          }
+        },
+        "newsCard": {
+          "surfaceColor": "#FFFFFF",
+          "headingColor": "#202534",
+          "bodyText": "#6E768A",
+          "metaText": "#98A1B3",
+          "accentIconUse": "small circular badges retain saturated token hues while text remains neutral"
+        },
+        "marketStatsCard": {
+          "labelColor": "#98A1B3",
+          "valueColor": "#202534",
+          "trendPositive": "#58C98B",
+          "trendNegative": "#F05A67",
+          "trackColor": "#EDF1F6",
+          "progressAccent": "#6C4CF6"
+        }
+      },
+      "icons": {
+        "systemIcons": {
+          "default": "#6E768A",
+          "muted": "#98A1B3",
+          "inverseOnLight": "#FFFFFF",
+          "accentUsage": "#6C4CF6"
+        },
+        "tokenIcons": {
+          "renderingRule": "use native token brand fills inside circular containers; never inherit container gradient"
+        }
+      }
+    },
+    "contextualStylingRules": [
+      {
+        "rule": "Navigation containers use flat light surfaces; gradients are reserved for wallet summary and primary CTA surfaces."
+      },
+      {
+        "rule": "Primary action buttons use purple gradient Gamma; utility buttons use solid soft lavender or white Delta with subtle border."
+      },
+      {
+        "rule": "Large financial values use `textPrimary`; performance deltas exclusively use `positive` or `negative` semantic colors."
+      },
+      {
+        "rule": "Cards receive subtle shadows at the container level only; internal rows stay flat and depend on borders and spacing."
+      },
+      {
+        "rule": "Segmented controls use a pale track with a white selected chip; underline tabs use transparent backgrounds with a thin active line."
+      },
+      {
+        "rule": "Purple should not be reused for body copy; reserve it for CTA, selected controls, and active navigation."
+      }
+    ],
+    "hierarchicalStyleRelationships": {
+      "inheritance": [
+        "All cards inherit `baseCard` surface, border, radius, and low elevation shadow.",
+        "Interactive chip controls inherit shared segmented treatment, then override active fill based on context.",
+        "Numeric emphasis inherits heading weight but overrides size and tracking for price displays."
+      ],
+      "overrides": [
+        "Tooltip surfaces invert from the light theme to a dark surface for immediate chart readability.",
+        "Primary CTA overrides global control radius to fully pill-shaped.",
+        "Chart markers override standard icon treatment with green stroke and white center fill."
+      ],
+      "responsiveBehavior": [
+        "Desktop uses a persistent left sidebar and two-column content grid.",
+        "On smaller widths, trade card stacks below chart card and sidebar collapses into a drawer or top rail.",
+        "Ticker strip should permit horizontal overflow or truncation rather than wrapping into multiple rows."
+      ]
+    },
+    "visualTreatmentInventory": {
+      "shadowDistribution": [
+        { "target": "cards", "shadow": "0 2px 10px rgba(31,36,51,0.05)" },
+        { "target": "wallet summary panel", "shadow": "0 8px 24px rgba(31,36,51,0.14)" },
+        { "target": "primary CTA", "shadow": "0 8px 20px rgba(108,76,246,0.16)" },
+        { "target": "chart series", "shadow": "0 10px 24px rgba(102,210,141,0.16)" }
+      ],
+      "radiusDistribution": [
+        { "target": "cards", "radius": "12px" },
+        { "target": "inputs and utility buttons", "radius": "8px" },
+        { "target": "segmented active chips", "radius": "6px" },
+        { "target": "CTA and tooltip pills", "radius": "999px" }
+      ],
+      "animationPatterns": [
+        {
+          "target": "nav items, utility buttons, segmented controls",
+          "transition": "background-color 160ms ease, color 160ms ease, border-color 160ms ease"
+        },
+        {
+          "target": "primary CTA",
+          "transition": "transform 140ms ease, box-shadow 180ms ease, background 180ms ease"
+        },
+        {
+          "target": "chart points",
+          "transition": "transform 120ms ease, fill 120ms ease, stroke 120ms ease"
+        }
+      ]
+    },
+    "stateArchitecture": {
+      "navigationItem": {
+        "default": {
+          "surface": "transparent",
+          "text": "#6E768A",
+          "icon": "#6E768A"
+        },
+        "hover": {
+          "surface": "#F5F3FF",
+          "text": "#4D3BD7",
+          "icon": "#6C4CF6"
+        },
+        "active": {
+          "surface": "#EEE9FF",
+          "text": "#5A41E8",
+          "icon": "#6C4CF6"
+        },
+        "focus": {
+          "outline": "2px solid rgba(108,76,246,0.28)",
+          "outlineOffset": "2px"
+        },
+        "disabled": {
+          "opacity": 0.55,
+          "text": "#BEC5D1",
+          "icon": "#BEC5D1"
+        }
+      },
+      "segmentedControlOption": {
+        "default": {
+          "surface": "transparent",
+          "text": "#6E768A"
+        },
+        "hover": {
+          "surface": "#F8FAFC",
+          "text": "#202534"
+        },
+        "selected": {
+          "surface": "#FFFFFF",
+          "text": "#202534"
+        },
+        "disabled": {
+          "surface": "transparent",
+          "text": "#BEC5D1",
+          "opacity": 0.5
+        }
+      },
+      "primaryButton": {
+        "default": {
+          "surface": "linear-gradient(180deg, #7C61FF 0%, #6C4CF6 55%, #5B3DE8 100%)",
+          "text": "#FFFFFF",
+          "shadow": "0 8px 20px rgba(108,76,246,0.16)"
+        },
+        "hover": {
+          "surface": "linear-gradient(180deg, #866DFF 0%, #7355F7 55%, #6245EB 100%)",
+          "transform": "translateY(-1px)"
+        },
+        "pressed": {
+          "surface": "#5B3DE8",
+          "shadow": "0 4px 10px rgba(108,76,246,0.14)",
+          "transform": "translateY(0)"
+        },
+        "focus": {
+          "outline": "2px solid rgba(108,76,246,0.30)",
+          "outlineOffset": "3px"
+        },
+        "disabled": {
+          "surface": "#CFC7F7",
+          "text": "rgba(255,255,255,0.72)",
+          "shadow": "none",
+          "opacity": 0.7
+        },
+        "loading": {
+          "surface": "#6C4CF6",
+          "text": "transparent",
+          "spinner": "#FFFFFF"
+        }
+      },
+      "secondaryButton": {
+        "default": {
+          "surface": "#F5F3FF",
+          "border": "#E7EBF2",
+          "text": "#6C4CF6"
+        },
+        "hover": {
+          "surface": "#EEE9FF",
+          "text": "#5937E8"
+        },
+        "pressed": {
+          "surface": "#E6DEFF"
+        },
+        "focus": {
+          "outline": "2px solid rgba(108,76,246,0.22)"
+        },
+        "disabled": {
+          "surface": "#F6F7FA",
+          "text": "#BEC5D1",
+          "border": "#EEF2F6"
+        }
+      },
+      "textInput": {
+        "default": {
+          "surface": "#FFFFFF",
+          "border": "#E7EBF2",
+          "text": "#202534",
+          "placeholder": "#98A1B3"
+        },
+        "hover": {
+          "border": "#D9E0EA"
+        },
+        "focus": {
+          "border": "#6C4CF6",
+          "shadow": "0 0 0 3px rgba(108,76,246,0.10)"
+        },
+        "error": {
+          "border": "#F05A67",
+          "supportText": "#F05A67"
+        },
+        "disabled": {
+          "surface": "#F8FAFC",
+          "text": "#BEC5D1",
+          "placeholder": "#BEC5D1"
+        }
+      }
+    },
+    "accessibility": {
+      "contrastEstimates": [
+        {
+          "pair": "#202534 on #FFFFFF",
+          "ratioApprox": 14.5,
+          "compliance": "AAA"
+        },
+        {
+          "pair": "#6E768A on #FFFFFF",
+          "ratioApprox": 4.7,
+          "compliance": "AA"
+        },
+        {
+          "pair": "#98A1B3 on #FFFFFF",
+          "ratioApprox": 2.6,
+          "compliance": "Fails normal text; metadata only"
+        },
+        {
+          "pair": "#FFFFFF on #6C4CF6",
+          "ratioApprox": 5.3,
+          "compliance": "AA"
+        },
+        {
+          "pair": "#58C98B on #FFFFFF",
+          "ratioApprox": 2.1,
+          "compliance": "Use for semantic emphasis only"
+        },
+        {
+          "pair": "#F05A67 on #FFFFFF",
+          "ratioApprox": 3.8,
+          "compliance": "AA large; prefer bolder text for small chips"
+        }
+      ],
+      "guidance": [
+        "Use `textPrimary` for all standard body text over light cards.",
+        "Restrict `textMuted` to labels, timestamps, and tertiary metadata.",
+        "Do not place purple body text on white surfaces for long-form reading; reserve it for emphasis and controls."
+      ]
+    },
+    "implementationGuardrails": {
+      "avoid": [
+        "Applying purple gradients to icons, labels, or generic card backgrounds.",
+        "Using button text color as default typography color across the layout.",
+        "Placing strong shadows on individual text blocks or table rows.",
+        "Using muted placeholder gray for actionable text.",
+        "Reusing semantic green/red for non-performance decorative accents."
+      ],
+      "ensure": [
+        "Container shadows remain on outer cards, not internal content fragments.",
+        "Purple appears as a controlled accent family across CTA, active navigation, and selected controls.",
+        "Dark-on-light contrast is preserved for all primary reading surfaces.",
+        "Selection patterns stay consistent: pale chip for segmented controls, underline for content tabs, filled row for sidebar navigation.",
+        "Form fields remain flatter and lighter than surrounding cards to preserve depth hierarchy."
+      ]
+    }
+  }
+}

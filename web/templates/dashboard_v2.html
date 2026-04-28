@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="{{ theme_mode }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>US-ETF-Sniper Control Center</title>
+    {% set ds = active_design.designSystem %}
+    {% set colors = ds.globalTokens.colors %}
+    {% set gradients = ds.globalTokens.gradients %}
+    {% set shadows = ds.globalTokens.shadows %}
+    {% set radii = ds.globalTokens.radii %}
+    {% set component_styles = ds.componentStyles %}
+    {% set sidebar_styles = component_styles.get('sidebar', {}) %}
+    {% set topbar_styles = component_styles.get('topbar', {}) %}
+    {% set asset_header_styles = component_styles.get('assetHeader', {}) %}
+    {% set cards_styles = component_styles.get('cards', {}) %}
+    {% set hero_chart_card = component_styles.get('heroChartCard', {}) %}
+    {% set summary_cards = component_styles.get('summaryCards', {}) %}
+    {% set asset_list_card = component_styles.get('assetListCard', {}) %}
+    <style>
+        :root {
+            --canvas: {{ colors.canvas | default('#191B1F') }};
+            --sidebar-surface: {{ colors.sidebarSurface | default('#16181C') }};
+            --topbar-surface: {{ colors.topbarSurface | default('#1D2025') }};
+            --content-surface: {{ colors.contentSurface | default('#23262C') }};
+            --card-surface: {{ colors.cardSurface | default('#1C1F24') }};
+            --card-surface-elevated: {{ colors.cardSurfaceElevated | default('#20242A') }};
+            --input-surface: {{ colors.inputSurface | default('#1F2227') }};
+            --segmented-surface: {{ colors.segmentedSurface | default('#2A2E34') }};
+            --divider: {{ colors.divider | default('#2E3239') }};
+            --border-subtle: {{ colors.borderSubtle | default('#343943') }};
+            --text-primary: {{ colors.textPrimary | default('#F5F7FA') }};
+            --text-secondary: {{ colors.textSecondary | default('#A7ADB7') }};
+            --text-muted: {{ colors.textMuted | default('#757B85') }};
+            --text-inverse: {{ colors.textInverse | default('#1A1B1F') }};
+            --accent-primary: {{ colors.accentGold | default(colors.get('brandPrimary', '#F5C75B')) }};
+            --accent-primary-strong: {{ colors.accentGoldStrong | default(colors.get('brandPrimaryDark', '#F0BA3F')) }};
+            --accent-primary-soft: {{ colors.accentGoldSoft | default(colors.get('brandPrimarySoft', '#B28A2E')) }};
+            --accent-gold: var(--accent-primary);
+            --accent-gold-strong: var(--accent-primary-strong);
+            --accent-gold-soft: var(--accent-primary-soft);
+            --positive: {{ colors.positive | default(colors.get('accentGreen', '#1FCB7B')) }};
+            --negative: {{ colors.negative | default(colors.get('accentRed', '#EA4E5A')) }};
+            --white-soft: {{ colors.whiteSoft | default('#F3F4F6') }};
+            --black-soft: {{ colors.blackSoft | default('#121316') }};
+            --gradient-cta: {{ gradients.get('ctaGold', {}).get('css', gradients.get('primaryCta', {}).get('css', 'linear-gradient(180deg, #FFD46C 0%, #F5C75B 55%, #EAB544 100%)')) }};
+            --gradient-chart: {{ gradients.get('chartAreaGold', {}).get('css', gradients.get('lineAreaGreen', {}).get('css', 'linear-gradient(180deg, rgba(245,199,91,0.42) 0%, rgba(245,199,91,0.18) 58%, rgba(245,199,91,0.02) 100%)')) }};
+            --gradient-wallet: {{ gradients.get('sidebarWalletPanel', {}).get('css', gradients.get('promoPanel', {}).get('css', 'linear-gradient(180deg, #23262C 0%, #1C1F24 100%)')) }};
+            --shadow-card: {{ shadows.cardLow | default('0 8px 20px rgba(0,0,0,0.20)') }};
+            --shadow-card-strong: {{ shadows.cardMedium | default(shadows.get('floating', '0 12px 28px rgba(0,0,0,0.28)')) }};
+            --shadow-gold: {{ shadows.buttonGlowGold | default(shadows.get('floating', '0 6px 18px rgba(245,199,91,0.18)')) }};
+            --shadow-chart: {{ shadows.chartGlowGold | default(shadows.get('tooltip', '0 0 18px rgba(245,199,91,0.28)')) }};
+            --radius-panel: {{ radii.panel | default(radii.get('card', '14px')) }};
+            --radius-control: {{ radii.control | default('10px') }};
+            --radius-pill: {{ radii.pill | default('999px') }};
+            --radius-small: {{ radii.small | default('8px') }};
+            --nav-hover-surface: {{ sidebar_styles.get('navItem', {}).get('hover', {}).get('surface', '#1E2126') }};
+            --nav-hover-text: {{ sidebar_styles.get('navItem', {}).get('hover', {}).get('textColor', '#F5F7FA') }};
+            --nav-active-surface: {{ sidebar_styles.get('navItem', {}).get('active', {}).get('surface', '#23262C') }};
+            --nav-active-text: {{ sidebar_styles.get('navItem', {}).get('active', {}).get('textColor', '#F5F7FA') }};
+            --utility-hover-surface: {{ topbar_styles.get('utilityIcons', {}).get('hoverSurface', hero_chart_card.get('actionButtons', {}).get('iconButton', {}).get('surface', '#2A2E34')) }};
+            --wallet-balance-surface: {{ sidebar_styles.get('walletPanel', {}).get('balancePanel', {}).get('surface', summary_cards.get('baseCard', {}).get('surfaceColor', '#17191D')) }};
+            --secondary-surface: {{ asset_header_styles.get('utilityActions', {}).get('secondaryButton', {}).get('surface', hero_chart_card.get('actionButtons', {}).get('secondary', {}).get('surface', '#2A2E34')) }};
+            --secondary-text: {{ asset_header_styles.get('utilityActions', {}).get('secondaryButton', {}).get('textColor', hero_chart_card.get('actionButtons', {}).get('secondary', {}).get('text', '#F3F4F6')) }};
+            --secondary-border: {{ asset_header_styles.get('utilityActions', {}).get('secondaryButton', {}).get('border', hero_chart_card.get('actionButtons', {}).get('secondary', {}).get('border', '#343943')) }};
+            --secondary-hover-surface: {{ asset_header_styles.get('utilityActions', {}).get('secondaryButtonHover', {}).get('surface', '#31363E') }};
+            --surface-subtle: {{ colors.cardSurfaceAlt | default('rgba(255,255,255,0.02)') }};
+            --surface-subtle-strong: {{ colors.shellSurface | default('rgba(255,255,255,0.03)') }};
+            --table-head-surface: {{ colors.cardSurfaceAlt | default('rgba(255,255,255,0.03)') }};
+            --row-hover-surface: {{ asset_list_card.get('row', {}).get('hoverSurface', 'rgba(255,255,255,0.02)') }};
+            --table-row-border: {{ asset_list_card.get('row', {}).get('borderBottom', 'rgba(255,255,255,0.04)') }};
+            --progress-track-color: {{ cards_styles.get('marketStatsCard', {}).get('trackColor', colors.get('chartGrid', '#343943')) }};
+            --chart-grid-color: {{ cards_styles.get('chartCard', {}).get('contentElements', {}).get('chartGrid', {}).get('lineColor', hero_chart_card.get('chart', {}).get('gridColor', 'rgba(255,255,255,0.08)')) }};
+            --log-surface: {{ colors.blackSoft | default(colors.get('tooltipBg', '#15171B')) }};
+            --overlay-backdrop: rgba(0, 0, 0, 0.5);
+            --focus-ring: rgba(245, 199, 91, 0.55);
+            --font-stack: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+    </style>
+    <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+    <div class="app-shell">
+        <aside class="sidebar-shell">
+            <div class="sidebar-scroll">
+                <div class="brand-block">
+                    <div class="brand-mark">◆</div>
+                    <div>
+                        <div class="brand-title">US ETF Sniper</div>
+                        <div class="brand-subtitle">Control Center</div>
+                    </div>
+                </div>
+                <nav class="nav-list" id="sidebarNav"></nav>
+                <section class="wallet-panel" id="walletPanel"></section>
+            </div>
+        </aside>
+
+        <main class="main-shell">
+            <header class="topbar-shell">
+                <div class="topbar-row">
+                    <div>
+                        <div class="breadcrumb" id="breadcrumbTrail"></div>
+                        <div class="page-meta" id="pageMeta"></div>
+                    </div>
+                    <div class="utility-actions">
+                        <button class="utility-button theme-button" type="button" data-action="toggle-theme" aria-label="주간/야간 모드 전환">
+                            <span id="themeToggleIcon">☀</span>
+                            <span id="themeToggleLabel">주간</span>
+                        </button>
+                        <button class="utility-button" type="button" data-action="toggle-notifications" aria-label="알림 센터 열기">◌</button>
+                        <button class="utility-button" type="button" data-action="refresh" aria-label="데이터 새로고침">↻</button>
+                        <button class="utility-button" type="button" data-route="automation" aria-label="설정 열기">⚙</button>
+                        <button class="profile-pill" type="button" id="profileChip">
+                            <span class="profile-avatar" id="profileAvatar">OP</span>
+                            <span id="profileRole">ADMIN</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="ticker-strip" id="marketTicker"></div>
+            </header>
+
+            <section class="main-content">
+                <section class="hero-card" id="heroSection"></section>
+                <section class="route-tabs" id="routeTabs"></section>
+                <section id="viewContent"></section>
+            </section>
+        </main>
+    </div>
+
+    <aside class="notification-drawer hidden" id="notificationDrawer" aria-hidden="true">
+        <div class="drawer-header">
+            <div>
+                <div class="drawer-title">운영 알림</div>
+                <div class="drawer-subtitle">실시간 상태 및 이벤트</div>
+            </div>
+            <button class="utility-button" type="button" data-action="toggle-notifications" aria-label="알림 센터 닫기">✕</button>
+        </div>
+        <div class="drawer-list" id="notificationList"></div>
+    </aside>
+
+    <div class="overlay-backdrop hidden" id="overlayBackdrop"></div>
+
+    <div class="modal-shell hidden" id="restartModal" aria-hidden="true">
+        <div class="modal-card">
+            <div class="modal-header">
+                <div>
+                    <div class="modal-title">봇 재시작</div>
+                    <div class="modal-subtitle">현재 프로세스를 종료하고 새 세션을 실행합니다.</div>
+                </div>
+                <button class="utility-button" type="button" data-close-modal="restartModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <p>실행 중인 전략과 실시간 로그 수집이 잠시 중단됩니다. 저장된 설정은 유지됩니다.</p>
+            </div>
+            <div class="modal-actions">
+                <button class="secondary-action" type="button" data-close-modal="restartModal">취소</button>
+                <button class="primary-action" type="button" data-action="confirm-restart">재시작</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-shell hidden" id="holdingModal" aria-hidden="true">
+        <div class="modal-card modal-large">
+            <div class="modal-header">
+                <div>
+                    <div class="modal-title" id="holdingModalTitle">보유 종목 상세</div>
+                    <div class="modal-subtitle" id="holdingModalSubtitle">포지션 세부 정보</div>
+                </div>
+                <button class="utility-button" type="button" data-close-modal="holdingModal">✕</button>
+            </div>
+            <div class="modal-body" id="holdingModalBody"></div>
+        </div>
+    </div>
+
+    <div class="toast-stack" id="toastStack"></div>
+
+    <script id="initial-view" type="application/json">{{ initial_view | tojson }}</script>
+    <script id="app-state" type="application/json">{{ initial_state | tojson }}</script>
+    <script id="active-theme" type="application/json">{{ theme_mode | tojson }}</script>
+    <script id="theme-designs" type="application/json">{{ theme_designs | tojson }}</script>
+    <script src="/static/dashboard.js" defer></script>
+</body>
+</html>
