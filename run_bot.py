@@ -46,6 +46,9 @@ CONSECUTIVE_DECLINE_DAYS = 2   # 연속 하락 확인 일수
 CONSECUTIVE_DECLINE_PCT = 3.0  # 연속 하락 누적 기준 (%)
 PORTFOLIO_DRAWDOWN_PCT = 5.0   # 포트폴리오 전체 드로다운 차단 기준 (%)
 DCA_MONITOR_INTERVAL = 60      # DCA 감시 루프 주기 (초)
+DCA_REENTRY_INTERVAL_MIN = 15  # DCA 재평가 주기 (분)
+DCA_LEVERAGED_REENTRY_INTERVAL_MIN = 30  # 레버리지 ETF 전용 DCA 재평가 주기 (분)
+DCA_MAX_BUYS_PER_SESSION = 1   # 종목당 세션 최대 DCA 매수 횟수
 
 # Telegram Notifier for alerts
 telegram = TelegramNotifier()
@@ -122,9 +125,19 @@ DCA_SETTINGS = user_config.get("dca_settings", {
     "enabled": True,
     "daily_investment_pct": 5,
     "buy_delay_minutes": 30,
+    "reentry_interval_minutes": 15,
+    "leveraged_reentry_interval_minutes": 30,
     "min_investment_usd": 10,
-    "max_investment_usd": 100
+    "max_investment_usd": 100,
+    "max_buys_per_session": 1
 })
+
+DCA_REENTRY_INTERVAL_MIN = DCA_SETTINGS.get("reentry_interval_minutes", DCA_REENTRY_INTERVAL_MIN)
+DCA_LEVERAGED_REENTRY_INTERVAL_MIN = DCA_SETTINGS.get(
+    "leveraged_reentry_interval_minutes",
+    DCA_LEVERAGED_REENTRY_INTERVAL_MIN
+)
+DCA_MAX_BUYS_PER_SESSION = DCA_SETTINGS.get("max_buys_per_session", DCA_MAX_BUYS_PER_SESSION)
 
 # Load Risk Management Settings from config (overrides defaults)
 risk_config = user_config.get("risk_management", {})
@@ -420,6 +433,143 @@ def job():
         skipped_buy_reasons.setdefault(ticker, [])
         if reason not in skipped_buy_reasons[ticker]:
             skipped_buy_reasons[ticker].append(reason)
+
+    def prepare_dca_wait_target(ticker, exchange, current_price, ma20, ma5, ohlc):
+        """DCA 장중 재평가를 위한 대기 타겟 등록/업데이트"""
+        existing = monitoring_targets.get(ticker, {})
+        is_us_leveraged_etf = (market == 'US' and ticker in US_LEVERAGED_ETF_SYMBOLS)
+        monitoring_targets[ticker] = {
+            'target': current_price,
+            'status': existing.get('status', 'dca_wait') if existing.get('status') != 'bought' else 'bought',
+            'buys': existing.get('buys', 0),
+            'exchange': exchange,
+            'ma20': ma20,
+            'ma5': ma5,
+            'ohlc': ohlc,
+            'buy_price': existing.get('buy_price', 0),
+            'highest_price': existing.get('highest_price', current_price),
+            'dca_buys_this_session': existing.get('dca_buys_this_session', 0),
+            'last_dca_attempt_at': existing.get('last_dca_attempt_at'),
+            'dca_reentry_interval_min': (
+                DCA_LEVERAGED_REENTRY_INTERVAL_MIN if is_us_leveraged_etf else DCA_REENTRY_INTERVAL_MIN
+            )
+        }
+
+    def attempt_dca_buy(ticker, exchange, current_price, ma20, ma5, ohlc, eff_gap_down_threshold, num_targets):
+        """DCA 후보를 재평가하여 조건 충족 시 1회 매수"""
+        existing = monitoring_targets.get(ticker, {})
+
+        if existing.get('dca_buys_this_session', 0) >= DCA_MAX_BUYS_PER_SESSION:
+            record_skip_reason(ticker, f"세션 매수 한도 ({DCA_MAX_BUYS_PER_SESSION})")
+            return False
+
+        is_uptrend = check_trend(current_price, ma20)
+        is_short_uptrend = check_trend(current_price, ma5) if ma5 else True
+        is_gap_down, gap_drop_pct = check_gap_down(current_price, ohlc, eff_gap_down_threshold)
+        is_consecutive_decline, cum_drop_pct = check_consecutive_decline(
+            ohlc, CONSECUTIVE_DECLINE_DAYS, CONSECUTIVE_DECLINE_PCT
+        )
+
+        buy_blocked = False
+        block_reasons = []
+        is_us_leveraged_etf = (market == 'US' and ticker in US_LEVERAGED_ETF_SYMBOLS)
+
+        effective_gap_threshold = eff_gap_down_threshold * 2 if is_us_leveraged_etf else eff_gap_down_threshold
+        if is_gap_down and gap_drop_pct >= effective_gap_threshold:
+            buy_blocked = True
+            block_reasons.append(f"갭다운 {gap_drop_pct:.1f}%")
+        elif is_gap_down and is_us_leveraged_etf:
+            block_reasons.append(f"갭다운 {gap_drop_pct:.1f}% (레버리지 ETF 완화 적용)")
+
+        if is_consecutive_decline:
+            if is_us_leveraged_etf:
+                if CONSECUTIVE_DECLINE_DAYS >= 3 or cum_drop_pct >= 5.0:
+                    buy_blocked = True
+                    block_reasons.append(f"연속 {CONSECUTIVE_DECLINE_DAYS}일 하락 {cum_drop_pct:.1f}%")
+                else:
+                    block_reasons.append(f"연속 하락 {cum_drop_pct:.1f}% (레버리지 ETF 완화 적용)")
+            else:
+                buy_blocked = True
+                block_reasons.append(f"연속 {CONSECUTIVE_DECLINE_DAYS}일 하락 {cum_drop_pct:.1f}%")
+
+        if is_us_leveraged_etf:
+            ma10 = calculate_ma([safe_float(x['clos']) for x in reversed(ohlc)], 10) if len(ohlc) >= 10 else ma20
+            is_uptrend_for_buy = check_trend(current_price, ma10) if ma10 else is_uptrend
+            if not is_uptrend_for_buy:
+                buy_blocked = True
+                block_reasons.append("10MA 하회 (레버리지 ETF)")
+        else:
+            if not is_uptrend:
+                buy_blocked = True
+                block_reasons.append("20MA 하회")
+
+        dca_reduce_qty = False
+        if not is_short_uptrend and is_uptrend:
+            dca_reduce_qty = True
+            block_reasons.append("5MA 하회 (매수량 50% 축소)")
+
+        if buy_blocked:
+            logger.info(f"[{ticker}] DCA 매수 차단 - {', '.join(block_reasons)}")
+            record_skip_reason(ticker, f"DCA 차단: {', '.join(block_reasons)}")
+            return False
+
+        if block_reasons:
+            logger.info(f"[{ticker}] DCA 경고: {', '.join(block_reasons)}")
+            record_skip_reason(ticker, f"DCA 경고: {', '.join(block_reasons)}")
+
+        news = ai.fetch_news()
+        sentiment = ai.check_market_sentiment(news, persona=PERSONA)
+        if sentiment.get('market_condition') == 'CRASH' or sentiment.get('risk_level') == 'HIGH':
+            logger.warning(f"[{ticker}] DCA Paused - AI Risk HIGH: {sentiment.get('reason', 'N/A')}")
+            send_alert(f"⚠️ [{ticker}] DCA 중단 - AI 위험 감지: {sentiment.get('reason', 'N/A')}")
+            record_skip_reason(ticker, f"AI 위험: {sentiment.get('reason', 'N/A')}")
+            return False
+
+        qty = calculate_dca_quantity(available_cash, current_price, num_targets, DCA_SETTINGS, market)
+        if dca_reduce_qty:
+            qty = max(1, qty // 2)
+            logger.info(f"[{ticker}] 📉 5MA 하회로 매수량 축소: {qty}주")
+
+        if qty <= 0:
+            return False
+
+        currency = "$" if market == 'US' else "₩"
+        if market == 'US':
+            logger.info(f"[{ticker}] DCA Buy: {qty} shares at ${current_price:.2f}")
+            res = kis.buy_market_order(ticker, qty, exchange)
+        else:
+            logger.info(f"[{ticker}] DCA Buy: {qty} shares at {currency}{current_price:,.0f}")
+            res = kis.buy_market_order(ticker, qty)
+
+        if res and res.get('rt_cd') == '0':
+            logger.info(f"[{ticker}] ✅ DCA Buy Success! {qty} shares")
+            total_qty = existing.get('buys', 0) + qty
+            old_buy_price = existing.get('buy_price', 0)
+            old_buys = existing.get('buys', 0)
+            if old_buy_price > 0 and old_buys > 0:
+                blended_price = ((old_buy_price * old_buys) + (current_price * qty)) / total_qty
+            else:
+                blended_price = current_price
+
+            monitoring_targets[ticker] = {
+                'target': current_price,
+                'status': 'bought',
+                'buys': total_qty,
+                'exchange': exchange,
+                'buy_price': blended_price,
+                'highest_price': max(current_price, existing.get('highest_price', current_price)),
+                'ma20': ma20,
+                'ma5': ma5,
+                'ohlc': ohlc,
+                'dca_buys_this_session': existing.get('dca_buys_this_session', 0) + 1,
+                'last_dca_attempt_at': datetime.datetime.now(),
+                'dca_reentry_interval_min': existing.get('dca_reentry_interval_min', DCA_REENTRY_INTERVAL_MIN)
+            }
+            return True
+
+        logger.error(f"[{ticker}] DCA Buy Failed: {res}")
+        record_skip_reason(ticker, f"주문 실패: {res.get('msg1', 'unknown') if res else 'unknown'}")
+        return False
     
     # Track retry counts for this session
     retry_counts = {}
@@ -637,127 +787,28 @@ def job():
                             'buys': 0, 'exchange': exchange
                         }
                         continue  # 손절 후 추가 매수 안 함
-                else:
-                    # 평단가 정보 없으면 감시 대상에 추가 (감시 루프에서 처리)
-                    monitoring_targets[ticker] = {
-                        'target': current_price, 'status': 'bought',
-                        'buys': holding_qty, 'exchange': exchange,
-                        'buy_price': holding_avg_price if holding_avg_price > 0 else current_price,
-                        'highest_price': current_price
-                    }
-            
-            # === [NEW] Step 1: 매수 차단 조건 (Circuit Breaker) ===
-            buy_blocked = False
-            block_reasons = []
-            
-            # US 레버리지 ETF 여부 확인 (3X ETF는 매수 조건 완화)
-            is_us_leveraged_etf = (market == 'US' and ticker in US_LEVERAGED_ETF_SYMBOLS)
-            
-            # 1-a. 갭다운 시 매수 차단 (US 레버리지 ETF는 임계치 2배로 완화)
-            effective_gap_threshold = eff_gap_down_threshold * 2 if is_us_leveraged_etf else eff_gap_down_threshold
-            if is_gap_down and gap_drop_pct >= effective_gap_threshold:
-                buy_blocked = True
-                block_reasons.append(f"갭다운 {gap_drop_pct:.1f}%")
-            elif is_gap_down and is_us_leveraged_etf:
-                block_reasons.append(f"갭다운 {gap_drop_pct:.1f}% (레버리지 ETF 완화 적용)")
-            
-            # 1-b. 연속 하락 시 매수 차단 (US 레버리지 ETF는 조건 완화: 3일 연속 또는 5% 이상만 차단)
-            if is_consecutive_decline:
-                if is_us_leveraged_etf:
-                    # US 레버리지 ETF: 3일 연속 또는 누적 5% 이상만 차단
-                    if CONSECUTIVE_DECLINE_DAYS >= 3 or cum_drop_pct >= 5.0:
-                        buy_blocked = True
-                        block_reasons.append(f"연속 {CONSECUTIVE_DECLINE_DAYS}일 하락 {cum_drop_pct:.1f}%")
-                    else:
-                        block_reasons.append(f"연속 하락 {cum_drop_pct:.1f}% (레버리지 ETF 완화 적용)")
-                else:
-                    buy_blocked = True
-                    block_reasons.append(f"연속 {CONSECUTIVE_DECLINE_DAYS}일 하락 {cum_drop_pct:.1f}%")
-            
-            # 1-c. 20MA 하회 시 매수 차단 (US 레버리지 ETF는 10MA로 완화)
-            if is_us_leveraged_etf:
-                # US 레버리지 ETF: 10MA 기준 사용 (더 단기 추세)
-                ma10 = calculate_ma(closes, 10) if len(closes) >= 10 else ma20
-                is_uptrend_for_buy = check_trend(current_price, ma10) if ma10 else is_uptrend
-                if not is_uptrend_for_buy:
-                    buy_blocked = True
-                    block_reasons.append(f"10MA 하회 (레버리지 ETF)")
-            else:
-                if not is_uptrend:
-                    buy_blocked = True
-                    block_reasons.append(f"20MA 하회")
-            
-            # 1-d. 5MA 하회 시 매수량 축소 (완전 차단은 아닌 경고)
-            dca_reduce_qty = False
-            if not is_short_uptrend and is_uptrend:
-                dca_reduce_qty = True
-                block_reasons.append(f"5MA 하회 (매수량 50% 축소)")
-            
-            if buy_blocked:
-                logger.info(f"[{ticker}] DCA 매수 차단 - {', '.join(block_reasons)}")
-                record_skip_reason(ticker, f"DCA 차단: {', '.join(block_reasons)}")
-                # 보유분은 감시 대상에 등록 (이미 위에서 처리)
-                continue
-            
-            if block_reasons:
-                logger.info(f"[{ticker}] DCA 경고: {', '.join(block_reasons)}")
-                record_skip_reason(ticker, f"DCA 경고: {', '.join(block_reasons)}")
+                monitoring_targets[ticker] = {
+                    'target': current_price,
+                    'status': 'bought',
+                    'buys': holding_qty,
+                    'exchange': exchange,
+                    'buy_price': holding_avg_price if holding_avg_price > 0 else current_price,
+                    'highest_price': current_price,
+                    'ma20': ma20,
+                    'ma5': ma5,
+                    'ohlc': ohlc,
+                    'dca_buys_this_session': 0,
+                    'last_dca_attempt_at': None,
+                    'dca_reentry_interval_min': (
+                        DCA_LEVERAGED_REENTRY_INTERVAL_MIN if (market == 'US' and ticker in US_LEVERAGED_ETF_SYMBOLS)
+                        else DCA_REENTRY_INTERVAL_MIN
+                    )
+                }
+                continue  # 이미 보유 중인 종목은 리스크 관리만 수행
 
-            # AI 체크 (DCA도 극단적 하락장은 피함)
-            news = ai.fetch_news()
-            sentiment = ai.check_market_sentiment(news, persona=PERSONA)
-            
-            if sentiment.get('market_condition') == 'CRASH' or sentiment.get('risk_level') == 'HIGH':
-                logger.warning(f"[{ticker}] DCA Paused - AI Risk HIGH: {sentiment.get('reason', 'N/A')}")
-                send_alert(f"⚠️ [{ticker}] DCA 중단 - AI 위험 감지: {sentiment.get('reason', 'N/A')}")
-                record_skip_reason(ticker, f"AI 위험: {sentiment.get('reason', 'N/A')}")
-                continue
-            
-            # DCA 수량 계산
-            qty = calculate_dca_quantity(available_cash, current_price, num_active_targets, DCA_SETTINGS, market)
-            
-            # 5MA 하회 시 매수량 50% 축소
-            if dca_reduce_qty:
-                qty = max(1, qty // 2)
-                logger.info(f"[{ticker}] 📉 5MA 하회로 매수량 축소: {qty}주")
-            
-            if qty > 0:
-                currency = "$" if market == 'US' else "₩"
-                if market == 'US':
-                     logger.info(f"[{ticker}] DCA Buy: {qty} shares at ${current_price:.2f}")
-                else:
-                     logger.info(f"[{ticker}] DCA Buy: {qty} shares at {currency}{current_price:,.0f}")
-                
-                if market == 'US':
-                    res = kis.buy_market_order(ticker, qty, exchange)
-                else:
-                    res = kis.buy_market_order(ticker, qty)
-                
-                if res and res.get('rt_cd') == '0':
-                    logger.info(f"[{ticker}] ✅ DCA Buy Success! {qty} shares")
-                    
-                    # === [NEW] 감시 대상에 등록 (buy_price, highest_price 포함) ===
-                    existing = monitoring_targets.get(ticker, {})
-                    total_qty = existing.get('buys', 0) + qty
-                    # 기존 매수가와 블렌딩
-                    old_buy_price = existing.get('buy_price', 0)
-                    old_buys = existing.get('buys', 0)
-                    if old_buy_price > 0 and old_buys > 0:
-                        blended_price = ((old_buy_price * old_buys) + (current_price * qty)) / total_qty
-                    else:
-                        blended_price = current_price
-                    
-                    monitoring_targets[ticker] = {
-                        'target': current_price,
-                        'status': 'bought',
-                        'buys': total_qty,
-                        'exchange': exchange,
-                        'buy_price': blended_price,
-                        'highest_price': max(current_price, existing.get('highest_price', current_price))
-                    }
-                else:
-                    logger.error(f"[{ticker}] DCA Buy Failed: {res}")
-            continue  # DCA는 바로 다음 종목으로
+            prepare_dca_wait_target(ticker, exchange, current_price, ma20, ma5, ohlc)
+            attempt_dca_buy(ticker, exchange, current_price, ma20, ma5, ohlc, eff_gap_down_threshold, num_active_targets)
+            continue  # DCA는 주기적 재평가 대상으로 전환
         
         # Case 1: Already Holding
         if ticker in current_holdings:
@@ -828,11 +879,12 @@ def job():
     # DCA 모드: 매수 후에도 감시 루프 진입 (보유분 StopLoss/TrailingStop 모니터링)
     if STRATEGY_MODE == 'dca':
         bought_positions = {k: v for k, v in monitoring_targets.items() if v['status'] == 'bought'}
-        if bought_positions:
-            logger.info(f"[{market}] DCA Mode - Entering monitoring loop for {len(bought_positions)} positions: {list(bought_positions.keys())}")
-        else:
-            logger.info(f"[{market}] DCA Mode - No positions to monitor. Session complete.")
-            return
+        waiting_positions = {k: v for k, v in monitoring_targets.items() if v['status'] == 'dca_wait'}
+        logger.info(
+            f"[{market}] DCA Mode - Monitoring bought={list(bought_positions.keys())}, "
+            f"waiting={list(waiting_positions.keys())}, base_reentry={DCA_REENTRY_INTERVAL_MIN}min, "
+            f"leveraged_reentry={DCA_LEVERAGED_REENTRY_INTERVAL_MIN}min"
+        )
 
     # 활성 모니터링 대상 수 업데이트
     num_active_targets = len([t for t in monitoring_targets.values() if t['status'] == 'monitoring'])
@@ -966,6 +1018,40 @@ def job():
                     logger.error(f"[{ticker}] Error in Risk Management: {e}")
                 
                 continue # Skip breakout check if already bought
+
+            if STRATEGY_MODE == 'dca':
+                if data['status'] != 'dca_wait':
+                    continue
+
+                now_dt = datetime.datetime.now()
+                reentry_interval_min = data.get('dca_reentry_interval_min', DCA_REENTRY_INTERVAL_MIN)
+                last_attempt_at = data.get('last_dca_attempt_at')
+                if last_attempt_at and (now_dt - last_attempt_at).total_seconds() < (reentry_interval_min * 60):
+                    continue
+
+                data['last_dca_attempt_at'] = now_dt
+
+                exchange = data.get('exchange')
+                if market == 'US':
+                    current_price = kis.get_current_price(ticker, exchange)
+                else:
+                    current_price = kis.get_current_price(ticker)
+
+                if not current_price:
+                    continue
+
+                logger.info(f"[{ticker}] DCA 장중 재평가 ({reentry_interval_min}분 주기) - 현재가 {current_price}")
+                attempt_dca_buy(
+                    ticker,
+                    exchange,
+                    current_price,
+                    data.get('ma20'),
+                    data.get('ma5'),
+                    data.get('ohlc', []),
+                    KR_STOCK_GAP_DOWN_THRESHOLD if (market == 'KR' and ticker not in KR_ETF_CODES) else GAP_DOWN_THRESHOLD,
+                    num_active_targets if num_active_targets > 0 else len(monitoring_targets)
+                )
+                continue
 
             if data['status'] in ['failed', 'ai_rejected', 'sold_sl', 'sold_tp']:
                 continue
