@@ -320,57 +320,14 @@
 
         <!-- Tabs -->
         <div class="tabs">
-            <div class="tab active" onclick="switchTab('overview')">📊 모니터링</div>
-            <div class="tab" onclick="switchTab('account')">💰 계좌</div>
+            <div class="tab active" onclick="switchTab('account')">💰 계좌</div>
             <div class="tab" onclick="switchTab('performance')">📈 수익</div>
             <div class="tab" onclick="switchTab('logs')">📜 로그</div>
             <div class="tab" onclick="switchTab('settings')">⚙️ 설정</div>
         </div>
 
-        <!-- ========== Overview Tab ========== -->
-        <div class="tab-content active" id="tab-overview">
-            <div class="card">
-                <div class="card-header">
-                    <h2>📡 시장 모니터</h2>
-                    <span style="color: var(--text-secondary); font-size: 0.85em;">최근 업데이트: <span id="lastUpdate">{{ last_update }}</span></span>
-                </div>
-                <div class="table-wrap">
-                    <table id="tickerTable">
-                        <thead>
-                            <tr>
-                                <th>종목</th>
-                                <th>현재가</th>
-                                <th>목표가</th>
-                                <th>MA20</th>
-                                <th>추세</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for ticker, data in ticker_data.items() %}
-                            <tr>
-                                <td><strong>{{ ticker }}</strong></td>
-                                <td>{{ data.current }}</td>
-                                <td>{{ data.target }}</td>
-                                <td>{{ data.ma20 }}</td>
-                                <td>
-                                    {% if 'Bull' in data.trend %}
-                                    <span class="badge badge-success">{{ data.trend }}</span>
-                                    {% elif 'Bear' in data.trend %}
-                                    <span class="badge badge-danger">{{ data.trend }}</span>
-                                    {% else %}
-                                    <span class="badge badge-warning">{{ data.trend }}</span>
-                                    {% endif %}
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
         <!-- ========== Account Tab ========== -->
-        <div class="tab-content" id="tab-account">
+        <div class="tab-content active" id="tab-account">
             <!-- US Account -->
             <div class="card">
                 <div class="card-header">
@@ -574,7 +531,6 @@
                 const data = await res.json();
                 
                 document.getElementById('botStatus').textContent = data.bot_status;
-                document.getElementById('lastUpdate').textContent = data.last_update;
                 
                 // Update top status cards from live config
                 if (data.config) {
@@ -594,23 +550,6 @@
                 // Update market status
                 if (data.market_status) {
                     document.getElementById('marketStatus').textContent = data.market_status;
-                }
-                
-                // Update ticker table
-                const tbody = document.querySelector('#tickerTable tbody');
-                tbody.innerHTML = '';
-                for (const [ticker, info] of Object.entries(data.ticker_data)) {
-                    const badgeClass = info.trend.includes('Bull') ? 'badge-success' : 
-                                       info.trend.includes('Bear') ? 'badge-danger' : 'badge-warning';
-                    tbody.innerHTML += `
-                        <tr>
-                            <td><strong>${ticker}</strong></td>
-                            <td>${info.current}</td>
-                            <td>${info.target}</td>
-                            <td>${info.ma20}</td>
-                            <td><span class="badge ${badgeClass}">${info.trend}</span></td>
-                        </tr>
-                    `;
                 }
                 
                 // Update logs
