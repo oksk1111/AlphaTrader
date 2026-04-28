@@ -814,10 +814,12 @@ def job():
         if ticker in current_holdings:
             # 보유 수량 조회
             holding_qty = 1
+            holding_avg_price = 0
             try:
                 for h in balance.get('output1', []):
-                    if h['pdno'] == ticker:
+                    if h.get('pdno') == ticker or h.get('ovrs_pdno') == ticker:
                         holding_qty = int(h.get('hldg_qty', h.get('ccld_qty_smtl1', 1)))
+                        holding_avg_price = safe_float(h.get('pchs_avg_pric', h.get('avg_unpr3', 0)))
                         break
             except:
                 pass
@@ -837,7 +839,9 @@ def job():
                     'target': 9999999, # Dummy target
                     'status': 'bought',
                     'buys': holding_qty,
-                    'exchange': exchange
+                    'exchange': exchange,
+                    'buy_price': holding_avg_price if holding_avg_price > 0 else current_price,
+                    'highest_price': current_price
                 }
                 continue
 
@@ -973,6 +977,12 @@ def job():
                     buy_price = data.get('buy_price', 0)
                     highest_price = data.get('highest_price', curr)
                     qty = data.get('buys', 0)
+
+                    if buy_price <= 0:
+                        logger.warning(f"[{ticker}] Missing buy_price in monitoring target. Skipping risk calculation.")
+                        data['buy_price'] = curr
+                        data['highest_price'] = max(highest_price, curr)
+                        continue
                     
                     # Update Highest Price (for Trailing Stop)
                     if curr > highest_price:
