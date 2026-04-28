@@ -73,6 +73,25 @@ def save_config(config):
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=4)
 
+def get_effective_market_config(config, market=None):
+    """시장별 override를 반영한 유효 설정 반환"""
+    effective = {
+        "trading_mode": config.get("trading_mode", "safe"),
+        "strategy": config.get("strategy", "day"),
+        "persona": config.get("persona", "aggressive")
+    }
+
+    if not market:
+        return effective
+
+    market_settings = config.get("market_settings", {})
+    market_override = market_settings.get(str(market).lower(), {})
+    for key in effective:
+        if key in market_override:
+            effective[key] = market_override[key]
+
+    return effective
+
 def check_and_upgrade_mode(total_asset_krw):
     """
     KR 시장 전용: 예치금이 1000만원 이상이면 자동으로 레버리지 모드로 전환
@@ -85,15 +104,19 @@ def check_and_upgrade_mode(total_asset_krw):
         logger.info(f"🎉 축하합니다! 총 자산이 {total_asset_krw:,.0f}원으로 1000만원을 달성했습니다!")
         logger.info("🚀 KR 시장 레버리지 ETF 해제! (US 시장은 이미 제한 없음)")
         config["trading_mode"] = "risky"
+        config.setdefault("market_settings", {})
+        config["market_settings"].setdefault("kr", {})
+        config["market_settings"]["kr"]["trading_mode"] = "risky"
         save_config(config)
         return True
     return False
 
 # Load initial config
 user_config = load_config()
-IS_SAFE_MODE = True if user_config.get("trading_mode") == "safe" else False
-STRATEGY_MODE = user_config.get("strategy", "day")  # 'day', 'swing', or 'dca'
-PERSONA = user_config.get("persona", "aggressive") # 'aggressive', 'neutral', 'conservative'
+base_config = get_effective_market_config(user_config)
+IS_SAFE_MODE = True if base_config.get("trading_mode") == "safe" else False
+STRATEGY_MODE = base_config.get("strategy", "day")  # 'day', 'swing', or 'dca'
+PERSONA = base_config.get("persona", "aggressive") # 'aggressive', 'neutral', 'conservative'
 
 DCA_SETTINGS = user_config.get("dca_settings", {
     "enabled": True,
@@ -317,21 +340,25 @@ def job():
     # Reload config dynamically
     global IS_SAFE_MODE, STRATEGY_MODE, PERSONA, TARGET_TICKERS_US, TARGET_TICKERS_KR
     user_config = load_config()
-    IS_SAFE_MODE = True if user_config.get("trading_mode") == "safe" else False
-    STRATEGY_MODE = user_config.get("strategy", "day")
-    PERSONA = user_config.get("persona", "aggressive")
-    
-    # Update Target Tickers based on new config
-    # US 시장은 항상 3X + 1X 모두 사용 (레버리지 제한 없음)
-    TARGET_TICKERS_US = TARGET_TICKERS_US_3X + [t for t in TARGET_TICKERS_US_1X if t not in TARGET_TICKERS_US_3X]
-    # KR만 예탁금 기준 safe/risky 분리
-    TARGET_TICKERS_KR = TARGET_TICKERS_KR_1X if IS_SAFE_MODE else TARGET_TICKERS_KR_2X
 
     market = get_market_status()
     
     if market == 'CLOSED':
         logger.info("Market is closed. Sleeping.")
         return
+
+    effective_config = get_effective_market_config(user_config, market)
+    IS_SAFE_MODE = effective_config.get("trading_mode") == "safe"
+    STRATEGY_MODE = effective_config.get("strategy", "day")
+    PERSONA = effective_config.get("persona", "aggressive")
+
+    # Update Target Tickers based on effective config
+    # US 시장은 항상 3X + 1X 모두 사용 (레버리지 제한 없음)
+    TARGET_TICKERS_US = TARGET_TICKERS_US_3X + [t for t in TARGET_TICKERS_US_1X if t not in TARGET_TICKERS_US_3X]
+    # KR만 예탁금 기준 safe/risky 분리
+    TARGET_TICKERS_KR = TARGET_TICKERS_KR_1X if IS_SAFE_MODE else TARGET_TICKERS_KR_2X
+
+    logger.info(f"[{market}] Effective Config: Mode={effective_config.get('trading_mode')}, Strategy={STRATEGY_MODE}, Persona={PERSONA}")
 
     # --- [New] Buy Delay Logic for Market Stabilization ---
     buy_delay = DCA_SETTINGS.get("buy_delay_minutes", 0) if STRATEGY_MODE == 'dca' else 0
@@ -384,6 +411,15 @@ def job():
     
     # Dictionary to store monitoring targets
     monitoring_targets = {}
+    skipped_buy_reasons = {}
+
+    def record_skip_reason(ticker, reason):
+        """매수 보류/차단 사유 추적"""
+        if not ticker or not reason:
+            return
+        skipped_buy_reasons.setdefault(ticker, [])
+        if reason not in skipped_buy_reasons[ticker]:
+            skipped_buy_reasons[ticker].append(reason)
     
     # Track retry counts for this session
     retry_counts = {}
@@ -659,11 +695,13 @@ def job():
             
             if buy_blocked:
                 logger.info(f"[{ticker}] DCA 매수 차단 - {', '.join(block_reasons)}")
+                record_skip_reason(ticker, f"DCA 차단: {', '.join(block_reasons)}")
                 # 보유분은 감시 대상에 등록 (이미 위에서 처리)
                 continue
             
             if block_reasons:
                 logger.info(f"[{ticker}] DCA 경고: {', '.join(block_reasons)}")
+                record_skip_reason(ticker, f"DCA 경고: {', '.join(block_reasons)}")
 
             # AI 체크 (DCA도 극단적 하락장은 피함)
             news = ai.fetch_news()
@@ -672,6 +710,7 @@ def job():
             if sentiment.get('market_condition') == 'CRASH' or sentiment.get('risk_level') == 'HIGH':
                 logger.warning(f"[{ticker}] DCA Paused - AI Risk HIGH: {sentiment.get('reason', 'N/A')}")
                 send_alert(f"⚠️ [{ticker}] DCA 중단 - AI 위험 감지: {sentiment.get('reason', 'N/A')}")
+                record_skip_reason(ticker, f"AI 위험: {sentiment.get('reason', 'N/A')}")
                 continue
             
             # DCA 수량 계산
@@ -932,6 +971,7 @@ def job():
                 continue
                 
             target_price = data['target']
+            exchange = data.get('exchange')
             
             # --- [Enhanced] Volume & Price Check ---
             # 1. Fetch Price & Volume
@@ -960,6 +1000,7 @@ def job():
                         # BUT user asked for filters. Let's make it a Soft Warning or Strong Filter?
                         # User asked to "apply new logic". Let's apply it.
                         logger.warning(f"[{ticker}] ⚠️ Volume too low ({current_vol}). Spike check failed. Waiting for volume support.")
+                        record_skip_reason(ticker, f"거래량 부족: {current_vol}")
                         continue
                     else:
                         logger.info(f"[{ticker}] ✅ Volume Spike Confirmed! ({current_vol})")
@@ -974,12 +1015,14 @@ def job():
                     # Skip if ticker is in global failed list (account restrictions)
                     if ticker in FAILED_TICKERS:
                         logger.warning(f"[{ticker}] Skipping - previously failed due to account restriction")
+                        record_skip_reason(ticker, "계좌 제한 종목")
                         data['status'] = 'failed'
                         continue
                     
                     # Check retry count
                     if retry_counts.get(ticker, 0) >= MAX_RETRIES_PER_TICKER:
                         logger.warning(f"[{ticker}] Max retries ({MAX_RETRIES_PER_TICKER}) reached. Skipping for this session.")
+                        record_skip_reason(ticker, f"재시도 초과 ({MAX_RETRIES_PER_TICKER})")
                         data['status'] = 'failed'
                         continue
                     
@@ -1020,6 +1063,7 @@ def job():
                         logger.info(f"[{ticker}] Buy Success! Qty: {qty} @ {current_price}")
                     else:
                         logger.error(f"[{ticker}] Buy Failed: {res}")
+                        record_skip_reason(ticker, f"주문 실패: {res.get('msg1', 'unknown') if res else 'unknown'}")
                         retry_counts[ticker] = retry_counts.get(ticker, 0) + 1
                         
                         # Prevent infinite loop on account errors
@@ -1034,6 +1078,7 @@ def job():
                             time.sleep(5)
                 else:
                     logger.info(f"[{ticker}] AI Rejected buying due to risk.")
+                    record_skip_reason(ticker, f"AI 거부: {sentiment.get('reason', 'N/A')}")
                     # Don't retry AI rejection immediately
                     data['status'] = 'ai_rejected'
 
@@ -1046,28 +1091,24 @@ def job():
     # 3. Market Close Sell-off
     logger.info(f"[{market}] Session End. Checking Exit Rules...")
     
-    if STRATEGY_MODE in ('swing', 'dca'):
-        # DCA/Swing: 종가 청산하지 않음 (장기 보유 전략)
-        # 단, 손절매가 발동된 종목은 이미 매도됨
-        sold_sl = [t for t, d in monitoring_targets.items() if d['status'] == 'sold_sl']
-        sold_tp = [t for t, d in monitoring_targets.items() if d['status'] == 'sold_tp']
-        holding = [t for t, d in monitoring_targets.items() if d['status'] == 'bought']
-        logger.info(f"[{market}] Strategy is {STRATEGY_MODE.upper()}. Session summary:")
-        logger.info(f"   - 손절매: {sold_sl}")
-        logger.info(f"   - 트레일링 스탑: {sold_tp}")
-        logger.info(f"   - 계속 보유: {holding}")
-        if sold_sl or sold_tp:
-            send_alert(f"📊 [{market}] 세션 종료\n손절: {sold_sl}\n익절: {sold_tp}\n보유: {holding}")
-    else:
-        logger.info(f"[{market}] Strategy is DAY. Selling All Holdings.")
-        for ticker, data in monitoring_targets.items():
-            if data['status'] == 'bought':
-                qty = data['buys']
-                logger.info(f"[{ticker}] Selling {qty} shares...")
-                if market == 'US':
-                    kis.sell_market_order(ticker, qty, data.get('exchange'))
-                else:
-                    kis.sell_market_order(ticker, qty)
+    # 모든 전략에서 종가 일괄청산 비활성화: 추세 보유 우선
+    sold_sl = [t for t, d in monitoring_targets.items() if d['status'] == 'sold_sl']
+    sold_tp = [t for t, d in monitoring_targets.items() if d['status'] == 'sold_tp']
+    holding = [t for t, d in monitoring_targets.items() if d['status'] == 'bought']
+    logger.info(f"[{market}] Session summary ({STRATEGY_MODE.upper()}):")
+    logger.info(f"   - 손절매: {sold_sl}")
+    logger.info(f"   - 트레일링 스탑: {sold_tp}")
+    logger.info(f"   - 계속 보유: {holding}")
+    if skipped_buy_reasons:
+        logger.info(f"   - 매수 보류/차단: {skipped_buy_reasons}")
+    if sold_sl or sold_tp or skipped_buy_reasons:
+        send_alert(
+            f"📊 [{market}] 세션 종료\n"
+            f"손절: {sold_sl}\n"
+            f"익절: {sold_tp}\n"
+            f"보유: {holding}\n"
+            f"매수보류: {skipped_buy_reasons}"
+        )
 
 def run_with_recovery():
     """Wrapper function to run job with automatic recovery.

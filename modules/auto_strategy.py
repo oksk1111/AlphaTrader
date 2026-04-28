@@ -392,10 +392,13 @@ class AutoStrategyOptimizer:
             dict: 변경 사항 요약 {'changed': bool, 'changes': list}
         """
         config = self._load_config()
+        market_key = str(market).lower()
+        config.setdefault('market_settings', {})
+        market_config = config['market_settings'].get(market_key, {})
         
-        old_strategy = config.get('strategy', 'day')
-        old_mode = config.get('trading_mode', 'safe')
-        old_persona = config.get('persona', 'aggressive')
+        old_strategy = market_config.get('strategy', config.get('strategy', 'day'))
+        old_mode = market_config.get('trading_mode', config.get('trading_mode', 'safe'))
+        old_persona = market_config.get('persona', config.get('persona', 'aggressive'))
         
         new_strategy = decision['strategy']
         new_mode = decision['trading_mode']
@@ -413,9 +416,11 @@ class AutoStrategyOptimizer:
         changed = len(changes) > 0
         
         if changed:
-            config['strategy'] = new_strategy
-            config['trading_mode'] = new_mode
-            config['persona'] = new_persona
+            config['market_settings'][market_key] = {
+                'strategy': new_strategy,
+                'trading_mode': new_mode,
+                'persona': new_persona
+            }
             self._save_config(config)
             
             # 히스토리 기록
