@@ -1195,6 +1195,11 @@ select:focus-visible {
         overflow: auto;
     }
 
+    .topbar-shell {
+        position: static;
+        padding: 14px 16px 12px;
+    }
+
     .app-shell {
         grid-template-columns: 1fr;
     }
@@ -1242,10 +1247,30 @@ select:focus-visible {
     .hero-top {
         flex-direction: column;
         align-items: flex-start;
+        gap: 12px;
     }
 
     .hero-actions {
         justify-content: flex-start;
+    }
+
+    .topbar-row {
+        margin-bottom: 10px;
+    }
+
+    .ticker-strip {
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: minmax(180px, 72vw);
+        overflow-x: auto;
+        gap: 10px;
+        padding-bottom: 2px;
+        scrollbar-width: thin;
+    }
+
+    .ticker-item {
+        min-width: 0;
+        padding: 10px 12px;
     }
 }
 
@@ -1275,6 +1300,52 @@ select:focus-visible {
         width: 100%;
         justify-content: space-between;
         flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .topbar-row {
+        margin-bottom: 8px;
+    }
+
+    .breadcrumb {
+        font-size: 12px;
+        gap: 6px;
+    }
+
+    .page-meta {
+        margin-top: 4px;
+        font-size: 11px;
+        line-height: 1.45;
+    }
+
+    .utility-button,
+    .profile-pill {
+        height: 36px;
+        min-width: 36px;
+        padding: 0 12px;
+    }
+
+    .theme-button {
+        min-width: 74px;
+    }
+
+    .theme-button span:last-child,
+    #profileRole {
+        font-size: 11px;
+    }
+
+    .ticker-strip {
+        grid-auto-columns: minmax(160px, 78vw);
+        gap: 8px;
+    }
+
+    .ticker-item strong {
+        font-size: 13px;
+    }
+
+    .ticker-item span,
+    .ticker-kicker {
+        font-size: 11px;
     }
 
     .brand-block {
