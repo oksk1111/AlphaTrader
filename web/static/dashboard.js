@@ -24,6 +24,23 @@ const uiState = {
     themeMode: normalizeTheme(appData.theme?.current || activeTheme || 'light'),
 };
 
+const THEME_VARIABLE_FALLBACKS = {
+    light: {
+        '--surface-subtle': '#F8FAFC',
+        '--surface-subtle-strong': '#F3F5F9',
+        '--table-head-surface': '#F8FAFC',
+        '--row-hover-surface': 'rgba(32, 37, 52, 0.03)',
+        '--table-row-border': '#E7EBF2',
+    },
+    dark: {
+        '--surface-subtle': 'rgba(255,255,255,0.02)',
+        '--surface-subtle-strong': 'rgba(255,255,255,0.03)',
+        '--table-head-surface': 'rgba(255,255,255,0.03)',
+        '--row-hover-surface': 'rgba(255,255,255,0.02)',
+        '--table-row-border': 'rgba(255,255,255,0.04)',
+    },
+};
+
 function normalizeView(view) {
     return ROUTE_META[view] ? view : 'overview';
 }
@@ -72,6 +89,7 @@ function applyTheme(themeMode, persist = false) {
     document.body.dataset.theme = uiState.themeMode;
 
     const root = document.documentElement;
+    const themeFallbacks = THEME_VARIABLE_FALLBACKS[uiState.themeMode] || {};
     const variableMap = {
         '--canvas': [['designSystem', 'globalTokens', 'colors', 'canvas']],
         '--sidebar-surface': [['designSystem', 'globalTokens', 'colors', 'sidebarSurface']],
@@ -195,9 +213,11 @@ function applyTheme(themeMode, persist = false) {
     };
 
     Object.entries(variableMap).forEach(([name, paths]) => {
-        const value = getThemeValue(uiState.themeMode, paths, root.style.getPropertyValue(name));
+        const value = getThemeValue(uiState.themeMode, paths, themeFallbacks[name] || '');
         if (value) {
             root.style.setProperty(name, value);
+        } else {
+            root.style.removeProperty(name);
         }
     });
 
@@ -257,6 +277,10 @@ function formatPercent(value, digits = 2) {
 
 function toneClassFromValue(value) {
     return Number(value || 0) >= 0 ? 'positive-text' : 'negative-text';
+}
+
+function getActivitySnapshot() {
+    return appData.activity || {};
 }
 
 function badgeTone(tone) {
@@ -387,7 +411,13 @@ function renderHero() {
     const combined = getCombinedAccount();
     const status = appData.status || {};
     const config = appData.config || {};
+    const activity = getActivitySnapshot();
+    const lastOrder = activity.lastOrder || null;
     const profitTone = combined.profitKrw >= 0 ? 'positive' : 'negative';
+    const orderValue = lastOrder ? escapeHtml(lastOrder.symbol || lastOrder.status || '-') : '없음';
+    const orderMeta = lastOrder
+        ? `${escapeHtml(lastOrder.timestamp || '-')} · ${escapeHtml(lastOrder.age || '-')}`
+        : '최근 주문 기록 없음';
 
     container.innerHTML = `
         <div class="hero-top">
@@ -412,17 +442,17 @@ function renderHero() {
             <div class="hero-stat">
                 <div class="hero-stat-label">시장 상태</div>
                 <div class="hero-stat-value">${escapeHtml(status.marketStatus || '-')}</div>
-                <div class="hero-stat-meta">${escapeHtml(status.botStatusLabel || '-')}</div>
+                <div class="hero-stat-meta">${escapeHtml((status.botStatusLabel || '-') + ' · ' + (activity.freshnessLabel || '기록 없음'))}</div>
             </div>
             <div class="hero-stat">
                 <div class="hero-stat-label">자동 전략</div>
                 <div class="hero-stat-value">${config.auto_strategy ? 'ON' : 'OFF'}</div>
-                <div class="hero-stat-meta">${escapeHtml((config.strategy || 'day').toUpperCase())} / ${escapeHtml((config.trading_mode || 'safe').toUpperCase())}</div>
+                <div class="hero-stat-meta">${escapeHtml((config.strategy || 'day').toUpperCase())} / ${escapeHtml((config.trading_mode || 'safe').toUpperCase())} · ${escapeHtml((config.persona || 'neutral').toUpperCase())}</div>
             </div>
             <div class="hero-stat">
-                <div class="hero-stat-label">페르소나</div>
-                <div class="hero-stat-value">${escapeHtml((config.persona || 'neutral').toUpperCase())}</div>
-                <div class="hero-stat-meta">리스크 기준 ${formatNumber(appData.preferences?.risk?.portfolio_drawdown_pct || 0, 1)}%</div>
+                <div class="hero-stat-label">최근 주문</div>
+                <div class="hero-stat-value">${orderValue}</div>
+                <div class="hero-stat-meta">${orderMeta}</div>
             </div>
             <div class="hero-stat">
                 <div class="hero-stat-label">보유 종목</div>
@@ -711,6 +741,10 @@ function renderPortfolioView() {
     const combined = getCombinedAccount();
     const us = appData.accounts?.us || {};
     const kr = appData.accounts?.kr || {};
+    const activity = getActivitySnapshot();
+    const lastOrder = activity.lastOrder || null;
+    const lastHeartbeat = activity.lastHeartbeat || null;
+    const lastStrategyChange = activity.lastStrategyChange || null;
     return `
         <div class="stack-grid">
             <div class="summary-grid">
@@ -730,6 +764,40 @@ function renderPortfolioView() {
                     <div class="metric-meta">${formatSignedNumber(kr.profit_krw || 0, '₩')}</div>
                 </div>
             </div>
+            <section class="card">
+                <div class="card-head">
+                    <div>
+                        <div class="card-title">실행 활동</div>
+                        <div class="card-subtitle">클라우드 로그 기준 최근 주문, heartbeat, 전략 변경 시점을 요약합니다.</div>
+                    </div>
+                </div>
+                <div class="stat-list">
+                    <div class="stat-row">
+                        <div class="stat-row-head">
+                            <span class="row-label">최근 주문</span>
+                            <span class="badge ${lastOrder ? badgeTone(lastOrder.tone) : 'warning'}">${escapeHtml(lastOrder ? lastOrder.status.toUpperCase() : 'NONE')}</span>
+                        </div>
+                        <div class="row-value">${escapeHtml(lastOrder ? (lastOrder.symbol || '-') : '주문 기록 없음')}</div>
+                        <div class="story-summary">${escapeHtml(lastOrder ? lastOrder.message : '최근 주문 로그를 찾지 못했습니다.')}</div>
+                        <div class="table-muted">${escapeHtml(lastOrder ? `${lastOrder.timestamp} · ${lastOrder.age}` : '-')}</div>
+                    </div>
+                    <div class="stat-row">
+                        <div class="stat-row-head">
+                            <span class="row-label">최근 Heartbeat</span>
+                            <span class="row-value">${escapeHtml(lastHeartbeat ? lastHeartbeat.age : (activity.freshnessLabel || '기록 없음'))}</span>
+                        </div>
+                        <div class="table-muted">${escapeHtml(lastHeartbeat ? `${lastHeartbeat.timestamp} · ${lastHeartbeat.message}` : '최근 heartbeat 로그가 없습니다.')}</div>
+                    </div>
+                    <div class="stat-row">
+                        <div class="stat-row-head">
+                            <span class="row-label">최근 전략 변경</span>
+                            <span class="row-value">${escapeHtml(lastStrategyChange ? `${(lastStrategyChange.strategy || '-').toUpperCase()} / ${(lastStrategyChange.mode || '-').toUpperCase()}` : '변경 없음')}</span>
+                        </div>
+                        <div class="story-summary">${escapeHtml(lastStrategyChange ? lastStrategyChange.summary : '자동 전략 변경 기록이 없습니다.')}</div>
+                        <div class="table-muted">${escapeHtml(lastStrategyChange ? `${lastStrategyChange.timestamp} · ${lastStrategyChange.age}` : '-')}</div>
+                    </div>
+                </div>
+            </section>
             <div class="content-grid">
                 <div class="stack-grid">
                     ${renderAllocationCard()}

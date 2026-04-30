@@ -585,10 +585,11 @@ select:focus-visible {
     left: 18px;
     padding: 6px 12px;
     border-radius: var(--radius-pill);
-    background: var(--white-soft);
+    background: var(--card-surface-elevated);
     color: var(--text-primary);
     font-size: 12px;
     font-weight: 700;
+    border: 1px solid var(--table-row-border);
     box-shadow: 0 10px 24px rgba(0,0,0,0.24);
 }
 
@@ -1207,6 +1208,30 @@ select:focus-visible {
     .sidebar-scroll {
         position: static;
         height: auto;
+        gap: 14px;
+        padding: 14px 16px;
+    }
+
+    .brand-subtitle {
+        display: none;
+    }
+
+    .nav-list {
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: minmax(148px, 1fr);
+        overflow-x: auto;
+        gap: 10px;
+        padding-bottom: 2px;
+        scrollbar-width: thin;
+    }
+
+    .nav-item {
+        min-width: 148px;
+    }
+
+    .wallet-panel {
+        display: none;
     }
 
     .main-content {
@@ -1249,5 +1274,32 @@ select:focus-visible {
     .utility-actions {
         width: 100%;
         justify-content: space-between;
+        flex-wrap: wrap;
+    }
+
+    .brand-block {
+        gap: 10px;
+    }
+
+    .brand-mark {
+        width: 36px;
+        height: 36px;
+    }
+
+    .brand-title {
+        font-size: 16px;
+    }
+
+    .nav-list {
+        grid-auto-columns: minmax(122px, 1fr);
+    }
+
+    .nav-item {
+        min-width: 122px;
+        padding: 10px 12px;
+    }
+
+    .nav-description {
+        display: none;
     }
 }

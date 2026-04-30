@@ -112,6 +112,144 @@ def safe_int(value, default=0):
 def iso_now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+LOG_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+TRADE_SUCCESS_MARKERS = (
+    "buy success",
+    "dca buy success",
+    "sell success",
+    "매수 성공",
+    "매도 성공",
+)
+TRADE_FAILURE_MARKERS = (
+    "buy failed",
+    "dca buy failed",
+    "sell failed",
+    "주문 실패",
+)
+TRADE_ATTEMPT_MARKERS = (
+    "dca buy:",
+    "buying...",
+    "selling market order",
+    "selling...",
+    "매수:",
+    "매도:",
+)
+
+def parse_log_timestamp(timestamp_str):
+    try:
+        return datetime.strptime(timestamp_str, LOG_TIMESTAMP_FORMAT)
+    except Exception:
+        return None
+
+def format_relative_timestamp(timestamp_str):
+    dt_value = parse_log_timestamp(timestamp_str)
+    if not dt_value:
+        return "시간 미확인"
+
+    delta_seconds = max(int((datetime.now() - dt_value).total_seconds()), 0)
+    if delta_seconds < 60:
+        return "방금 전"
+
+    delta_minutes = delta_seconds // 60
+    if delta_minutes < 60:
+        return f"{delta_minutes}분 전"
+
+    delta_hours = delta_minutes // 60
+    if delta_hours < 24:
+        return f"{delta_hours}시간 전"
+
+    delta_days = delta_hours // 24
+    return f"{delta_days}일 전"
+
+def read_log_lines(file_path, limit=240):
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return f.readlines()[-limit:]
+    except UnicodeDecodeError:
+        with open(file_path, "r", encoding="cp949") as f:
+            return f.readlines()[-limit:]
+    except Exception:
+        return []
+
+def load_recent_log_events(limit_files=14, line_limit=240):
+    log_files = sorted(glob.glob(str(BASE_DIR / "database" / "trading_*.log")))[-limit_files:]
+    events = []
+    for file_path in log_files:
+        for raw_line in read_log_lines(file_path, limit=line_limit):
+            parsed = parse_log_line(raw_line)
+            if parsed:
+                events.append(parsed)
+    return events
+
+def extract_symbol_from_message(message):
+    match = re.search(r"\[([A-Z0-9]+)\]", str(message or ""))
+    return match.group(1) if match else None
+
+def normalize_activity_event(log, status, tone=None):
+    if not log:
+        return None
+
+    message = log.get("message", "")
+    return {
+        "timestamp": log.get("timestamp", "-"),
+        "age": format_relative_timestamp(log.get("timestamp")),
+        "symbol": extract_symbol_from_message(message) or "-",
+        "message": message,
+        "status": status,
+        "tone": tone or ("positive" if status == "success" else "negative" if status == "failure" else "info"),
+    }
+
+def build_activity_snapshot(parsed_logs, strategy_timeline):
+    all_events = load_recent_log_events()
+
+    def find_latest(predicate):
+        for log in reversed(all_events):
+            if predicate(log):
+                return log
+        return None
+
+    def has_marker(log, markers):
+        message = str(log.get("message", "")).lower()
+        return any(marker in message for marker in markers)
+
+    last_heartbeat_log = find_latest(lambda log: "heartbeat:" in str(log.get("message", "")).lower())
+    last_cache_log = find_latest(lambda log: "account cache updated" in str(log.get("message", "")).lower())
+    last_trade_success_log = find_latest(lambda log: has_marker(log, TRADE_SUCCESS_MARKERS))
+    last_trade_failure_log = find_latest(lambda log: has_marker(log, TRADE_FAILURE_MARKERS))
+    last_trade_attempt_log = find_latest(lambda log: has_marker(log, TRADE_ATTEMPT_MARKERS))
+
+    candidate_orders = [
+        normalize_activity_event(last_trade_success_log, "success", "positive"),
+        normalize_activity_event(last_trade_failure_log, "failure", "negative"),
+        normalize_activity_event(last_trade_attempt_log, "attempt", "info"),
+    ]
+    candidate_orders = [item for item in candidate_orders if item]
+    candidate_orders.sort(key=lambda item: parse_log_timestamp(item["timestamp"]) or datetime.min, reverse=True)
+    last_order = candidate_orders[0] if candidate_orders else None
+
+    freshness_anchor = last_heartbeat_log or last_cache_log or (parsed_logs[-1] if parsed_logs else None)
+    freshness_label = format_relative_timestamp(freshness_anchor["timestamp"]) if freshness_anchor else "기록 없음"
+
+    last_strategy_change = strategy_timeline[0] if strategy_timeline else None
+
+    return {
+        "lastHeartbeat": normalize_activity_event(last_heartbeat_log, "heartbeat", "positive"),
+        "lastCacheUpdate": normalize_activity_event(last_cache_log, "cache", "info"),
+        "lastTradeSuccess": normalize_activity_event(last_trade_success_log, "success", "positive"),
+        "lastTradeFailure": normalize_activity_event(last_trade_failure_log, "failure", "negative"),
+        "lastTradeAttempt": normalize_activity_event(last_trade_attempt_log, "attempt", "info"),
+        "lastOrder": last_order,
+        "freshnessLabel": freshness_label,
+        "lastStrategyChange": {
+            "timestamp": last_strategy_change["timestamp"],
+            "age": format_relative_timestamp(last_strategy_change["timestamp"]),
+            "summary": last_strategy_change["reason"],
+            "market": last_strategy_change["market"],
+            "strategy": last_strategy_change["strategy"],
+            "mode": last_strategy_change["mode"],
+        } if last_strategy_change else None,
+    }
+
 def get_recent_logs(limit=120):
     log_file = get_latest_log_file()
     parsed_lines = []
@@ -320,7 +458,7 @@ def build_asset_trend(asset_snapshots, combined_total_krw):
 
     return points[-24:]
 
-def build_stories(strategy_timeline, parsed_logs, config, market_status):
+def build_stories(strategy_timeline, parsed_logs, config, market_status, activity_snapshot):
     stories = []
 
     if strategy_timeline:
@@ -332,6 +470,22 @@ def build_stories(strategy_timeline, parsed_logs, config, market_status):
             "title": f"{latest['market']} 시장 자동 전략 업데이트",
             "summary": latest["reason"],
             "meta": latest["timestamp"],
+        })
+
+    last_order = activity_snapshot.get("lastOrder") if activity_snapshot else None
+    if last_order:
+        status_label = {
+            "success": "체결",
+            "failure": "실패",
+            "attempt": "주문",
+        }.get(last_order["status"], "활동")
+        stories.append({
+            "id": "story-last-order",
+            "badge": status_label,
+            "tone": last_order["tone"],
+            "title": f"최근 주문 · {last_order.get('symbol', '-')}",
+            "summary": last_order["message"],
+            "meta": f"{last_order['timestamp']} · {last_order['age']}",
         })
 
     warning_logs = [log for log in reversed(parsed_logs) if log["level"] in {"WARNING", "ERROR"}][:2]
@@ -356,13 +510,14 @@ def build_stories(strategy_timeline, parsed_logs, config, market_status):
 
     return stories[:4]
 
-def build_alerts(bot_pid, market_status, config, us_account, kr_account, signal_items):
+def build_alerts(bot_pid, market_status, config, us_account, kr_account, signal_items, activity_snapshot):
     strongest_signal = signal_items[0] if signal_items else None
+    last_order = activity_snapshot.get("lastOrder") if activity_snapshot else None
     alerts = [
         {
             "id": "alert-bot-status",
             "title": "봇 상태",
-            "text": f"{'실행 중' if bot_pid else '중지됨'} · 시장 {market_status}",
+            "text": f"{'실행 중' if bot_pid else '중지됨'} · 시장 {market_status} · 최신 활동 {activity_snapshot.get('freshnessLabel', '기록 없음') if activity_snapshot else '기록 없음'}",
             "severity": "positive" if bot_pid else "negative",
             "value": f"PID {bot_pid}" if bot_pid else "대기",
         },
@@ -382,6 +537,20 @@ def build_alerts(bot_pid, market_status, config, us_account, kr_account, signal_
         },
     ]
 
+    if last_order:
+        status_label = {
+            "success": "체결",
+            "failure": "실패",
+            "attempt": "주문",
+        }.get(last_order["status"], "활동")
+        alerts.append({
+            "id": "alert-last-order",
+            "title": "최근 주문",
+            "text": f"{last_order.get('symbol', '-')} · {last_order['message']}",
+            "severity": last_order["tone"],
+            "value": f"{status_label} · {last_order['age']}",
+        })
+
     if strongest_signal:
         alerts.append({
             "id": "alert-top-signal",
@@ -393,8 +562,8 @@ def build_alerts(bot_pid, market_status, config, us_account, kr_account, signal_
 
     return alerts
 
-def build_market_ticker(accounts, status, config, signal_items):
-    top_signal = signal_items[0] if signal_items else None
+def build_market_ticker(accounts, status, config, signal_items, activity_snapshot):
+    last_order = activity_snapshot.get("lastOrder") if activity_snapshot else None
     combined = accounts["combined"]
     return [
         {
@@ -408,7 +577,7 @@ def build_market_ticker(accounts, status, config, signal_items):
             "id": "ticker-market",
             "label": "시장 상태",
             "value": status["marketStatus"],
-            "trend": status["botStatusLabel"],
+            "trend": activity_snapshot.get("freshnessLabel", status["botStatusLabel"]) if activity_snapshot else status["botStatusLabel"],
             "tone": "positive" if status["botRunning"] else "negative",
         },
         {
@@ -419,11 +588,11 @@ def build_market_ticker(accounts, status, config, signal_items):
             "tone": "info",
         },
         {
-            "id": "ticker-signal",
-            "label": "대표 시그널",
-            "value": top_signal["symbol"] if top_signal else "대기",
-            "trend": top_signal["trend"] if top_signal else "데이터 없음",
-            "tone": "accent" if top_signal and top_signal["strength"] >= 60 else "warning",
+            "id": "ticker-last-order",
+            "label": "최근 주문",
+            "value": last_order["symbol"] if last_order else "없음",
+            "trend": (last_order["age"] if last_order else "기록 없음"),
+            "tone": last_order["tone"] if last_order else "warning",
         },
     ]
 
@@ -439,6 +608,7 @@ def build_dashboard_payload(force_update=False):
     kr_account = get_kr_account_data(force_update)
     strategy_data = load_json_file(STRATEGY_HISTORY_FILE, {"changes": []})
     strategy_timeline = build_strategy_timeline(strategy_data.get("changes", []))
+    activity_snapshot = build_activity_snapshot(parsed_logs, strategy_timeline)
     profit_history = load_json_file(PROFIT_HISTORY_FILE, {})
     asset_snapshots = load_json_file(ASSET_SNAPSHOTS_FILE, {})
 
@@ -482,13 +652,14 @@ def build_dashboard_payload(force_update=False):
         "session": build_user_session(),
         "views": build_views(),
         "status": status,
+        "activity": activity_snapshot,
         "config": config,
         "accounts": accounts,
         "holdings": holdings,
         "signals": signals,
-        "stories": build_stories(strategy_timeline, parsed_logs, config, market_status),
-        "alerts": build_alerts(bot_pid, market_status, config, us_account, kr_account, signals),
-        "marketTicker": build_market_ticker(accounts, status, config, signals),
+        "stories": build_stories(strategy_timeline, parsed_logs, config, market_status, activity_snapshot),
+        "alerts": build_alerts(bot_pid, market_status, config, us_account, kr_account, signals, activity_snapshot),
+        "marketTicker": build_market_ticker(accounts, status, config, signals, activity_snapshot),
         "logs": [
             {
                 "id": f"log-{index}",
