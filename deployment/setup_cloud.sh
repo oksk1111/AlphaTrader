@@ -3,7 +3,7 @@
 # Stop script on error
 set -e
 
-echo "=== 🚀 US-ETF-Sniper Cloud Setup Script ==="
+echo "=== 🚀 Alpha Trader Cloud Setup Script ==="
 
 # 1. Update System
 echo "Checking system updates..."
@@ -45,9 +45,9 @@ fi
 echo "Setting up Systemd Services..."
 
 # Bot Service
-sudo bash -c "cat > /etc/systemd/system/etf-bot.service" <<EOT
+sudo bash -c "cat > /etc/systemd/system/alphatrader-bot.service" <<EOT
 [Unit]
-Description=US ETF Sniper Bot
+Description=Alpha Trader Bot
 After=network.target
 
 [Service]
@@ -62,9 +62,9 @@ WantedBy=multi-user.target
 EOT
 
 # Dashboard Service
-sudo bash -c "cat > /etc/systemd/system/etf-dashboard.service" <<EOT
+sudo bash -c "cat > /etc/systemd/system/alphatrader-dashboard.service" <<EOT
 [Unit]
-Description=US ETF Sniper Dashboard
+Description=Alpha Trader Dashboard
 After=network.target
 
 [Service]
@@ -84,6 +84,6 @@ echo "✅ Services registered."
 echo "---------------------------------------------------"
 echo "To start services:"
 echo "1. Edit .env file with your keys."
-echo "2. Run: sudo systemctl start etf-bot"
-echo "3. Run: sudo systemctl start etf-dashboard"
+echo "2. Run: sudo systemctl start alphatrader-bot"
+echo "3. Run: sudo systemctl start alphatrader-dashboard"
 echo "---------------------------------------------------"

@@ -1,4 +1,4 @@
-# US-ETF-Sniper Cloud 접속 및 설치 가이드
+# Alpha Trader Cloud 접속 및 설치 가이드
 
 ## 1. SSH 접속 (로컬 터미널에서)
 
@@ -20,10 +20,10 @@ ssh -i <다운받은_키파일_이름>.key ubuntu@158.180.81.25
 
 ```bash
 # 1. 깃허브 코드 내려받기
-git clone https://github.com/oksk1111/US-ETF-Sniper.git
+git clone https://github.com/oksk1111/AlphaTrader.git
 
 # 2. 프로젝트 폴더로 이동
-cd US-ETF-Sniper
+cd AlphaTrader
 
 # 3. 설치 스크립트 실행 권한 부여
 chmod +x deployment/setup_cloud.sh
@@ -47,14 +47,14 @@ nano .env
 
 ```bash
 # 봇 시작
-sudo systemctl start etf-bot
+sudo systemctl start alphatrader-bot
 
 # 대시보드 시작
-sudo systemctl start etf-dashboard
+sudo systemctl start alphatrader-dashboard
 
 # 자동 실행 등록 (서버 재부팅 시 자동 켜짐)
-sudo systemctl enable etf-bot
-sudo systemctl enable etf-dashboard
+sudo systemctl enable alphatrader-bot
+sudo systemctl enable alphatrader-dashboard
 ```
 
 ## 5. 접속 확인

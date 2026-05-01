@@ -1,4 +1,4 @@
-# ☁️ US-ETF-Sniper Cloud Installation Guide
+# ☁️ Alpha Trader Cloud Installation Guide
 
 이 가이드는 **Oracle Cloud (Ubuntu)** 또는 **GCP (e2-micro)** 환경에서 봇을 구동하기 위한 절차입니다.
 
@@ -12,8 +12,8 @@
 
 ```bash
 # 1. 깃허브 클론
-git clone https://github.com/oksk1111/US-ETF-Sniper.git
-cd US-ETF-Sniper
+git clone https://github.com/oksk1111/AlphaTrader.git
+cd AlphaTrader
 
 # 2. 셋업 스크립트 실행 실행
 chmod +x deployment/setup_cloud.sh
@@ -34,25 +34,25 @@ nano .env
 
 ```bash
 # 봇 시작
-sudo systemctl enable etf-bot
-sudo systemctl start etf-bot
+sudo systemctl enable alphatrader-bot
+sudo systemctl start alphatrader-bot
 
 # 대시보드 시작
-sudo systemctl enable etf-dashboard
-sudo systemctl start etf-dashboard
+sudo systemctl enable alphatrader-dashboard
+sudo systemctl start alphatrader-dashboard
 ```
 
 ## 5. 상태 확인
 
 ```bash
 # 봇 상태 확인
-sudo systemctl status etf-bot
+sudo systemctl status alphatrader-bot
 
 # 대시보드 상태 확인
-sudo systemctl status etf-dashboard
+sudo systemctl status alphatrader-dashboard
 
 # 로그 실시간 확인
-journalctl -u etf-bot -f
+journalctl -u alphatrader-bot -f
 ```
 
 ## 6. 대시보드 접속

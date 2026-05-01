@@ -1,4 +1,4 @@
-# US-ETF-Sniper 🎯
+# Alpha Trader 🎯
 
 미국/한국 주식 자동매매 봇 (AI + Hybrid 기술적 분석)
 

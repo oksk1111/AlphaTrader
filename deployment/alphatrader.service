@@ -1,0 +1,20 @@
+[Unit]
+Description=Alpha Trader Trading Bot Auto-Restart Monitor
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/AlphaTrader
+ExecStart=/bin/bash /home/ubuntu/AlphaTrader/auto_restart_bot.sh
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/ubuntu/AlphaTrader/database/service.log
+StandardError=append:/home/ubuntu/AlphaTrader/database/service.log
+
+# Telegram Notification Settings (Replace with your actual values)
+Environment="TELEGRAM_BOT_TOKEN=your_bot_token_here"
+Environment="TELEGRAM_CHAT_ID=your_chat_id_here"
+
+[Install]
+WantedBy=multi-user.target

@@ -190,7 +190,7 @@ class TelegramNotifier:
         
         # 보고서 생성
         report = f"""
-📊 <b>US-ETF-Sniper 일일 보고서</b>
+📊 <b>Alpha Trader 일일 보고서</b>
 ━━━━━━━━━━━━━━━━━━━━
 📅 {now.strftime('%Y년 %m월 %d일 %H:%M')}
 
@@ -241,7 +241,7 @@ class TelegramNotifier:
         now = datetime.now()
         
         alert = f"""
-🚨 <b>US-ETF-Sniper 긴급 알림</b>
+🚨 <b>Alpha Trader 긴급 알림</b>
 ━━━━━━━━━━━━━━━━━━━━
 ⏰ {now.strftime('%Y-%m-%d %H:%M:%S')}
 
@@ -292,7 +292,7 @@ if __name__ == "__main__":
     
     if notifier.is_configured():
         print("✅ Telegram configured. Sending test message...")
-        notifier.send_message("🔔 US-ETF-Sniper 텔레그램 알림 테스트입니다!")
+        notifier.send_message("🔔 Alpha Trader 텔레그램 알림 테스트입니다!")
     else:
         print("⚠️ Telegram not configured.")
         print("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables.")

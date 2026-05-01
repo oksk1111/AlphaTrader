@@ -1,5 +1,5 @@
 """
-US-ETF-Sniper 경량 대시보드 (FastAPI + Jinja2)
+Alpha Trader 경량 대시보드 (FastAPI + Jinja2)
 - Streamlit 대비 메모리 사용량 1/3~1/4 수준
 """
 
@@ -29,7 +29,7 @@ os.chdir(BASE_DIR)
 print(f"[Dashboard] Starting... BASE_DIR={BASE_DIR}")
 
 # FastAPI 앱 초기화
-app = FastAPI(title="US-ETF-Sniper Dashboard")
+app = FastAPI(title="Alpha Trader Dashboard")
 
 # 템플릿 설정
 templates = Jinja2Templates(directory=str(BASE_DIR / "web" / "templates"))

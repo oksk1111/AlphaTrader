@@ -14,19 +14,19 @@ chmod +x auto_restart_bot.sh
 
 ```bash
 # 서비스 파일 복사
-sudo cp deployment/etf-sniper.service /etc/systemd/system/
+sudo cp deployment/alphatrader.service /etc/systemd/system/
 
 # 서비스 파일 수정 (경로 확인)
-sudo nano /etc/systemd/system/etf-sniper.service
+sudo nano /etc/systemd/system/alphatrader.service
 # User와 WorkingDirectory를 실제 경로로 수정
 
 # 서비스 활성화 및 시작
 sudo systemctl daemon-reload
-sudo systemctl enable etf-sniper
-sudo systemctl start etf-sniper
+sudo systemctl enable alphatrader
+sudo systemctl start alphatrader
 
 # 상태 확인
-sudo systemctl status etf-sniper
+sudo systemctl status alphatrader
 ```
 
 ### 3. 수동 실행 (테스트용)
@@ -48,7 +48,7 @@ tail -f database/trading_$(date +%Y%m%d).log
 tail -f database/restart.log
 
 # 서비스 로그
-sudo journalctl -u etf-sniper -f
+sudo journalctl -u alphatrader -f
 ```
 
 ### 프로세스 확인

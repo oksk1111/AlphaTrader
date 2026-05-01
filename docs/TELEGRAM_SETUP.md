@@ -1,14 +1,14 @@
 # 📱 텔레그램 알림 설정 가이드
 
-US-ETF-Sniper에 텔레그램 알림을 연동하는 방법입니다.
+Alpha Trader에 텔레그램 알림을 연동하는 방법입니다.
 
 ## 1️⃣ 텔레그램 봇 생성
 
 ### Step 1: BotFather에서 봇 만들기
 1. 텔레그램에서 [@BotFather](https://t.me/botfather) 검색
 2. `/newbot` 명령어 입력
-3. 봇 이름 입력 (예: `US ETF Sniper Alert`)
-4. 봇 사용자명 입력 (예: `us_etf_sniper_bot`) - `_bot`으로 끝나야 함
+3. 봇 이름 입력 (예: `Alpha Trader Alert`)
+4. 봇 사용자명 입력 (예: `alpha_trader_bot`) - `_bot`으로 끝나야 함
 5. **Bot Token** 복사 (예: `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`)
 
 ### Step 2: Chat ID 확인
@@ -35,7 +35,7 @@ source ~/.bashrc
 또는 systemd 서비스에 직접 추가:
 
 ```bash
-sudo nano /etc/systemd/system/etf-sniper.service
+sudo nano /etc/systemd/system/alphatrader.service
 ```
 
 `[Service]` 섹션에 추가:
@@ -47,7 +47,7 @@ Environment="TELEGRAM_CHAT_ID=your_chat_id_here"
 ## 3️⃣ 테스트
 
 ```bash
-cd /home/mingky/workspace/US-ETF-Sniper
+cd /home/mingky/workspace/AlphaTrader
 source venv/bin/activate
 
 # 알림 테스트
@@ -55,7 +55,7 @@ python -c "
 from modules.telegram_notifier import TelegramNotifier
 notifier = TelegramNotifier()
 if notifier.is_configured():
-    notifier.send_message('🔔 US-ETF-Sniper 텔레그램 알림 테스트입니다!')
+    notifier.send_message('🔔 Alpha Trader 텔레그램 알림 테스트입니다!')
     print('✅ 테스트 메시지 발송 완료!')
 else:
     print('❌ 텔레그램이 설정되지 않았습니다.')

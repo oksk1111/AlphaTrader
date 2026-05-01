@@ -97,12 +97,12 @@ def save_config(config):
         json.dump(config, f, indent=4)
 
 st.set_page_config(
-    page_title="US-ETF-Sniper Dashboard",
+    page_title="Alpha Trader Dashboard",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 US-ETF-Sniper Dashboard")
+st.title("📈 Alpha Trader Dashboard")
 
 # --- Initialize API ---
 @st.cache_resource

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================
-# US-ETF-Sniper Deployment Script
+# Alpha Trader Deployment Script
 # Called by GitHub Actions for auto-deployment
 # ==============================================
 

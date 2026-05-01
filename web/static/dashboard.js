@@ -239,7 +239,7 @@ function applyTheme(themeMode, persist = false) {
     setThemeToggleState();
 
     if (persist) {
-        window.localStorage.setItem('us-etf-sniper-theme', uiState.themeMode);
+        window.localStorage.setItem('alpha-trader-theme', uiState.themeMode);
     }
 }
 
@@ -289,7 +289,7 @@ function badgeTone(tone) {
 
 function setDocumentTitle() {
     const route = ROUTE_META[uiState.currentView] || ROUTE_META.overview;
-    document.title = `US-ETF-Sniper · ${route.label}`;
+    document.title = `Alpha Trader · ${route.label}`;
 }
 
 function navigate(route, replace = false) {
@@ -424,7 +424,7 @@ function renderHero() {
             <div class="hero-identity">
                 <div class="asset-badge">₿</div>
                 <div>
-                    <div class="hero-label">US ETF Sniper / Operations</div>
+                    <div class="hero-label">Alpha Trader / Operations</div>
                     <div class="hero-title">${formatCurrency(combined.totalKrw, 'KRW')}</div>
                     <div class="hero-subtitle">
                         ${formatSignedNumber(combined.profitKrw, '₩')} · <span class="${profitTone === 'positive' ? 'positive-text' : 'negative-text'}">${formatPercent(combined.profitPct)}</span>
@@ -1380,7 +1380,7 @@ function bindEvents() {
 }
 
 function init() {
-    const storedTheme = window.localStorage.getItem('us-etf-sniper-theme');
+    const storedTheme = window.localStorage.getItem('alpha-trader-theme');
     applyTheme(storedTheme || appData.theme?.current || uiState.themeMode, true);
 
     if (window.location.pathname === '/') {

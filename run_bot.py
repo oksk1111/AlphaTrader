@@ -1305,7 +1305,7 @@ def run_with_recovery():
             time.sleep(10)
 
 if __name__ == "__main__":
-    logger.info("=== Global ETF Sniper Bot Started ===")
+    logger.info("=== Alpha Trader Bot Started ===")
     logger.info(f"US Targets: {TARGET_TICKERS_US}")
     logger.info(f"KR Targets: {TARGET_TICKERS_KR}")
     logger.info(f"Safe Mode: {IS_SAFE_MODE}, Strategy: {STRATEGY_MODE}, Auto: {user_config.get('auto_strategy', False)}")

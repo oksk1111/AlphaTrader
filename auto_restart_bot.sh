@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================
-# US-ETF-Sniper Auto Restart Script
+# Alpha Trader Auto Restart Script
 # Monitors and auto-restarts both bot and dashboard
 # Only activates during market hours (weekdays)
 # Includes Telegram notifications
@@ -62,7 +62,7 @@ send_bot_failure_alert() {
     local attempts="$1"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     
-    local message="🚨 <b>US-ETF-Sniper 긴급 알림</b>
+    local message="🚨 <b>Alpha Trader 긴급 알림</b>
 ━━━━━━━━━━━━━━━━━━━━
 ⏰ ${timestamp}
 
