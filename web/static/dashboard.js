@@ -728,16 +728,16 @@ function renderHoldingsTable(region) {
                                                     data-holding-id="${item.id}"
                                                     aria-expanded="${uiState.expandedHoldingIds[item.id] ? 'true' : 'false'}"
                                                 >
-                                                    ${uiState.expandedHoldingIds[item.id] ? '핵심값만 보기' : '모든 값 보기'}
+                                                    ${uiState.expandedHoldingIds[item.id] ? '접기' : '더 보기'}
                                                 </button>
                                             </div>
                                         </div>
                                     </td>
-                                    <td data-label="${headers[1]}">${formatNumber(item.qty, 0)}</td>
+                                    <td data-label="${headers[1]}" class="holding-summary-cell">${formatNumber(item.qty, 0)}</td>
                                     <td data-label="${headers[2]}" class="holding-mobile-extra">${formatCurrency(item.avgPrice, currency, region === 'US' ? 2 : 0)}</td>
                                     <td data-label="${headers[3]}" class="holding-mobile-extra">${formatCurrency(item.currentPrice, currency, region === 'US' ? 2 : 0)}</td>
-                                    <td data-label="${headers[4]}">${formatCurrency(region === 'US' ? item.evalAmount : item.evalAmountKrw, currency, region === 'US' ? 2 : 0)}</td>
-                                    <td data-label="${headers[5]}" class="${toneClassFromValue(item.profitPct)}">${formatPercent(item.profitPct)}</td>
+                                    <td data-label="${headers[4]}" class="holding-summary-cell">${formatCurrency(region === 'US' ? item.evalAmount : item.evalAmountKrw, currency, region === 'US' ? 2 : 0)}</td>
+                                    <td data-label="${headers[5]}" class="holding-summary-cell ${toneClassFromValue(item.profitPct)}">${formatPercent(item.profitPct)}</td>
                                 </tr>
                             `).join('')}
                         </tbody>
