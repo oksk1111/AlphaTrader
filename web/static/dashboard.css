@@ -1335,14 +1335,20 @@ select:focus-visible {
 
     .utility-actions {
         width: 100%;
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        justify-content: initial;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: flex-start;
         gap: 8px;
+        overflow-x: visible;
     }
 
     .topbar-row {
         margin-bottom: 8px;
+    }
+
+    .topbar-context {
+        flex-basis: auto;
     }
 
     .breadcrumb {
@@ -1359,9 +1365,22 @@ select:focus-visible {
     .utility-button,
     .profile-pill {
         height: 36px;
-        min-width: 0;
-        width: 100%;
+        min-width: 36px;
+        width: auto;
         padding: 0 12px;
+        justify-content: center;
+        flex: 0 0 auto;
+    }
+
+    .utility-actions > .utility-button:not(.theme-button) {
+        width: 36px;
+        padding: 0;
+        border-radius: 999px;
+    }
+
+    .theme-button,
+    .profile-pill {
+        max-width: 100%;
         justify-content: flex-start;
     }
 
@@ -1380,7 +1399,10 @@ select:focus-visible {
     }
 
     .ticker-strip {
-        grid-auto-columns: minmax(160px, 78vw);
+        grid-template-columns: 1fr;
+        grid-auto-flow: row;
+        grid-auto-columns: unset;
+        overflow-x: visible;
         gap: 8px;
     }
 
@@ -1407,15 +1429,41 @@ select:focus-visible {
     }
 
     .nav-list {
-        grid-auto-columns: minmax(122px, 1fr);
+        grid-auto-flow: row;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-auto-columns: unset;
+        overflow-x: visible;
     }
 
     .nav-item {
-        min-width: 122px;
+        min-width: 0;
         padding: 10px 12px;
     }
 
     .nav-description {
+        display: none;
+    }
+
+    .route-tabs {
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 0 0 2px;
+        overflow-x: visible;
+    }
+
+    .route-tab {
+        padding: 8px 12px;
+        border-radius: var(--radius-pill);
+        background: var(--surface-subtle);
+        border: 1px solid transparent;
+    }
+
+    .route-tab.active {
+        background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+        border-color: var(--table-row-border);
+    }
+
+    .route-tab.active::after {
         display: none;
     }
 
@@ -1446,7 +1494,10 @@ select:focus-visible {
 
 @media (max-width: 480px) {
     .utility-actions {
-        grid-template-columns: 1fr;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        padding-bottom: 2px;
+        scrollbar-width: thin;
     }
 
     #profileRole,
@@ -1457,6 +1508,14 @@ select:focus-visible {
     .profile-pill,
     .theme-button {
         justify-content: center;
+        padding: 0;
+        width: 36px;
+        min-width: 36px;
+        border-radius: 999px;
+    }
+
+    .nav-list {
+        grid-template-columns: 1fr;
     }
 
     .brand-block {
