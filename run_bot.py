@@ -184,6 +184,7 @@ TARGET_TICKERS_US_1X = [
 
 # Changed from ETF to Blue Chip Logic for users with deposit restrictions
 TARGET_TICKERS_KR_1X = [
+    "426030", # TIME 미국나스닥100액티브
     "000660", # SK Hynix (SK하이닉스)
     "005930", # Samsung Electronics (삼성전자)
     "012450", # Hanwha Aerospace (한화에어로스페이스)
@@ -204,7 +205,7 @@ KR_STOCK_TRAILING_DROP = 2.5        # KR 개별주 고점 대비 하락
 KR_STOCK_GAP_DOWN_THRESHOLD = 4.0   # KR 개별주 갭다운 기준
 
 # KR ETF 종목 코드 (ETF인지 개별주인지 구분용)
-KR_ETF_CODES = {'122630', '233740', '449200', '069500', '229200', '114800'}
+KR_ETF_CODES = {'122630', '233740', '449200', '426030', '069500', '229200', '114800'}
 
 # US 레버리지 ETF 심볼 목록 (3X ETF는 DCA 매수 조건 완화 적용)
 US_LEVERAGED_ETF_SYMBOLS = {t['symbol'] for t in TARGET_TICKERS_US_3X}

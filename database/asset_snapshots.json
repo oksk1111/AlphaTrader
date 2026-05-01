@@ -15,5 +15,22 @@
             "holdings_count": 3
         },
         "total_krw": 5776759
+    },
+    "2026-05-01": {
+        "date": "2026-05-01",
+        "timestamp": 1777642791.1393595,
+        "kr": {
+            "deposit": 3123945,
+            "eval_total": 3789548,
+            "eval_profit": 120408,
+            "holdings_count": 4
+        },
+        "us": {
+            "deposit_usd": 371.45,
+            "eval_total_usd": 1851.25,
+            "eval_profit_usd": 189.54,
+            "holdings_count": 5
+        },
+        "total_krw": 10136408
     }
 }

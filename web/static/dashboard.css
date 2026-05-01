@@ -13,6 +13,7 @@ body {
 
 body {
     overflow: hidden;
+    overflow-x: hidden;
 }
 
 button,
@@ -45,6 +46,7 @@ select:focus-visible {
     background: var(--sidebar-surface);
     border-right: 1px solid var(--segmented-surface);
     min-height: 100vh;
+    min-width: 0;
 }
 
 .sidebar-scroll {
@@ -223,22 +225,35 @@ select:focus-visible {
     background: var(--topbar-surface);
     border-bottom: 1px solid var(--divider);
     padding: 18px 24px 14px;
+    overflow-x: clip;
 }
 
 .topbar-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
     gap: 16px;
     margin-bottom: 12px;
+}
+
+.topbar-row > * {
+    min-width: 0;
+}
+
+.topbar-context {
+    flex: 1 1 320px;
+    min-width: 0;
 }
 
 .breadcrumb {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
     color: var(--text-secondary);
     font-size: 13px;
+    min-width: 0;
 }
 
 .breadcrumb strong {
@@ -249,12 +264,17 @@ select:focus-visible {
     margin-top: 6px;
     color: var(--text-muted);
     font-size: 12px;
+    overflow-wrap: anywhere;
 }
 
 .utility-actions {
     display: flex;
     align-items: center;
+    flex: 0 1 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
     gap: 10px;
+    max-width: 100%;
 }
 
 .utility-button,
@@ -272,6 +292,9 @@ select:focus-visible {
     color: var(--text-primary);
     cursor: pointer;
     transition: background-color 160ms ease, transform 160ms ease;
+    flex: 0 1 auto;
+    min-width: 0;
+    white-space: nowrap;
 }
 
 .utility-button:hover,
@@ -306,6 +329,7 @@ select:focus-visible {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 12px;
+    min-width: 0;
 }
 
 .ticker-item {
@@ -341,6 +365,7 @@ select:focus-visible {
     height: calc(100vh - 110px);
     overflow: auto;
     padding: 24px;
+    min-width: 0;
 }
 
 .hero-card {
@@ -801,6 +826,8 @@ select:focus-visible {
 
 .table-wrap {
     overflow: auto;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
     border-radius: var(--radius-control);
     border: 1px solid var(--table-row-border);
 }
@@ -1193,6 +1220,7 @@ select:focus-visible {
 @media (max-width: 920px) {
     body {
         overflow: auto;
+        overflow-x: hidden;
     }
 
     .topbar-shell {
@@ -1246,8 +1274,17 @@ select:focus-visible {
     .topbar-row,
     .hero-top {
         flex-direction: column;
-        align-items: flex-start;
+        align-items: stretch;
         gap: 12px;
+    }
+
+    .topbar-context,
+    .utility-actions {
+        width: 100%;
+    }
+
+    .utility-actions {
+        justify-content: flex-start;
     }
 
     .hero-actions {
@@ -1298,8 +1335,9 @@ select:focus-visible {
 
     .utility-actions {
         width: 100%;
-        justify-content: space-between;
-        flex-wrap: wrap;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        justify-content: initial;
         gap: 8px;
     }
 
@@ -1321,17 +1359,24 @@ select:focus-visible {
     .utility-button,
     .profile-pill {
         height: 36px;
-        min-width: 36px;
+        min-width: 0;
+        width: 100%;
         padding: 0 12px;
+        justify-content: flex-start;
     }
 
     .theme-button {
-        min-width: 74px;
+        min-width: 0;
     }
 
     .theme-button span:last-child,
     #profileRole {
         font-size: 11px;
+    }
+
+    #profileRole {
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
 
     .ticker-strip {
@@ -1372,5 +1417,49 @@ select:focus-visible {
 
     .nav-description {
         display: none;
+    }
+
+    .holdings-table th,
+    .holdings-table td,
+    .data-table th,
+    .data-table td {
+        padding: 12px 10px;
+        font-size: 12px;
+    }
+
+    .notification-drawer {
+        top: auto;
+        right: 12px;
+        bottom: 12px;
+        left: 12px;
+        width: auto;
+        max-height: min(70vh, 520px);
+        padding: 16px;
+    }
+
+    .modal-header,
+    .drawer-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}
+
+@media (max-width: 480px) {
+    .utility-actions {
+        grid-template-columns: 1fr;
+    }
+
+    #profileRole,
+    .theme-button span:last-child {
+        display: none;
+    }
+
+    .profile-pill,
+    .theme-button {
+        justify-content: center;
+    }
+
+    .brand-block {
+        width: 100%;
     }
 }
