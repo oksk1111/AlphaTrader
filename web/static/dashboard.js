@@ -21,6 +21,7 @@ const uiState = {
     drawerOpen: false,
     activeModal: null,
     selectedHoldingId: null,
+    expandedHoldingIds: {},
     themeMode: normalizeTheme(appData.theme?.current || activeTheme || 'light'),
 };
 
@@ -688,6 +689,7 @@ function renderHoldingsTable(region) {
     const title = region === 'US' ? '미국 계좌 보유 종목' : '국내 계좌 보유 종목';
     const empty = region === 'US' ? '미국 보유 종목이 없습니다.' : '국내 보유 종목이 없습니다.';
     const currency = region === 'US' ? 'USD' : 'KRW';
+    const headers = ['종목', '수량', '평단가', '현재가', '평가금액', '손익'];
     return `
         <section class="card">
             <div class="card-head">
@@ -712,21 +714,30 @@ function renderHoldingsTable(region) {
                         </thead>
                         <tbody>
                             ${items.map((item) => `
-                                <tr class="holding-row" data-holding-id="${item.id}">
-                                    <td>
+                                <tr class="holding-row ${uiState.expandedHoldingIds[item.id] ? 'is-expanded' : ''}" data-holding-id="${item.id}">
+                                    <td data-label="${headers[0]}">
                                         <div class="symbol-cell">
                                             <span class="symbol-dot" style="background:${escapeHtml(item.accentColor)}"></span>
-                                            <div>
+                                            <div class="symbol-copy">
                                                 <strong>${escapeHtml(item.symbol)}</strong>
                                                 <div class="table-muted">${escapeHtml(item.name)}</div>
+                                                <button
+                                                    type="button"
+                                                    class="holding-mobile-toggle"
+                                                    data-action="toggle-holding-details"
+                                                    data-holding-id="${item.id}"
+                                                    aria-expanded="${uiState.expandedHoldingIds[item.id] ? 'true' : 'false'}"
+                                                >
+                                                    ${uiState.expandedHoldingIds[item.id] ? '핵심값만 보기' : '모든 값 보기'}
+                                                </button>
                                             </div>
                                         </div>
                                     </td>
-                                    <td>${formatNumber(item.qty, 0)}</td>
-                                    <td>${formatCurrency(item.avgPrice, currency, region === 'US' ? 2 : 0)}</td>
-                                    <td>${formatCurrency(item.currentPrice, currency, region === 'US' ? 2 : 0)}</td>
-                                    <td>${formatCurrency(region === 'US' ? item.evalAmount : item.evalAmountKrw, currency, region === 'US' ? 2 : 0)}</td>
-                                    <td class="${toneClassFromValue(item.profitPct)}">${formatPercent(item.profitPct)}</td>
+                                    <td data-label="${headers[1]}">${formatNumber(item.qty, 0)}</td>
+                                    <td data-label="${headers[2]}" class="holding-mobile-extra">${formatCurrency(item.avgPrice, currency, region === 'US' ? 2 : 0)}</td>
+                                    <td data-label="${headers[3]}" class="holding-mobile-extra">${formatCurrency(item.currentPrice, currency, region === 'US' ? 2 : 0)}</td>
+                                    <td data-label="${headers[4]}">${formatCurrency(region === 'US' ? item.evalAmount : item.evalAmountKrw, currency, region === 'US' ? 2 : 0)}</td>
+                                    <td data-label="${headers[5]}" class="${toneClassFromValue(item.profitPct)}">${formatPercent(item.profitPct)}</td>
                                 </tr>
                             `).join('')}
                         </tbody>
@@ -1306,6 +1317,12 @@ function renderApp() {
     updateOverlayState();
 }
 
+function toggleHoldingDetails(holdingId) {
+    if (!holdingId) return;
+    uiState.expandedHoldingIds[holdingId] = !uiState.expandedHoldingIds[holdingId];
+    renderView();
+}
+
 function handleClick(event) {
     const routeTrigger = event.target.closest('[data-route]');
     if (routeTrigger) {
@@ -1326,35 +1343,42 @@ function handleClick(event) {
         return;
     }
 
+    const actionTrigger = event.target.closest('[data-action]');
+    if (actionTrigger) {
+        const action = actionTrigger.dataset.action;
+        if (action === 'toggle-holding-details') {
+            event.preventDefault();
+            event.stopPropagation();
+            toggleHoldingDetails(actionTrigger.dataset.holdingId);
+            return;
+        }
+        if (action === 'refresh') {
+            refreshDashboard(true, false);
+        }
+        if (action === 'toggle-notifications') {
+            uiState.drawerOpen = !uiState.drawerOpen;
+            renderNotificationDrawer();
+            updateOverlayState();
+        }
+        if (action === 'open-restart-modal') {
+            openModal('restartModal');
+        }
+        if (action === 'confirm-restart') {
+            restartBot();
+        }
+        if (action === 'save-settings') {
+            saveSettings();
+        }
+        if (action === 'toggle-theme') {
+            saveThemeMode(uiState.themeMode === 'dark' ? 'light' : 'dark');
+        }
+        return;
+    }
+
     const holdingTrigger = event.target.closest('[data-holding-id]');
     if (holdingTrigger) {
         openHoldingModal(holdingTrigger.dataset.holdingId);
         return;
-    }
-
-    const actionTrigger = event.target.closest('[data-action]');
-    if (!actionTrigger) return;
-
-    const action = actionTrigger.dataset.action;
-    if (action === 'refresh') {
-        refreshDashboard(true, false);
-    }
-    if (action === 'toggle-notifications') {
-        uiState.drawerOpen = !uiState.drawerOpen;
-        renderNotificationDrawer();
-        updateOverlayState();
-    }
-    if (action === 'open-restart-modal') {
-        openModal('restartModal');
-    }
-    if (action === 'confirm-restart') {
-        restartBot();
-    }
-    if (action === 'save-settings') {
-        saveSettings();
-    }
-    if (action === 'toggle-theme') {
-        saveThemeMode(uiState.themeMode === 'dark' ? 'light' : 'dark');
     }
 }
 
