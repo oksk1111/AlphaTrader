@@ -1,8 +1,6 @@
 const ROUTE_META = {
     overview: { label: '개요', icon: '⌂' },
     portfolio: { label: '포트폴리오', icon: '◫' },
-    signals: { label: '시그널', icon: '◌' },
-    automation: { label: '자동화', icon: '⚙' },
     logs: { label: '운영 로그', icon: '☰' },
 };
 
@@ -23,7 +21,6 @@ const uiState = {
     drawerOpen: false,
     activeModal: null,
     selectedHoldingId: null,
-    expandedHoldingIds: {},
     themeMode: normalizeTheme(appData.theme?.current || activeTheme || 'light'),
 };
 
@@ -684,28 +681,19 @@ function renderHoldingsTable(region) {
                         </thead>
                         <tbody>
                             ${items.map((item) => `
-                                <tr class="holding-row ${uiState.expandedHoldingIds[item.id] ? 'is-expanded' : ''}" data-holding-id="${item.id}">
+                                <tr class="holding-row" data-holding-id="${item.id}">
                                     <td data-label="${headers[0]}">
                                         <div class="symbol-cell">
                                             <span class="symbol-dot" style="background:${escapeHtml(item.accentColor)}"></span>
                                             <div class="symbol-copy">
                                                 <strong>${escapeHtml(item.symbol)}</strong>
                                                 <div class="table-muted">${escapeHtml(item.name)}</div>
-                                                <button
-                                                    type="button"
-                                                    class="holding-mobile-toggle"
-                                                    data-action="toggle-holding-details"
-                                                    data-holding-id="${item.id}"
-                                                    aria-expanded="${uiState.expandedHoldingIds[item.id] ? 'true' : 'false'}"
-                                                >
-                                                    ${uiState.expandedHoldingIds[item.id] ? '접기' : '더 보기'}
-                                                </button>
                                             </div>
                                         </div>
                                     </td>
                                     <td data-label="${headers[1]}" class="holding-summary-cell">${formatNumber(item.qty, 0)}</td>
-                                    <td data-label="${headers[2]}" class="holding-mobile-extra">${formatCurrency(item.avgPrice, currency, region === 'US' ? 2 : 0)}</td>
-                                    <td data-label="${headers[3]}" class="holding-mobile-extra">${formatCurrency(item.currentPrice, currency, region === 'US' ? 2 : 0)}</td>
+                                    <td data-label="${headers[2]}">${formatCurrency(item.avgPrice, currency, region === 'US' ? 2 : 0)}</td>
+                                    <td data-label="${headers[3]}">${formatCurrency(item.currentPrice, currency, region === 'US' ? 2 : 0)}</td>
                                     <td data-label="${headers[4]}" class="holding-summary-cell">${formatCurrency(region === 'US' ? item.evalAmount : item.evalAmountKrw, currency, region === 'US' ? 2 : 0)}</td>
                                     <td data-label="${headers[5]}" class="holding-summary-cell ${toneClassFromValue(item.profitPct)}">${formatPercent(item.profitPct)}</td>
                                 </tr>
@@ -1073,8 +1061,6 @@ function renderView() {
     let html = '';
     if (uiState.currentView === 'overview') html = renderOverviewView();
     if (uiState.currentView === 'portfolio') html = renderPortfolioView();
-    if (uiState.currentView === 'signals') html = renderSignalsView();
-    if (uiState.currentView === 'automation') html = renderAutomationView();
     if (uiState.currentView === 'logs') html = renderLogsView();
 
     target.innerHTML = html;
@@ -1287,12 +1273,6 @@ function renderApp() {
     updateOverlayState();
 }
 
-function toggleHoldingDetails(holdingId) {
-    if (!holdingId) return;
-    uiState.expandedHoldingIds[holdingId] = !uiState.expandedHoldingIds[holdingId];
-    renderView();
-}
-
 function handleClick(event) {
     const routeTrigger = event.target.closest('[data-route]');
     if (routeTrigger) {
@@ -1316,12 +1296,6 @@ function handleClick(event) {
     const actionTrigger = event.target.closest('[data-action]');
     if (actionTrigger) {
         const action = actionTrigger.dataset.action;
-        if (action === 'toggle-holding-details') {
-            event.preventDefault();
-            event.stopPropagation();
-            toggleHoldingDetails(actionTrigger.dataset.holdingId);
-            return;
-        }
         if (action === 'refresh') {
             refreshDashboard(true, false);
         }
