@@ -6,6 +6,8 @@ const ROUTE_META = {
     logs: { label: '운영 로그', icon: '☰' },
 };
 
+const ESSENTIAL_VIEWS = ['overview', 'portfolio', 'logs'];
+
 const initialViewScript = document.getElementById('initial-view');
 const appStateScript = document.getElementById('app-state');
 const activeThemeScript = document.getElementById('active-theme');
@@ -43,7 +45,14 @@ const THEME_VARIABLE_FALLBACKS = {
 };
 
 function normalizeView(view) {
-    return ROUTE_META[view] ? view : 'overview';
+    const candidate = ROUTE_META[view] ? view : 'overview';
+    return ESSENTIAL_VIEWS.includes(candidate) ? candidate : 'overview';
+}
+
+function getVisibleViews() {
+    const views = appData.views || [];
+    const filtered = views.filter((view) => ESSENTIAL_VIEWS.includes(view.id));
+    return filtered.length ? filtered : [{ id: 'overview', label: '개요', description: '핵심 지표 요약' }];
 }
 
 function normalizeTheme(themeMode) {
@@ -335,7 +344,7 @@ function getTrendPoints() {
 function renderSidebar() {
     const nav = document.getElementById('sidebarNav');
     if (!nav) return;
-    const views = appData.views || [];
+    const views = getVisibleViews();
     nav.innerHTML = views.map((view) => {
         const meta = ROUTE_META[view.id] || ROUTE_META.overview;
         const activeClass = view.id === uiState.currentView ? 'active' : '';
@@ -355,19 +364,13 @@ function renderWalletPanel() {
     const wallet = document.getElementById('walletPanel');
     if (!wallet) return;
     const combined = getCombinedAccount();
-    const topHoldings = getHoldings().slice(0, 6);
     wallet.innerHTML = `
         <div class="wallet-heading">
             <div>
-                <div class="wallet-title">Your Wallet</div>
-                <div class="wallet-subtitle">실시간 보유 종목 요약</div>
+                <div class="wallet-title">핵심 요약</div>
+                <div class="wallet-subtitle">총 자산 / 수익률</div>
             </div>
             <span class="badge accent">LIVE</span>
-        </div>
-        <div class="wallet-avatars">
-            ${topHoldings.map((holding) => `
-                <span class="wallet-avatar" style="background:${escapeHtml(holding.accentColor)};">${escapeHtml(holding.symbol.slice(0, 3))}</span>
-            `).join('') || '<span class="muted-text">보유 종목 없음</span>'}
         </div>
         <div class="wallet-balance">
             <strong>${formatCurrency(combined.totalUsd, 'USD', 2)}</strong>
@@ -394,15 +397,7 @@ function renderTopbar() {
     if (profileAvatar) profileAvatar.textContent = session.avatarInitials || 'OP';
     if (profileRole) profileRole.textContent = (session.role || 'admin').toUpperCase();
     if (ticker) {
-        ticker.innerHTML = (appData.marketTicker || []).map((item) => `
-            <div class="ticker-item">
-                <div>
-                    <div class="ticker-kicker">${escapeHtml(item.label)}</div>
-                    <strong>${escapeHtml(item.value)}</strong>
-                    <span class="${item.tone === 'negative' ? 'negative-text' : item.tone === 'positive' ? 'positive-text' : ''}">${escapeHtml(item.trend)}</span>
-                </div>
-            </div>
-        `).join('');
+        ticker.innerHTML = '';
     }
 }
 
@@ -435,30 +430,19 @@ function renderHero() {
             </div>
             <div class="hero-actions">
                 <button type="button" class="secondary-action" data-action="refresh">실시간 동기화</button>
-                <button type="button" class="ghost-action" data-route="automation">설정 열기</button>
                 <button type="button" class="primary-action" data-action="open-restart-modal">봇 재시작</button>
             </div>
         </div>
         <div class="hero-stats">
             <div class="hero-stat">
-                <div class="hero-stat-label">시장 상태</div>
-                <div class="hero-stat-value">${escapeHtml(status.marketStatus || '-')}</div>
-                <div class="hero-stat-meta">${escapeHtml((status.botStatusLabel || '-') + ' · ' + (activity.freshnessLabel || '기록 없음'))}</div>
-            </div>
-            <div class="hero-stat">
-                <div class="hero-stat-label">자동 전략</div>
-                <div class="hero-stat-value">${config.auto_strategy ? 'ON' : 'OFF'}</div>
-                <div class="hero-stat-meta">${escapeHtml((config.strategy || 'day').toUpperCase())} / ${escapeHtml((config.trading_mode || 'safe').toUpperCase())} · ${escapeHtml((config.persona || 'neutral').toUpperCase())}</div>
+                <div class="hero-stat-label">수익률</div>
+                <div class="hero-stat-value ${profitTone === 'positive' ? 'positive-text' : 'negative-text'}">${formatPercent(combined.profitPct)}</div>
+                <div class="hero-stat-meta">총 손익 ${formatSignedNumber(combined.profitKrw, '₩')}</div>
             </div>
             <div class="hero-stat">
                 <div class="hero-stat-label">최근 주문</div>
                 <div class="hero-stat-value">${orderValue}</div>
                 <div class="hero-stat-meta">${orderMeta}</div>
-            </div>
-            <div class="hero-stat">
-                <div class="hero-stat-label">보유 종목</div>
-                <div class="hero-stat-value">${formatNumber((appData.holdings || []).length)}</div>
-                <div class="hero-stat-meta">US ${formatNumber(getHoldings('US').length)} / KR ${formatNumber(getHoldings('KR').length)}</div>
             </div>
         </div>
     `;
@@ -467,7 +451,7 @@ function renderHero() {
 function renderRouteTabs() {
     const tabs = document.getElementById('routeTabs');
     if (!tabs) return;
-    tabs.innerHTML = (appData.views || []).map((view) => `
+    tabs.innerHTML = getVisibleViews().map((view) => `
         <button type="button" class="route-tab ${view.id === uiState.currentView ? 'active' : ''}" data-route="${view.id}">${escapeHtml(view.label)}</button>
     `).join('');
 }
@@ -531,126 +515,104 @@ function renderSparklineSvg(points) {
 }
 
 function renderOverviewView() {
-    const points = getTrendPoints();
-    const latest = points[points.length - 1] || { value: 0 };
-    const first = points[0] || latest;
-    const valueSeries = points.length ? points.map((point) => Number(point.value || 0)) : [0];
-    const high = Math.max(...valueSeries);
-    const low = Math.min(...valueSeries);
-    const sparkline = renderSparklineSvg(points);
     const combined = getCombinedAccount();
     const usTotal = Number(appData.accounts?.us?.total_asset_krw || 0);
     const krTotal = Number(appData.accounts?.kr?.total_asset_krw || 0);
-    const holdings = getHoldings();
-    const positiveHoldings = holdings.filter((item) => Number(item.profitPct || 0) >= 0).length;
-    const totalHoldings = Math.max(holdings.length, 1);
-    const metrics = [
-        { label: '미국 자산 비중', value: `${((usTotal / Math.max(combined.totalKrw, 1)) * 100).toFixed(1)}%`, progress: (usTotal / Math.max(combined.totalKrw, 1)) * 100 },
-        { label: '국내 자산 비중', value: `${((krTotal / Math.max(combined.totalKrw, 1)) * 100).toFixed(1)}%`, progress: (krTotal / Math.max(combined.totalKrw, 1)) * 100 },
-        { label: '수익권 보유 비율', value: `${positiveHoldings}/${holdings.length || 0}`, progress: (positiveHoldings / totalHoldings) * 100 },
-        { label: 'DCA 투자 비중', value: `${formatNumber(appData.preferences?.dca?.daily_investment_pct || 0, 1)}%`, progress: Number(appData.preferences?.dca?.daily_investment_pct || 0) },
-    ];
+    const status = appData.status || {};
+    const activity = getActivitySnapshot();
+    const lastOrder = activity.lastOrder || null;
+    const latestLogs = (appData.logs || []).slice(0, 8);
+    const usRatio = ((usTotal / Math.max(combined.totalKrw, 1)) * 100).toFixed(1);
+    const krRatio = ((krTotal / Math.max(combined.totalKrw, 1)) * 100).toFixed(1);
 
     return `
-        <div class="content-grid">
-            <div class="stack-grid">
-                <section class="card">
-                    <div class="card-head">
-                        <div>
-                            <div class="card-title">자산 추이</div>
-                            <div class="card-subtitle">design.json 토큰에 맞춘 골드 라인 차트</div>
-                        </div>
-                        <div class="segment-group">
-                            ${['1W', '1M', '1Y', 'ALL'].map((range) => `
-                                <button type="button" class="segment-option ${uiState.chartRange === range ? 'active' : ''}" data-range="${range}">${range}</button>
-                            `).join('')}
-                        </div>
+        <div class="stack-grid">
+            <section class="card">
+                <div class="card-head">
+                    <div>
+                        <div class="card-title">핵심 지표</div>
+                        <div class="card-subtitle">총 자산, 수익률, 운영 상태만 표시합니다.</div>
                     </div>
-                    <div class="chart-surface">
-                        <div class="chart-wrapper">
-                            <div class="chart-value-pill">${formatCurrency(latest.value, 'KRW')}</div>
-                            ${sparkline.svg}
-                        </div>
-                        <div class="chart-foot">
-                            <div class="mini-stat"><span>기간 변화</span><strong>${formatSignedNumber(latest.value - first.value, '₩')}</strong></div>
-                            <div class="mini-stat"><span>최고</span><strong>${formatCurrency(high, 'KRW')}</strong></div>
-                            <div class="mini-stat"><span>최저</span><strong>${formatCurrency(low, 'KRW')}</strong></div>
-                            <div class="mini-stat"><span>환율</span><strong>${formatNumber(combined.exchangeRate, 1)}</strong></div>
-                        </div>
+                </div>
+                <div class="summary-grid">
+                    <div class="metric-card">
+                        <div class="metric-label">총 자산</div>
+                        <div class="metric-value">${formatCurrency(combined.totalKrw, 'KRW')}</div>
+                        <div class="metric-meta">${formatCurrency(combined.totalUsd, 'USD', 2)}</div>
                     </div>
-                </section>
-                <section class="card">
-                    <div class="card-head">
-                        <div>
-                            <div class="card-title">시장 통계</div>
-                            <div class="card-subtitle">포트폴리오 구성과 운영 상태를 한 번에 확인합니다.</div>
-                        </div>
+                    <div class="metric-card">
+                        <div class="metric-label">총 손익</div>
+                        <div class="metric-value ${toneClassFromValue(combined.profitKrw)}">${formatSignedNumber(combined.profitKrw, '₩')}</div>
+                        <div class="metric-meta">${toneClassFromValue(combined.profitPct) === 'positive-text' ? '수익' : '손실'} 기준</div>
                     </div>
-                    <div class="stat-list">
-                        ${metrics.map((metric) => `
-                            <div class="stat-row">
-                                <div class="stat-row-head">
-                                    <span class="row-label">${escapeHtml(metric.label)}</span>
-                                    <span class="row-value">${escapeHtml(metric.value)}</span>
+                    <div class="metric-card">
+                        <div class="metric-label">수익률</div>
+                        <div class="metric-value ${toneClassFromValue(combined.profitPct)}">${formatPercent(combined.profitPct)}</div>
+                        <div class="metric-meta">US ${usRatio}% · KR ${krRatio}%</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">시장 상태</div>
+                        <div class="metric-value">${escapeHtml(status.marketStatus || '-')}</div>
+                        <div class="metric-meta">${escapeHtml(activity.freshnessLabel || status.lastUpdate || '-')}</div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="card">
+                <div class="card-head">
+                    <div>
+                        <div class="card-title">오늘 운영 요약</div>
+                        <div class="card-subtitle">주문/전략 상태 핵심만 요약합니다.</div>
+                    </div>
+                </div>
+                <div class="stat-list">
+                    <div class="stat-row">
+                        <div class="stat-row-head">
+                            <span class="row-label">최근 주문</span>
+                            <span class="badge ${lastOrder ? badgeTone(lastOrder.tone) : 'warning'}">${escapeHtml(lastOrder ? lastOrder.status.toUpperCase() : 'NONE')}</span>
+                        </div>
+                        <div class="row-value">${escapeHtml(lastOrder ? (lastOrder.symbol || '-') : '주문 기록 없음')}</div>
+                        <div class="table-muted">${escapeHtml(lastOrder ? `${lastOrder.timestamp} · ${lastOrder.age}` : '-')}</div>
+                    </div>
+                    <div class="stat-row">
+                        <div class="stat-row-head">
+                            <span class="row-label">자동 전략</span>
+                            <span class="row-value">${appData.config?.auto_strategy ? 'ON' : 'OFF'}</span>
+                        </div>
+                        <div class="table-muted">${escapeHtml((appData.config?.strategy || 'day').toUpperCase())} / ${escapeHtml((appData.config?.trading_mode || 'safe').toUpperCase())} / ${escapeHtml((appData.config?.persona || 'neutral').toUpperCase())}</div>
+                    </div>
+                    <div class="stat-row">
+                        <div class="stat-row-head">
+                            <span class="row-label">봇 상태</span>
+                            <span class="badge ${status.botRunning ? 'positive' : 'negative'}">${status.botRunning ? 'RUNNING' : 'STOPPED'}</span>
+                        </div>
+                        <div class="table-muted">업데이트 ${escapeHtml(status.generatedAt || '-')}</div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="card">
+                <div class="card-head">
+                    <div>
+                        <div class="card-title">최근 로그</div>
+                        <div class="card-subtitle">핵심 확인용 최근 8건만 표시합니다.</div>
+                    </div>
+                </div>
+                <div class="log-terminal">
+                    <div class="log-list">
+                        ${latestLogs.map((log) => {
+                            const levelClass = String(log.level || '').toLowerCase();
+                            return `
+                                <div class="log-item">
+                                    <span class="log-time">${escapeHtml(log.timestamp)}</span>
+                                    <span class="log-level ${levelClass}">${escapeHtml(log.level)}</span>
+                                    <span class="log-message">${escapeHtml(log.message)}</span>
                                 </div>
-                                <div class="progress-track"><span class="progress-fill" style="width:${Math.max(0, Math.min(100, metric.progress)).toFixed(1)}%"></span></div>
-                            </div>
-                        `).join('')}
+                            `;
+                        }).join('') || '<div class="empty-state">로그가 없습니다.</div>'}
                     </div>
-                </section>
-            </div>
-            <div class="stack-grid">
-                <section class="card">
-                    <div class="card-head">
-                        <div>
-                            <div class="card-title">운영 제어</div>
-                            <div class="card-subtitle">현재 설정과 실행 동작을 빠르게 관리합니다.</div>
-                        </div>
-                    </div>
-                    <div class="summary-grid">
-                        <div class="metric-card">
-                            <div class="metric-label">전략</div>
-                            <div class="metric-value">${escapeHtml((appData.config?.strategy || 'day').toUpperCase())}</div>
-                            <div class="metric-meta">자동 전략 ${appData.config?.auto_strategy ? 'ON' : 'OFF'}</div>
-                        </div>
-                        <div class="metric-card">
-                            <div class="metric-label">모드</div>
-                            <div class="metric-value">${escapeHtml((appData.config?.trading_mode || 'safe').toUpperCase())}</div>
-                            <div class="metric-meta">페르소나 ${(appData.config?.persona || 'neutral').toUpperCase()}</div>
-                        </div>
-                        <div class="metric-card">
-                            <div class="metric-label">실시간 제어</div>
-                            <div class="metric-value">${appData.status?.botRunning ? 'LIVE' : 'STOP'}</div>
-                            <div class="metric-meta">마지막 업데이트 ${escapeHtml(appData.status?.lastUpdate || '-')}</div>
-                        </div>
-                    </div>
-                    <div class="hero-actions" style="margin-top:18px; justify-content:flex-start;">
-                        <button type="button" class="secondary-action" data-route="automation">설정 상세</button>
-                        <button type="button" class="ghost-action" data-action="refresh">데이터 동기화</button>
-                        <button type="button" class="primary-action" data-action="open-restart-modal">세션 재시작</button>
-                    </div>
-                </section>
-                <section class="card">
-                    <div class="card-head">
-                        <div>
-                            <div class="card-title">Top Stories</div>
-                            <div class="card-subtitle">전략, 로그, 운영 이슈를 카드형으로 요약했습니다.</div>
-                        </div>
-                    </div>
-                    <div class="story-list">
-                        ${(appData.stories || []).map((story) => `
-                            <div class="story-item">
-                                <div class="story-head">
-                                    <span class="badge ${badgeTone(story.tone)}">${escapeHtml(story.badge)}</span>
-                                    <span class="story-meta">${escapeHtml(story.meta)}</span>
-                                </div>
-                                <div class="story-title">${escapeHtml(story.title)}</div>
-                                <div class="story-summary">${escapeHtml(story.summary)}</div>
-                            </div>
-                        `).join('') || '<div class="empty-state">표시할 이벤트가 없습니다.</div>'}
-                    </div>
-                </section>
-            </div>
+                </div>
+            </section>
         </div>
     `;
 }

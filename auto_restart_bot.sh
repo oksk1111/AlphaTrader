@@ -16,6 +16,7 @@ export TZ='Asia/Seoul'
 LOG_DIR="$SCRIPT_DIR/database"
 RESTART_LOG="$LOG_DIR/restart.log"
 DAILY_REPORT_FLAG="$LOG_DIR/.daily_report_sent"
+WEEKLY_BACKTEST_FLAG="$LOG_DIR/.weekly_backtest_sent"
 
 # Telegram configuration (set these or use environment variables)
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
@@ -125,6 +126,50 @@ should_send_daily_report() {
 
 mark_daily_report_sent() {
     echo "$(date +%Y%m%d)" > "$DAILY_REPORT_FLAG"
+}
+
+run_weekly_backtest() {
+    cd "$SCRIPT_DIR"
+
+    if [ ! -f "venv/bin/python" ]; then
+        log_message "❌ Python venv not found for weekly backtest"
+        return 1
+    fi
+
+    log_message "🧪 Running weekly backtest report..."
+    venv/bin/python modules/backtest_runner.py >> "$LOG_DIR/backtest_stdout.log" 2>&1
+
+    if [ $? -eq 0 ]; then
+        log_message "✅ Weekly backtest report generated"
+        return 0
+    fi
+
+    log_message "❌ Weekly backtest failed"
+    return 1
+}
+
+should_run_weekly_backtest() {
+    local day_of_week=$(date +%u)  # 1=Mon ... 7=Sun
+    local current_hour=$(date +%H)
+    local current_week=$(date +%G-W%V)
+
+    # 일요일 07시(장 시작 전 점검 시간대)에 1회 실행
+    if [ "$day_of_week" -eq 7 ] && [ "$current_hour" -eq 7 ]; then
+        if [ -f "$WEEKLY_BACKTEST_FLAG" ]; then
+            local last_sent_week
+            last_sent_week=$(cat "$WEEKLY_BACKTEST_FLAG")
+            if [ "$last_sent_week" == "$current_week" ]; then
+                return 1
+            fi
+        fi
+        return 0
+    fi
+
+    return 1
+}
+
+mark_weekly_backtest_sent() {
+    date +%G-W%V > "$WEEKLY_BACKTEST_FLAG"
 }
 
 is_market_hours() {
@@ -243,6 +288,13 @@ while true; do
             log_message "✅ Daily report sent successfully"
         else
             log_message "❌ Failed to send daily report"
+        fi
+    fi
+
+    # 주간 백테스트 리포트 체크 (일요일 07시)
+    if should_run_weekly_backtest; then
+        if run_weekly_backtest; then
+            mark_weekly_backtest_sent
         fi
     fi
     

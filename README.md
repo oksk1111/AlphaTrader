@@ -1,78 +1,183 @@
-# Alpha Trader 🎯
+# US ETF Sniper
 
-미국/한국 주식 자동매매 봇 (AI + Hybrid 기술적 분석)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/web-FastAPI-009688)](https://fastapi.tiangolo.com/)
+[![KIS API](https://img.shields.io/badge/broker-KIS_API-orange)](#)
+[![Telegram](https://img.shields.io/badge/notify-Telegram-2CA5E0)](#)
 
-## 📊 프로젝트 개요
+미국/국내 주식 자동매매 시스템입니다.
+룰 기반 전략(VBO, MA)과 AI 보조 분석을 결합해 매수/매도 의사결정을 자동화하고, FastAPI 대시보드로 운영 상태를 모니터링합니다.
 
-변동성 돌파 전략과 AI(Gemini 1.5)를 결합하여 안정적인 수익을 추구하는 자동매매 시스템입니다.
-ETF 거래가 힘든 소액 자산가(<1000만원)를 위한 **우량주(Blue Chip) 모드**를 지원하며, 투자 성향(Persona)에 따라 AI의 판단 기준을 조절할 수 있습니다.
+빠른 이동: [Key Features](#-key-features) · [Quick Start](#-quick-start) · [Configuration](#-configuration) · [Backtest Automation](#-backtest-automation) · [Dashboard](#️-dashboard)
 
-## 🎯 투자 전략
+## ✨ Key Features
 
-1. **Hybrid Strategy**: 
-    - **Trader (Rule-based)**: 변동성 돌파(VBO) + 20일 이동평균선(MA20)으로 타점 포착
-    - **Analyst (AI-based)**: Gemini 1.5가 거시경제 뉴스를 분석하여 "잠재적 폭락" 위험 필터링
-2. **Dynamic Persona**: 사용자의 성향에 따라 AI의 거부권(Veto) 권한을 조정
-    - **Aggressive**: 사소한 악재 무시, 모멘텀 중시
-    - **Neutral**: 균형 잡힌 리스크 관리
-    - **Conservative**: 아주 작은 위험 신호에도 매수 중단
-3. **Adaptive Targets**:
-    - **Safe Mode (<1000만원)**: 우량주 중심 (NVDA, AAPL, 삼성전자, SK하이닉스 등)
-    - **Risky Mode (>=1000만원)**: 2x/3x 레버리지 ETF (TQQQ, SOXL, KODEX 레버리지)
+| 모듈 | 기능 | 설명 |
+|------|------|------|
+| Trading Engine | 자동매매 실행 | 장 상태 감지(US/KR) 후 전략별 매매 루프 실행 |
+| Strategy | 다중 전략 | `day`, `swing`, `dca` 전략과 `safe/risky` 모드 지원 |
+| Risk Control | 리스크 관리 | 손절, 트레일링 스탑, 갭다운/연속하락/포트폴리오 드로다운 방어 |
+| AI Assist | 시장 보조 분석 | 뉴스 기반 위험도 판단 및 매수 제한(페르소나 반영) |
+| Auto Strategy | 자동 전략 전환 | 시장/자산/포지션 상태 기반 전략/모드/페르소나 자동 최적화 |
+| Dashboard | 운영 관제 | 총자산, 수익률, 보유종목, 최근 주문/로그를 웹에서 확인 |
+| Notifications | 알림 전송 | Telegram 연동으로 중요 이벤트 전달 |
 
-## 🛠️ 기술 스택
+## 🧱 Tech Stack
 
-- **Broker**: 한국투자증권 (KIS) Open API
-- **AI Engine**: Google Gemini 1.5 Flash (비용 효율성 최적화)
-- **Language**: Python 3.10+
-- **Database**: JSON File System (Local Cache)
+| 구분 | 내용 |
+|------|------|
+| Language | Python 3.10+ |
+| Broker API | KIS Open API |
+| AI | Gemini + Multi-LLM adapters |
+| Web | FastAPI + Jinja2 + Vanilla JS/CSS |
+| Data | JSON 기반 캐시/히스토리 (`database/`) |
 
-## 📋 환경 설정 (`config.py` 또는 `user_config.json`)
+## 🚀 Quick Start
 
-`user_config.json` 예시:
-```json
-{
-    "trading_mode": "safe", 
-    "strategy": "day",
-    "persona": "aggressive",
-    "dca_settings": {
-        "enabled": true,
-        "daily_investment_pct": 5
-    }
-}
-```
+### 1. 설치
 
-- **trading_mode**: `safe` (우량주), `risky` (레버리지)
-- **persona**: `aggressive`, `neutral`, `conservative`
-
-## 🚀 실행 방법
-
-### 설치
 ```bash
 pip install -r requirements.txt
 ```
 
-### 환경변수 (.env)
+### 2. 환경 변수 설정
+
+`.env` 파일에 최소 아래 값을 설정하세요.
+
 ```env
 KIS_APP_KEY=...
 KIS_APP_SECRET=...
+KIS_ACCOUNT_NO=...
+KIS_PRODUCT_CODE=...
 GEMINI_API_KEY=...
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
 ```
 
-### 실행
+### 3. 사용자 설정 확인
+
+`user_config.json` 예시:
+
+```json
+{
+  "auto_strategy": true,
+  "trading_mode": "safe",
+  "strategy": "dca",
+  "persona": "aggressive",
+  "theme_mode": "light"
+}
+```
+
+### 4. 봇 실행
+
 ```bash
-# 메인 봇 실행
 python run_bot.py
 ```
 
-### 📊 대시보드
+### 5. 대시보드 실행
+
 ```bash
-python web/app.py 
-# 또는
-streamlit run dashboard.py
+python web/app.py
 ```
 
-## ⚠️ 주의사항
+기본 접속: `http://127.0.0.1:8501`
 
-1. **투자 책임**: 모든 투자의 책임은 사용자에게 있습니다.
-2. **모의투자 권장**: 코드를 수정하거나 전략을 바꿀 때는 반드시 모의투자 계좌(`VTTC...`)로 테스트하세요.
+## ⚙️ Configuration
+
+주요 설정 파일:
+
+- `user_config.json`: 전략/모드/페르소나, DCA, 리스크, 알림 설정
+- `config.py`: 기본 상수/환경 의존 설정
+- `database/*.json`: 계좌 캐시, 스냅샷, 전략 히스토리
+
+핵심 파라미터:
+
+- `strategy`: `day` | `swing` | `dca`
+- `trading_mode`: `safe` | `risky`
+- `persona`: `aggressive` | `neutral` | `conservative`
+- `risk_management`: 손절/트레일링/드로다운 임계값
+
+## ⏱️ Operations & Scheduling
+
+`auto_restart_bot.sh` 기준 기본 운영 주기:
+
+| 작업 | 주기 | 기준 시간 |
+|------|------|-----------|
+| 봇 프로세스 감시/재시작 | 장 운영 중 30초 간격 | KST |
+| 대시보드 감시/재시작 | 상시 | KST |
+| 일일 리포트 발송 | 매일 16시 1회 | KST |
+| 주간 백테스트 리포트 | 일요일 07시 1회 | KST |
+
+관련 파일:
+
+- `auto_restart_bot.sh`
+- `deployment/alphatrader.service`
+
+## 🧪 Backtest Automation
+
+백테스트 리포트는 실거래 히스토리 파일(`database/asset_snapshots.json`, `database/profit_history.json`)을 사용해 자동 생성됩니다.
+
+생성 항목:
+
+- 누적 수익률, 최대 낙폭(MDD), 일간 변동성, 연환산 Sharpe
+- 승/패 일수, 승률
+- 총 실현손익, 거래 건수
+- 30일/90일 롤링 수익률(데이터가 충분한 경우)
+
+실행 방법:
+
+```bash
+python modules/backtest_runner.py
+```
+
+출력 파일:
+
+- `database/backtest_reports/backtest_YYYYMMDD_HHMMSS.md`
+- `database/backtest_latest.json`
+
+## 🖥️ Dashboard
+
+대시보드에서 다음을 확인할 수 있습니다.
+
+- 총 자산, 손익, 수익률
+- 최근 주문 상태 및 로그
+- 미국/국내 보유 포지션 요약
+- 운영 상태(봇 실행 여부, 시장 상태, 최신 업데이트)
+
+관련 코드:
+
+- `web/app.py`
+- `web/templates/dashboard_v2.html`
+- `web/static/dashboard.js`
+- `web/static/dashboard.css`
+
+## 📁 Project Structure
+
+```text
+modules/      브로커 API, 전략 보조, 알림, 분석 모듈
+strategies/   기술적 분석/변동성 돌파 전략
+web/          FastAPI 대시보드
+database/     캐시/로그/스냅샷/전략 히스토리
+deployment/   서비스/배포 스크립트
+docs/         운영/설정/기획 문서
+```
+
+## 📚 Documentation
+
+- `docs/주식 자동 매매 기획.md`
+- `docs/ORACLE_CLOUD_DEPLOY.md`
+- `docs/TELEGRAM_SETUP.md`
+- `docs/클라우드터널링.md`
+- `docs/BACKTEST_AUTOMATION.md`
+
+## 🛣️ Roadmap
+
+- 주문/체결/실패 이벤트의 대시보드 가시성 강화
+- 전략별 백테스트 리포트 자동화
+- 모바일 대시보드 접근성 개선
+- 알림 채널/필터 세분화
+
+## ⚠️ Disclaimer
+
+이 프로젝트는 정보 제공 및 개인 자동화 목적입니다.
+투자 판단과 손익의 책임은 사용자에게 있으며, 실거래 전 반드시 모의투자 환경에서 충분히 검증하세요.

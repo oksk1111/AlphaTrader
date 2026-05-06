@@ -332,6 +332,10 @@ select:focus-visible {
     min-width: 0;
 }
 
+.ticker-strip:empty {
+    display: none;
+}
+
 .ticker-item {
     display: flex;
     gap: 12px;
@@ -468,7 +472,7 @@ select:focus-visible {
 
 .hero-stats {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 14px;
     margin-top: 24px;
 }
@@ -498,7 +502,7 @@ select:focus-visible {
 }
 
 .route-tabs {
-    display: flex;
+    display: none;
     align-items: center;
     gap: 14px;
     padding: 0 6px 2px;
@@ -786,7 +790,7 @@ select:focus-visible {
 }
 
 .summary-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .signal-grid {
@@ -1275,6 +1279,12 @@ select:focus-visible {
         display: none;
     }
 
+    .utility-actions [data-action="toggle-notifications"],
+    .utility-actions [data-route="automation"],
+    #profileChip {
+        display: none;
+    }
+
     .main-content {
         height: auto;
     }
@@ -1339,6 +1349,14 @@ select:focus-visible {
     .signal-values,
     .log-item {
         grid-template-columns: 1fr;
+    }
+
+    .hero-title {
+        font-size: 24px;
+    }
+
+    .metric-value {
+        font-size: 22px;
     }
 
     .utility-actions {
@@ -1453,10 +1471,7 @@ select:focus-visible {
     }
 
     .route-tabs {
-        flex-wrap: wrap;
-        gap: 8px;
-        padding: 0 0 2px;
-        overflow-x: visible;
+        display: none;
     }
 
     .route-tab {

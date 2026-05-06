@@ -317,12 +317,19 @@ def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_set
     
     # 최소/최대 제한 적용
     investment_amount = max(min_investment, min(max_investment, investment_amount))
+
+    # 주문 가능 금액이 1주 가격보다 작으면 무리하게 1주 주문하지 않음
+    if investment_amount < current_price:
+        logger.warning(
+            f"💸 DCA 스킵: 주문가능금액 부족 ({currency_symbol}{investment_amount:,.2f} < 1주 {currency_symbol}{current_price:,.2f})"
+        )
+        return 0
     
     qty = int(investment_amount / current_price)
     
     logger.info(f"📈 DCA 매수: {currency_symbol}{investment_amount:,.0f} → {qty}주 (가격: {currency_symbol}{current_price:,.0f})")
     
-    return max(qty, 1)
+    return max(qty, 0)
 
 K_VALUE = 0.5
 
@@ -825,8 +832,8 @@ def job():
             except:
                 pass
             
-            if not is_uptrend:
-                logger.info(f"[{ticker}] Trend Broken (Price < 20MA). Selling {holding_qty} shares immediately.")
+            if not is_uptrend and not is_short_uptrend:
+                logger.info(f"[{ticker}] Trend Broken (Price < 20MA and < 5MA). Selling {holding_qty} shares immediately.")
                 if market == 'US':
                     kis.sell_market_order(ticker, holding_qty, exchange)
                 else:
