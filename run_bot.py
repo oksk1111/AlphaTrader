@@ -428,7 +428,8 @@ def job():
         if current_dynamic_targets:
             logger.info(f"   - Dynamic Targets (Scanner): {[t['symbol'] for t in current_dynamic_targets]}")
             
-    ai = MultiLLMAnalyst()
+    llm_consensus_cfg = user_config.get("llm_consensus", {})
+    ai = MultiLLMAnalyst(consensus_config=llm_consensus_cfg)
     
     # Dictionary to store monitoring targets
     monitoring_targets = {}

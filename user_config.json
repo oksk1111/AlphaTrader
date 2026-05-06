@@ -11,6 +11,13 @@
         "medium": 0.5,
         "weak": 0.3
     },
+    "llm_consensus": {
+        "crash_veto": true,
+        "min_successful_llms": 2,
+        "required_buy_ratio": 0.6,
+        "unknown_fallback_hold": true,
+        "tie_breaker": "persona"
+    },
     "dca_settings": {
         "enabled": true,
         "daily_investment_pct": 5,

@@ -22,9 +22,17 @@ from modules.logger import logger
 
 
 class MultiLLMAnalyst:
-    def __init__(self):
+    def __init__(self, consensus_config=None):
         self.analysts = []
         self.analyst_names = []
+        cfg = consensus_config or {}
+        self.policy = {
+            "crash_veto": cfg.get("crash_veto", True),
+            "min_successful_llms": max(1, int(cfg.get("min_successful_llms", 1))),
+            "required_buy_ratio": float(cfg.get("required_buy_ratio", 0.5)),
+            "unknown_fallback_hold": cfg.get("unknown_fallback_hold", True),
+            "tie_breaker": str(cfg.get("tie_breaker", "persona")).lower(),
+        }
         
         logger.info("[MultiLLM] LLM 초기화 및 헬스체크 시작...")
         
@@ -76,6 +84,13 @@ class MultiLLMAnalyst:
             self.analyst_names.append("Gemini(fallback)")
         
         logger.info(f"[MultiLLM] 활성 LLM: {self.analyst_names} ({len(self.analysts)}개)")
+        logger.info(
+            "[MultiLLM] 합의정책: crash_veto=%s, min_successful_llms=%s, required_buy_ratio=%.2f, tie_breaker=%s",
+            self.policy["crash_veto"],
+            self.policy["min_successful_llms"],
+            self.policy["required_buy_ratio"],
+            self.policy["tie_breaker"],
+        )
 
     def fetch_news(self):
         """뉴스 수집 (Gemini의 fetch_news 사용)"""
@@ -140,13 +155,29 @@ class MultiLLMAnalyst:
         
         if not results:
             logger.warning("[MultiLLM] 모든 LLM 응답 실패! 안전을 위해 매수 차단.")
+            fallback_buy = not self.policy["unknown_fallback_hold"]
             return {
                 "risk_level": "UNKNOWN",
-                "can_buy": False,
+                "can_buy": fallback_buy,
                 "market_condition": "UNKNOWN",
                 "reason": "All LLMs failed to respond.",
                 "consensus": "ALL_FAILED",
                 "votes": {}
+            }
+
+        if len(results) < self.policy["min_successful_llms"]:
+            logger.warning(
+                "[MultiLLM] 응답 LLM 수 부족(%s/%s)으로 매수 차단",
+                len(results),
+                self.policy["min_successful_llms"],
+            )
+            return {
+                "risk_level": "HIGH",
+                "can_buy": False,
+                "market_condition": "NEUTRAL",
+                "reason": f"Insufficient LLM quorum ({len(results)}/{self.policy['min_successful_llms']}).",
+                "consensus": "QUORUM_BLOCK",
+                "votes": {},
             }
         
         # 합의 처리
@@ -182,8 +213,10 @@ class MultiLLMAnalyst:
         
         total_votes = buy_votes + no_buy_votes
         
-        # CRASH가 하나라도 있으면 무조건 차단
-        if has_crash:
+        buy_ratio = (buy_votes / total_votes) if total_votes > 0 else 0.0
+
+        # CRASH가 하나라도 있으면 무조건 차단 (정책으로 비활성화 가능)
+        if has_crash and self.policy["crash_veto"]:
             consensus_result = {
                 "risk_level": "HIGH",
                 "can_buy": False,
@@ -192,30 +225,39 @@ class MultiLLMAnalyst:
                 "consensus": f"CRASH_VETO ({buy_votes}/{total_votes} buy votes, but CRASH detected)",
                 "votes": votes
             }
-        # 다수결
-        elif buy_votes > no_buy_votes:
+        # 비율 기반 합의
+        elif buy_ratio > self.policy["required_buy_ratio"]:
             consensus_result = {
                 "risk_level": "LOW",
                 "can_buy": True,
                 "market_condition": "BULLISH" if buy_votes == total_votes else "NEUTRAL",
-                "reason": f"Majority buy ({buy_votes}/{total_votes}). {'; '.join(reasons)}",
-                "consensus": f"BUY ({buy_votes}/{total_votes})",
+                "reason": f"Buy ratio {buy_ratio:.2f} ({buy_votes}/{total_votes}). {'; '.join(reasons)}",
+                "consensus": f"BUY_RATIO_OK ({buy_votes}/{total_votes}, threshold>{self.policy['required_buy_ratio']:.2f})",
                 "votes": votes
             }
-        elif buy_votes == no_buy_votes:
-            # 동률: persona에 따라 결정
-            if persona == "aggressive":
+        elif buy_ratio == self.policy["required_buy_ratio"]:
+            # 임계값 동률 처리
+            tie_breaker = self.policy["tie_breaker"]
+            if tie_breaker == "buy":
                 final_buy = True
-                consensus_type = "TIE_BUY (aggressive persona)"
-            else:
+                consensus_type = "TIE_BUY (policy=buy)"
+            elif tie_breaker == "hold":
                 final_buy = False
-                consensus_type = "TIE_HOLD (conservative/neutral persona)"
+                consensus_type = "TIE_HOLD (policy=hold)"
+            else:
+                # persona
+                if persona == "aggressive":
+                    final_buy = True
+                    consensus_type = "TIE_BUY (persona=aggressive)"
+                else:
+                    final_buy = False
+                    consensus_type = "TIE_HOLD (persona)"
             
             consensus_result = {
                 "risk_level": "LOW" if final_buy else "HIGH",
                 "can_buy": final_buy,
                 "market_condition": "NEUTRAL",
-                "reason": f"Tie vote ({buy_votes}/{total_votes}). {'; '.join(reasons)}",
+                "reason": f"Threshold tie ratio {buy_ratio:.2f} ({buy_votes}/{total_votes}). {'; '.join(reasons)}",
                 "consensus": consensus_type,
                 "votes": votes
             }
@@ -224,8 +266,8 @@ class MultiLLMAnalyst:
                 "risk_level": "HIGH",
                 "can_buy": False,
                 "market_condition": "BEARISH",
-                "reason": f"Majority hold ({no_buy_votes}/{total_votes}). {'; '.join(reasons)}",
-                "consensus": f"HOLD ({no_buy_votes}/{total_votes})",
+                "reason": f"Buy ratio {buy_ratio:.2f} below threshold {self.policy['required_buy_ratio']:.2f}. {'; '.join(reasons)}",
+                "consensus": f"HOLD_RATIO_BLOCK ({buy_votes}/{total_votes}, threshold>{self.policy['required_buy_ratio']:.2f})",
                 "votes": votes
             }
         

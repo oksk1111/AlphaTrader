@@ -596,6 +596,30 @@ def build_market_ticker(accounts, status, config, signal_items, activity_snapsho
         },
     ]
 
+def build_decision_brief(status, config, activity_snapshot, signals):
+    market_status = status.get("marketStatus", "CLOSED")
+    auto_strategy = bool(config.get("auto_strategy", False))
+    strategy = str(config.get("strategy", "day")).upper()
+    mode = str(config.get("trading_mode", "safe")).upper()
+    persona = str(config.get("persona", "neutral")).upper()
+    last_order = (activity_snapshot or {}).get("lastOrder")
+    strongest_signal = signals[0] if signals else None
+
+    if market_status == "CLOSED":
+        return f"관망 권장: 시장 마감 상태입니다. 다음 장 시작 전 {strategy}/{mode} 설정을 점검하세요."
+
+    if last_order and last_order.get("status") == "failure":
+        return f"주의: 최근 주문 실패가 감지되었습니다. 잔고/주문 가능 금액과 API 상태를 우선 점검하세요."
+
+    if strongest_signal and int(strongest_signal.get("strength", 0)) >= 75:
+        symbol = strongest_signal.get("symbol", "-")
+        return f"공격 관찰: {symbol} 신호 강도가 높습니다. 리스크 한도 내에서 진입 조건을 재확인하세요."
+
+    if auto_strategy:
+        return f"자동 전략 운용 중: {strategy}/{mode}/{persona}. 리스크 제한과 체결 로그를 지속 모니터링하세요."
+
+    return f"수동 운용 중: {strategy}/{mode}/{persona}. 최근 로그를 기준으로 보수적으로 대응하세요."
+
 def build_dashboard_payload(force_update=False):
     config = load_config()
     config["theme_mode"] = resolve_theme_mode(config.get("theme_mode", "light"))
@@ -646,6 +670,7 @@ def build_dashboard_payload(force_update=False):
         "generatedAt": iso_now(),
         "autoStrategy": bool(config.get("auto_strategy", False)),
     }
+    status["decisionBrief"] = build_decision_brief(status, config, activity_snapshot, signals)
 
     return {
         "generatedAt": iso_now(),

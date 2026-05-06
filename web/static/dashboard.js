@@ -524,6 +524,7 @@ function renderOverviewView() {
     const latestLogs = (appData.logs || []).slice(0, 8);
     const usRatio = ((usTotal / Math.max(combined.totalKrw, 1)) * 100).toFixed(1);
     const krRatio = ((krTotal / Math.max(combined.totalKrw, 1)) * 100).toFixed(1);
+    const decisionBrief = status.decisionBrief || '운영 요약 데이터가 아직 충분하지 않습니다.';
 
     return `
         <div class="stack-grid">
@@ -587,6 +588,13 @@ function renderOverviewView() {
                             <span class="badge ${status.botRunning ? 'positive' : 'negative'}">${status.botRunning ? 'RUNNING' : 'STOPPED'}</span>
                         </div>
                         <div class="table-muted">업데이트 ${escapeHtml(status.generatedAt || '-')}</div>
+                    </div>
+                    <div class="stat-row">
+                        <div class="stat-row-head">
+                            <span class="row-label">오늘의 의사결정 요약</span>
+                            <span class="badge info">BRIEF</span>
+                        </div>
+                        <div class="story-summary">${escapeHtml(decisionBrief)}</div>
                     </div>
                 </div>
             </section>

@@ -18,6 +18,7 @@
 | Strategy | 다중 전략 | `day`, `swing`, `dca` 전략과 `safe/risky` 모드 지원 |
 | Risk Control | 리스크 관리 | 손절, 트레일링 스탑, 갭다운/연속하락/포트폴리오 드로다운 방어 |
 | AI Assist | 시장 보조 분석 | 뉴스 기반 위험도 판단 및 매수 제한(페르소나 반영) |
+| AI Consensus Policy | 설정 기반 합의 | 쿼럼/매수비율/CRASH veto/동률처리를 설정으로 제어 |
 | Auto Strategy | 자동 전략 전환 | 시장/자산/포지션 상태 기반 전략/모드/페르소나 자동 최적화 |
 | Dashboard | 운영 관제 | 총자산, 수익률, 보유종목, 최근 주문/로그를 웹에서 확인 |
 | Notifications | 알림 전송 | Telegram 연동으로 중요 이벤트 전달 |
@@ -97,6 +98,28 @@ python web/app.py
 - `persona`: `aggressive` | `neutral` | `conservative`
 - `risk_management`: 손절/트레일링/드로다운 임계값
 
+LLM 합의 정책 파라미터:
+
+- `llm_consensus.crash_veto`: CRASH 단일 veto 적용 여부
+- `llm_consensus.min_successful_llms`: 최소 응답 LLM 수(쿼럼)
+- `llm_consensus.required_buy_ratio`: 매수 승인 찬성 비율 임계값
+- `llm_consensus.unknown_fallback_hold`: 전체 실패 시 관망 고정 여부
+- `llm_consensus.tie_breaker`: 동률 처리(`persona`/`buy`/`hold`)
+
+예시:
+
+```json
+{
+  "llm_consensus": {
+    "crash_veto": true,
+    "min_successful_llms": 2,
+    "required_buy_ratio": 0.6,
+    "unknown_fallback_hold": true,
+    "tie_breaker": "persona"
+  }
+}
+```
+
 ## ⏱️ Operations & Scheduling
 
 `auto_restart_bot.sh` 기준 기본 운영 주기:
@@ -143,6 +166,7 @@ python modules/backtest_runner.py
 - 최근 주문 상태 및 로그
 - 미국/국내 보유 포지션 요약
 - 운영 상태(봇 실행 여부, 시장 상태, 최신 업데이트)
+- 오늘의 의사결정 요약(1문장 브리프)
 
 관련 코드:
 
