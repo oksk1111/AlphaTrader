@@ -49,6 +49,8 @@ DCA_MONITOR_INTERVAL = 60      # DCA 감시 루프 주기 (초)
 DCA_REENTRY_INTERVAL_MIN = 15  # DCA 재평가 주기 (분)
 DCA_LEVERAGED_REENTRY_INTERVAL_MIN = 30  # 레버리지 ETF 전용 DCA 재평가 주기 (분)
 DCA_MAX_BUYS_PER_SESSION = 1   # 종목당 세션 최대 DCA 매수 횟수
+AI_RETRY_COOLDOWN_SEC = 300    # AI 거부 후 재평가 쿨다운 (초)
+TREND_REENTRY_COOLDOWN_SEC = 180  # 추세 이탈 매도 후 재진입 재평가 주기 (초)
 
 # Telegram Notifier for alerts
 telegram = TelegramNotifier()
@@ -464,6 +466,28 @@ def job():
             )
         }
 
+    def refresh_ticker_snapshot(ticker, exchange):
+        """장중 재평가를 위한 최신 가격/일봉/이동평균 갱신"""
+        try:
+            if market == 'US':
+                ohlc = kis.get_daily_ohlc(ticker, exchange)
+                current_price = kis.get_current_price(ticker, exchange)
+            else:
+                ohlc = kis.get_daily_ohlc(ticker)
+                current_price = kis.get_current_price(ticker)
+
+            if not ohlc or not current_price:
+                return None, None, None, None
+
+            closes = [safe_float(x['clos']) for x in ohlc]
+            closes.reverse()
+            ma20 = calculate_ma(closes, 20)
+            ma5 = calculate_short_ma(closes, 5)
+            return current_price, ohlc, ma20, ma5
+        except Exception as e:
+            logger.error(f"[{ticker}] Snapshot refresh failed: {e}")
+            return None, None, None, None
+
     def attempt_dca_buy(ticker, exchange, current_price, ma20, ma5, ohlc, eff_gap_down_threshold, num_targets):
         """DCA 후보를 재평가하여 조건 충족 시 1회 매수"""
         existing = monitoring_targets.get(ticker, {})
@@ -839,7 +863,20 @@ def job():
                     kis.sell_market_order(ticker, holding_qty, exchange)
                 else:
                     kis.sell_market_order(ticker, holding_qty)
-                # Don't add to monitoring list
+                today_open = safe_float(ohlc[0]['open'])
+                reentry_target = calculate_target_price(today_open, ohlc, K_VALUE)
+                monitoring_targets[ticker] = {
+                    'target': reentry_target,
+                    'status': 'reentry_watch',
+                    'buys': 0,
+                    'exchange': exchange,
+                    'ma20': ma20,
+                    'ma5': ma5,
+                    'ohlc': ohlc,
+                    'last_reentry_check_at': None,
+                    'reentry_cooldown_sec': TREND_REENTRY_COOLDOWN_SEC
+                }
+                logger.info(f"[{ticker}] Re-entry watch enabled (cooldown {TREND_REENTRY_COOLDOWN_SEC}s).")
                 continue
             else:
                 logger.info(f"[{ticker}] Trend OK. Holding {holding_qty} shares.")
@@ -1059,20 +1096,81 @@ def job():
                 if not current_price:
                     continue
 
+                refreshed_ohlc = None
+                refreshed_ma20 = data.get('ma20')
+                refreshed_ma5 = data.get('ma5')
+                try:
+                    if market == 'US':
+                        refreshed_ohlc = kis.get_daily_ohlc(ticker, exchange)
+                    else:
+                        refreshed_ohlc = kis.get_daily_ohlc(ticker)
+                    if refreshed_ohlc:
+                        closes = [safe_float(x['clos']) for x in refreshed_ohlc]
+                        closes.reverse()
+                        refreshed_ma20 = calculate_ma(closes, 20)
+                        refreshed_ma5 = calculate_short_ma(closes, 5)
+                        data['ohlc'] = refreshed_ohlc
+                        data['ma20'] = refreshed_ma20
+                        data['ma5'] = refreshed_ma5
+                except Exception as e:
+                    logger.warning(f"[{ticker}] DCA snapshot refresh failed: {e}")
+
                 logger.info(f"[{ticker}] DCA 장중 재평가 ({reentry_interval_min}분 주기) - 현재가 {current_price}")
                 attempt_dca_buy(
                     ticker,
                     exchange,
                     current_price,
-                    data.get('ma20'),
-                    data.get('ma5'),
-                    data.get('ohlc', []),
+                    refreshed_ma20,
+                    refreshed_ma5,
+                    refreshed_ohlc if refreshed_ohlc else data.get('ohlc', []),
                     KR_STOCK_GAP_DOWN_THRESHOLD if (market == 'KR' and ticker not in KR_ETF_CODES) else GAP_DOWN_THRESHOLD,
                     num_active_targets if num_active_targets > 0 else len(monitoring_targets)
                 )
                 continue
 
-            if data['status'] in ['failed', 'ai_rejected', 'sold_sl', 'sold_tp']:
+            if data['status'] == 'reentry_watch':
+                now_dt = datetime.datetime.now()
+                last_check = data.get('last_reentry_check_at')
+                cooldown_sec = data.get('reentry_cooldown_sec', TREND_REENTRY_COOLDOWN_SEC)
+                if last_check and (now_dt - last_check).total_seconds() < cooldown_sec:
+                    continue
+
+                data['last_reentry_check_at'] = now_dt
+                exchange = data.get('exchange')
+                current_price, refreshed_ohlc, refreshed_ma20, refreshed_ma5 = refresh_ticker_snapshot(ticker, exchange)
+                if not current_price or not refreshed_ohlc:
+                    continue
+
+                is_reentry_uptrend = check_trend(current_price, refreshed_ma20)
+                is_reentry_short_uptrend = check_trend(current_price, refreshed_ma5) if refreshed_ma5 else True
+                if is_reentry_uptrend and is_reentry_short_uptrend:
+                    today_open = safe_float(refreshed_ohlc[0]['open'])
+                    new_target = calculate_target_price(today_open, refreshed_ohlc, K_VALUE)
+                    monitoring_targets[ticker] = {
+                        'target': new_target,
+                        'status': 'monitoring',
+                        'buys': 0,
+                        'exchange': exchange,
+                        'ma20': refreshed_ma20,
+                        'ma5': refreshed_ma5,
+                        'ohlc': refreshed_ohlc,
+                        'source': 'reentry'
+                    }
+                    logger.info(f"[{ticker}] Re-entry trend restored. Monitoring resumed (target: {new_target}).")
+                else:
+                    logger.info(f"[{ticker}] Re-entry pending (Price={current_price}, MA20={refreshed_ma20}, MA5={refreshed_ma5})")
+                continue
+
+            if data['status'] == 'ai_rejected':
+                now_dt = datetime.datetime.now()
+                last_rejected_at = data.get('last_ai_rejected_at')
+                cooldown_sec = data.get('ai_retry_cooldown_sec', AI_RETRY_COOLDOWN_SEC)
+                if last_rejected_at and (now_dt - last_rejected_at).total_seconds() < cooldown_sec:
+                    continue
+                data['status'] = 'monitoring'
+                logger.info(f"[{ticker}] AI rejection cooldown elapsed. Retrying buy evaluation.")
+
+            if data['status'] in ['failed', 'sold_sl', 'sold_tp']:
                 continue
                 
             target_price = data['target']
@@ -1184,8 +1282,9 @@ def job():
                 else:
                     logger.info(f"[{ticker}] AI Rejected buying due to risk.")
                     record_skip_reason(ticker, f"AI 거부: {sentiment.get('reason', 'N/A')}")
-                    # Don't retry AI rejection immediately
                     data['status'] = 'ai_rejected'
+                    data['last_ai_rejected_at'] = datetime.datetime.now()
+                    data['ai_retry_cooldown_sec'] = AI_RETRY_COOLDOWN_SEC
 
         # DCA 모드는 감시 간격을 넓힘 (API 호출 절약)
         if STRATEGY_MODE == 'dca':

@@ -43,7 +43,7 @@ PROFIT_HISTORY_FILE = BASE_DIR / "database/profit_history.json"
 ASSET_SNAPSHOTS_FILE = BASE_DIR / "database/asset_snapshots.json"
 DESIGN_LIGHT_FILE = BASE_DIR / "data" / "design_w.json"
 DESIGN_DARK_FILE = BASE_DIR / "data" / "design_b.json"
-ALLOWED_VIEWS = {"overview", "portfolio", "signals", "automation", "logs"}
+ALLOWED_VIEWS = {"overview", "portfolio", "logs"}
 
 def load_json_file(file_path, default):
     try:
@@ -276,8 +276,6 @@ def build_views():
     return [
         {"id": "overview", "label": "개요", "description": "실시간 운영 현황"},
         {"id": "portfolio", "label": "포트폴리오", "description": "미국/국내 보유 자산"},
-        {"id": "signals", "label": "시그널", "description": "티커 감시 및 전략 상태"},
-        {"id": "automation", "label": "자동화", "description": "봇 설정과 리스크 제어"},
         {"id": "logs", "label": "운영 로그", "description": "실행 로그와 이벤트 타임라인"},
     ]
 
@@ -697,10 +695,8 @@ def build_dashboard_payload(force_update=False):
         "history": {
             "strategy": strategy_timeline,
             "profitDays": build_profit_days(profit_history),
-            "snapshots": build_asset_trend(asset_snapshots, combined_total_krw),
         },
         "charts": {
-            "assetTrend": build_asset_trend(asset_snapshots, combined_total_krw),
             "allocation": allocation,
             "profitDistribution": [
                 {
