@@ -859,24 +859,49 @@ def job():
             
             if not is_uptrend and not is_short_uptrend:
                 logger.info(f"[{ticker}] Trend Broken (Price < 20MA and < 5MA). Selling {holding_qty} shares immediately.")
-                if market == 'US':
-                    kis.sell_market_order(ticker, holding_qty, exchange)
+                sell_res = None
+                for _attempt in range(3):
+                    if market == 'US':
+                        sell_res = kis.sell_market_order(ticker, holding_qty, exchange)
+                    else:
+                        sell_res = kis.sell_market_order(ticker, holding_qty)
+                    if sell_res and sell_res.get('rt_cd') == '0':
+                        break
+                    logger.warning(f"[{ticker}] Trend-break sell attempt {_attempt+1} failed: {sell_res}. Retrying...")
+                    time.sleep(2)
+
+                if sell_res and sell_res.get('rt_cd') == '0':
+                    logger.info(f"[{ticker}] ✅ Trend-break sell success.")
+                    today_open = safe_float(ohlc[0]['open'])
+                    reentry_target = calculate_target_price(today_open, ohlc, K_VALUE)
+                    monitoring_targets[ticker] = {
+                        'target': reentry_target,
+                        'status': 'reentry_watch',
+                        'buys': 0,
+                        'exchange': exchange,
+                        'ma20': ma20,
+                        'ma5': ma5,
+                        'ohlc': ohlc,
+                        'last_reentry_check_at': None,
+                        'reentry_cooldown_sec': TREND_REENTRY_COOLDOWN_SEC
+                    }
+                    logger.info(f"[{ticker}] Re-entry watch enabled (cooldown {TREND_REENTRY_COOLDOWN_SEC}s).")
                 else:
-                    kis.sell_market_order(ticker, holding_qty)
-                today_open = safe_float(ohlc[0]['open'])
-                reentry_target = calculate_target_price(today_open, ohlc, K_VALUE)
-                monitoring_targets[ticker] = {
-                    'target': reentry_target,
-                    'status': 'reentry_watch',
-                    'buys': 0,
-                    'exchange': exchange,
-                    'ma20': ma20,
-                    'ma5': ma5,
-                    'ohlc': ohlc,
-                    'last_reentry_check_at': None,
-                    'reentry_cooldown_sec': TREND_REENTRY_COOLDOWN_SEC
-                }
-                logger.info(f"[{ticker}] Re-entry watch enabled (cooldown {TREND_REENTRY_COOLDOWN_SEC}s).")
+                    err_msg = sell_res.get('msg1', 'unknown') if sell_res else 'no response'
+                    logger.error(f"[{ticker}] ❌ Trend-break sell FAILED after 3 attempts: {err_msg}")
+                    send_alert(f"🚨 [{ticker}] 추세이탈 매도 실패! 수동 확인 필요.\n오류: {err_msg}", is_error=True)
+                    # 포지션 유지 - 다음 루프에서 재시도
+                    monitoring_targets[ticker] = {
+                        'target': 9999999,
+                        'status': 'bought',
+                        'buys': holding_qty,
+                        'exchange': exchange,
+                        'buy_price': holding_avg_price if holding_avg_price > 0 else current_price,
+                        'highest_price': current_price,
+                        'ma20': ma20,
+                        'ma5': ma5,
+                        'ohlc': ohlc,
+                    }
                 continue
             else:
                 logger.info(f"[{ticker}] Trend OK. Holding {holding_qty} shares.")
@@ -1048,11 +1073,23 @@ def job():
                     if pnl_pct <= pos_stop_loss:
                         logger.warning(f"[{ticker}] 🛑 Stop Loss Triggered! ({pnl_pct:.2f}% <= {pos_stop_loss}%). Selling {qty} shares.")
                         send_alert(f"🛑 [{ticker}] 손절매 발동! {pnl_pct:.2f}%. {qty}주 매도.")
-                        if market == 'US':
-                            kis.sell_market_order(ticker, qty, data.get('exchange'))
+                        _sl_res = None
+                        for _sl_attempt in range(3):
+                            if market == 'US':
+                                _sl_res = kis.sell_market_order(ticker, qty, data.get('exchange'))
+                            else:
+                                _sl_res = kis.sell_market_order(ticker, qty)
+                            if _sl_res and _sl_res.get('rt_cd') == '0':
+                                break
+                            logger.warning(f"[{ticker}] Stop-loss sell attempt {_sl_attempt+1} failed. Retrying...")
+                            time.sleep(2)
+                        if _sl_res and _sl_res.get('rt_cd') == '0':
+                            logger.info(f"[{ticker}] ✅ Stop-loss sell success.")
+                            data['status'] = 'sold_sl'  # Mark as Sold (Stop Loss)
                         else:
-                            kis.sell_market_order(ticker, qty)
-                        data['status'] = 'sold_sl' # Mark as Sold (Stop Loss)
+                            _sl_err = _sl_res.get('msg1', 'unknown') if _sl_res else 'no response'
+                            logger.error(f"[{ticker}] ❌ Stop-loss sell FAILED after 3 attempts: {_sl_err}")
+                            send_alert(f"🚨 [{ticker}] 손절매 주문 실패! 수동 확인 필요.\n오류: {_sl_err}", is_error=True)
                         continue
                         
                     # 2. Trailing Stop (시장별 차별화)
@@ -1063,11 +1100,23 @@ def job():
                         if drop_from_peak >= pos_trailing_drop:
                             logger.info(f"[{ticker}] 💰 Trailing Stop Triggered! (Peak: {peak_pnl_pct:.2f}%, Drop: {drop_from_peak:.2f}% >= {pos_trailing_drop}%). Selling {qty} shares.")
                             send_alert(f"💰 [{ticker}] 트레일링 스탑! 고점 대비 {drop_from_peak:.2f}% 하락. {qty}주 매도.")
-                            if market == 'US':
-                                kis.sell_market_order(ticker, qty, data.get('exchange'))
+                            _tp_res = None
+                            for _tp_attempt in range(3):
+                                if market == 'US':
+                                    _tp_res = kis.sell_market_order(ticker, qty, data.get('exchange'))
+                                else:
+                                    _tp_res = kis.sell_market_order(ticker, qty)
+                                if _tp_res and _tp_res.get('rt_cd') == '0':
+                                    break
+                                logger.warning(f"[{ticker}] Trailing-stop sell attempt {_tp_attempt+1} failed. Retrying...")
+                                time.sleep(2)
+                            if _tp_res and _tp_res.get('rt_cd') == '0':
+                                logger.info(f"[{ticker}] ✅ Trailing-stop sell success.")
+                                data['status'] = 'sold_tp'  # Mark as Sold (Take Profit)
                             else:
-                                kis.sell_market_order(ticker, qty)
-                            data['status'] = 'sold_tp' # Mark as Sold (Take Profit)
+                                _tp_err = _tp_res.get('msg1', 'unknown') if _tp_res else 'no response'
+                                logger.error(f"[{ticker}] ❌ Trailing-stop sell FAILED after 3 attempts: {_tp_err}")
+                                send_alert(f"🚨 [{ticker}] 트레일링스탑 주문 실패! 수동 확인 필요.\n오류: {_tp_err}", is_error=True)
                             continue
                             
                 except Exception as e:
