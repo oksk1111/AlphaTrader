@@ -20,10 +20,11 @@
     },
     "dca_settings": {
         "enabled": true,
-        "daily_investment_pct": 5,
+        "daily_investment_pct": 15,
         "buy_delay_minutes": 30,
         "min_investment_usd": 10,
-        "max_investment_usd": 100
+        "max_investment_usd": 500,
+        "max_buys_per_session": 3
     },
     "risk_management": {
         "stop_loss_pct": -3.0,
