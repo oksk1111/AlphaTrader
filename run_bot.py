@@ -1143,20 +1143,52 @@ def job():
 
                 is_reentry_uptrend = check_trend(current_price, refreshed_ma20)
                 is_reentry_short_uptrend = check_trend(current_price, refreshed_ma5) if refreshed_ma5 else True
-                if is_reentry_uptrend and is_reentry_short_uptrend:
-                    today_open = safe_float(refreshed_ohlc[0]['open'])
-                    new_target = calculate_target_price(today_open, refreshed_ohlc, K_VALUE)
-                    monitoring_targets[ticker] = {
-                        'target': new_target,
-                        'status': 'monitoring',
-                        'buys': 0,
-                        'exchange': exchange,
-                        'ma20': refreshed_ma20,
-                        'ma5': refreshed_ma5,
-                        'ohlc': refreshed_ohlc,
-                        'source': 'reentry'
-                    }
-                    logger.info(f"[{ticker}] Re-entry trend restored. Monitoring resumed (target: {new_target}).")
+
+                if is_reentry_uptrend:
+                    # MA20 위로 복귀 시 변동성돌파 대기 없이 즉시 재진입
+                    # MA5는 hard block 대신 수량 50% 축소로 완화
+                    reduce_qty = not is_reentry_short_uptrend
+
+                    if ticker in FAILED_TICKERS:
+                        logger.warning(f"[{ticker}] Re-entry blocked: account restriction")
+                        continue
+
+                    qty = calculate_order_quantity(available_cash, current_price, 0.6, num_active_targets)
+                    if reduce_qty:
+                        qty = max(1, qty // 2)
+                        logger.info(f"[{ticker}] 🔄 Re-entry: MA20 복귀, MA5 미복귀 → 수량 50% 축소 {qty}주")
+                    else:
+                        logger.info(f"[{ticker}] 🔄 Re-entry: MA20+MA5 모두 복귀 → 전량 {qty}주")
+
+                    if market == 'US':
+                        res = kis.buy_market_order(ticker, qty, exchange)
+                    else:
+                        res = kis.buy_market_order(ticker, qty)
+
+                    if res and res.get('rt_cd') == '0':
+                        logger.info(f"[{ticker}] ✅ Re-entry Buy Success! {qty}주 @ {current_price}")
+                        send_alert(
+                            f"🔄 [{ticker}] 추세 복귀 재진입 성공!\n"
+                            f"{qty}주 @ {current_price:.2f}"
+                            f"{' (수량 50% 축소 - MA5 미복귀)' if reduce_qty else ''}"
+                        )
+                        monitoring_targets[ticker] = {
+                            'target': current_price,
+                            'status': 'bought',
+                            'buys': qty,
+                            'exchange': exchange,
+                            'buy_price': current_price,
+                            'highest_price': current_price,
+                            'ma20': refreshed_ma20,
+                            'ma5': refreshed_ma5,
+                            'ohlc': refreshed_ohlc,
+                        }
+                    else:
+                        logger.error(f"[{ticker}] Re-entry Buy Failed: {res}")
+                        record_skip_reason(ticker, f"재진입 주문 실패: {res.get('msg1', 'unknown') if res else 'unknown'}")
+                        if res and res.get('msg_cd') in ['APBK1680', 'APBK1681']:
+                            monitoring_targets[ticker]['status'] = 'failed'
+                            FAILED_TICKERS.add(ticker)
                 else:
                     logger.info(f"[{ticker}] Re-entry pending (Price={current_price}, MA20={refreshed_ma20}, MA5={refreshed_ma5})")
                 continue
