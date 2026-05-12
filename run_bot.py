@@ -848,7 +848,7 @@ def job():
             try:
                 for h in balance.get('output1', []):
                     if h.get('pdno') == ticker or h.get('ovrs_pdno') == ticker:
-                        holding_qty = int(h.get('hldg_qty', h.get('ccld_qty_smtl1', 1)))
+                        holding_qty = int(safe_float(h.get('hldg_qty', h.get('ovrs_cblc_qty', 1))))
                         holding_avg_price = safe_float(h.get('pchs_avg_pric', h.get('avg_unpr3', 0)))
                         break
             except:
@@ -1087,6 +1087,7 @@ def job():
                             _sl_err = _sl_res.get('msg1', 'unknown') if _sl_res else 'no response'
                             logger.error(f"[{ticker}] ❌ Stop-loss sell FAILED after 3 attempts: {_sl_err}")
                             send_alert(f"🚨 [{ticker}] 손절매 주문 실패! 수동 확인 필요.\n오류: {_sl_err}", is_error=True)
+                            data['status'] = 'sl_failed'  # 반복 알람 방지
                         continue
                         
                     # 2. Trailing Stop (시장별 차별화)
@@ -1114,6 +1115,7 @@ def job():
                                 _tp_err = _tp_res.get('msg1', 'unknown') if _tp_res else 'no response'
                                 logger.error(f"[{ticker}] ❌ Trailing-stop sell FAILED after 3 attempts: {_tp_err}")
                                 send_alert(f"🚨 [{ticker}] 트레일링스탑 주문 실패! 수동 확인 필요.\n오류: {_tp_err}", is_error=True)
+                                data['status'] = 'tp_failed'  # 반복 알람 방지
                             continue
                             
                 except Exception as e:
@@ -1248,7 +1250,7 @@ def job():
                 data['status'] = 'monitoring'
                 logger.info(f"[{ticker}] AI rejection cooldown elapsed. Retrying buy evaluation.")
 
-            if data['status'] in ['failed', 'sold_sl', 'sold_tp']:
+            if data['status'] in ['failed', 'sold_sl', 'sold_tp', 'sl_failed', 'tp_failed']:
                 continue
                 
             target_price = data['target']
