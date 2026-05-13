@@ -264,7 +264,15 @@ class AutoStrategyOptimizer:
             strategy = 'day'
             reasons.append("CRASH 감지 → Day Trading (당일 청산)")
             confidence = 0.9
-        
+
+        # --- US 시장: 양의 추세 → VBO(Day) 전략 우선 적용 ---
+        # 3X ETF는 변동성이 구조적으로 높아 swing 조건(volatility < 0.6)을 충족하지 못함
+        # trend > 0이면 변동성 무관하게 VBO Day 전략으로 진입 기회 확보
+        elif market == 'US' and trend > 0 and ai_condition != 'CRASH':
+            strategy = 'day'
+            reasons.append(f"US 상승 추세(trend={trend:.2f}) → VBO(Day) 전략 우선")
+            confidence = 0.75
+
         # --- 강한 상승 추세 + 낮은 변동성 → Swing (추세 추종 보유) ---
         elif trend > 0.5 and momentum > 0.3 and volatility < 0.6:
             strategy = 'swing'

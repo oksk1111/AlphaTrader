@@ -330,7 +330,7 @@ def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_set
     
     return max(qty, 0)
 
-K_VALUE = 0.5
+K_VALUE = 0.4  # 0.5 → 0.4: 타겟가를 낮춰 상승 초기 진입 용이 (레버리지 ETF 최적화)
 
 def get_market_status():
     """
@@ -915,13 +915,34 @@ def job():
 
         # Case 2: New Entry (Trend Analysis)
         if not is_uptrend:
-            logger.info(f"[{ticker}] Bear Market (Price < 20MA). Skipping.")
+            logger.info(f"[{ticker}] Bear Market (Price < 20MA). Skipping (will recheck mid-session).")
+            # MA20 하회 종목은 mid-session 재검토를 위해 downtrend_watch로 등록
+            if market == 'US':
+                monitoring_targets[ticker] = {
+                    'target': 0,
+                    'status': 'downtrend_watch',
+                    'buys': 0,
+                    'exchange': exchange,
+                    'ma20': ma20,
+                    'ma5': ma5,
+                    'ohlc': ohlc,
+                    'last_recheck_at': None,
+                }
             continue
 
          # B. Calculate Target Price (Volatility Breakout)
-        today_open = safe_float(ohlc[0]['open']) 
+        # 실제 오늘 시가(today_open): quote API에서 실시간 시가 조회, 없으면 ohlc 폴백
+        today_open = 0.0
+        if market == 'US':
+            try:
+                _q = kis.get_quote(ticker, exchange)
+                today_open = safe_float(_q.get('open')) if _q else 0.0
+            except Exception:
+                pass
+        if today_open <= 0:
+            today_open = safe_float(ohlc[0]['open'])  # fallback: 전일 시가
         target_price = calculate_target_price(today_open, ohlc, K_VALUE)
-        logger.info(f"[{ticker}] Bull Market! Target Price: {target_price} (Open: {today_open})")
+        logger.info(f"[{ticker}] Bull Market! Target Price: {target_price} (Today Open: {today_open})")
         
         monitoring_targets[ticker] = {
             'target': target_price,
@@ -972,6 +993,50 @@ def job():
             logger.info(f"[{market}] Market Closed. Ending Session.")
             break
             
+        # --- [New] US Mid-Session Re-analysis: downtrend_watch 종목 재검토 ---
+        # 5분(300초)마다 실행: 장 시작에 MA20 하회로 제외된 US 종목이 추세 회복 시 편입
+        if market == 'US' and (datetime.datetime.now() - last_scan_time).total_seconds() > 300:
+            last_scan_time = datetime.datetime.now()
+            downtrend_tickers = [
+                (t, d) for t, d in monitoring_targets.items() if d['status'] == 'downtrend_watch'
+            ]
+            if downtrend_tickers:
+                logger.info(f"🔄 [US] Mid-Session Re-check: {[t for t, _ in downtrend_tickers]}")
+            for ticker, data in downtrend_tickers:
+                try:
+                    ohlc = kis.get_daily_ohlc(ticker, data['exchange'])
+                    if not ohlc:
+                        continue
+                    closes = [safe_float(x['clos']) for x in ohlc]
+                    closes.reverse()
+                    ma20 = calculate_ma(closes, 20)
+                    curr_p = kis.get_current_price(ticker, data['exchange'])
+                    if not curr_p:
+                        continue
+                    if not check_trend(curr_p, ma20):
+                        logger.info(f"   [{ticker}] Still downtrend (Price {curr_p:.2f} < MA20 {ma20:.2f}). Skipping.")
+                        data['last_recheck_at'] = datetime.datetime.now()
+                        continue
+                    # 추세 회복 → VBO 타겟 계산 후 monitoring으로 편입
+                    _q = kis.get_quote(ticker, data['exchange'])
+                    today_open = safe_float(_q.get('open')) if _q else 0.0
+                    if today_open <= 0:
+                        today_open = safe_float(ohlc[0]['open'])
+                    target_price = calculate_target_price(today_open, ohlc, K_VALUE)
+                    data.update({
+                        'target': target_price,
+                        'status': 'monitoring',
+                        'ma20': ma20,
+                        'ohlc': ohlc,
+                    })
+                    logger.info(
+                        f"   ✨ [{ticker}] Trend Recovered! Added to Watch List. "
+                        f"Target: {target_price:.2f} (Open: {today_open:.2f}, MA20: {ma20:.2f})"
+                    )
+                    send_alert(f"✨ [{ticker}] 추세 회복 → 감시 목록 편입! Target: {target_price:.2f}")
+                except Exception as e:
+                    logger.error(f"   [{ticker}] Mid-session recheck error: {e}")
+
         # --- [New] Dynamic Scanning during session (KR Only) ---
         # Run every 5 minutes (300 seconds)
         if market == 'KR' and (datetime.datetime.now() - last_scan_time).total_seconds() > 300:
@@ -1305,19 +1370,19 @@ def job():
                 logger.info(f"[{ticker}] Price Breakout! ({current_price} >= {target_price})")
                 
                 # Volume Spike Check (Only for US currently as we fetched quote)
+                # 레버리지 ETF(TQQQ/SOXL 등)는 구조적으로 거래량이 낮아 임계값 완화 적용
                 if market == 'US' and current_vol > 0:
                     ohlc = data.get('ohlc', [])
-                    is_volume_spike = check_volume_spike(current_vol, ohlc)
+                    is_us_lev = ticker in US_LEVERAGED_ETF_SYMBOLS
+                    vol_threshold = 1.2 if is_us_lev else 1.5
+                    is_volume_spike = check_volume_spike(current_vol, ohlc, threshold=vol_threshold)
                     
                     if not is_volume_spike:
-                        # Optional: Log warning but maybe don't block fully if user wants aggressive
-                        # BUT user asked for filters. Let's make it a Soft Warning or Strong Filter?
-                        # User asked to "apply new logic". Let's apply it.
-                        logger.warning(f"[{ticker}] ⚠️ Volume too low ({current_vol}). Spike check failed. Waiting for volume support.")
+                        logger.warning(f"[{ticker}] ⚠️ Volume too low ({current_vol}, threshold={vol_threshold}x). Spike check failed.")
                         record_skip_reason(ticker, f"거래량 부족: {current_vol}")
                         continue
                     else:
-                        logger.info(f"[{ticker}] ✅ Volume Spike Confirmed! ({current_vol})")
+                        logger.info(f"[{ticker}] ✅ Volume Spike Confirmed! ({current_vol}, threshold={vol_threshold}x)")
 
                 logger.info("Checking AI Sentiment...")
                 news = ai.fetch_news() # TODO: Improve AI news source for KR stocks later
