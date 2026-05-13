@@ -220,6 +220,15 @@ def main():
     print(f"[Backtest] report={report_path}")
     print(f"[Backtest] summary={LATEST_SUMMARY_FILE}")
 
+    # OPRO 자가 최적화: 백테스트 결과를 바탕으로 리스크 파라미터 개선안 적용
+    if summary.get("status") == "ok":
+        try:
+            from modules.opro_optimizer import run_opro_optimization
+            result = run_opro_optimization()
+            print(f"[OPRO] changed={result.get('changed')} | {result.get('summary', '').splitlines()[0]}")
+        except Exception as _opro_err:
+            print(f"[OPRO] 최적화 실패 (건너뜀): {_opro_err}")
+
 
 if __name__ == "__main__":
     main()

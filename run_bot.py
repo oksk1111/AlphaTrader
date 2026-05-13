@@ -1030,6 +1030,35 @@ def job():
                 logger.error(f"Mid-session scan failed: {e}")
 
         for ticker, data in monitoring_targets.items():
+            # --- [Rule No.0] 이전 루프에서 실패한 손절매 재시도 ---
+            if data['status'] == 'stop_loss_failed':
+                try:
+                    qty = data.get('buys', 0)
+                    _retry_res = None
+                    if market == 'US':
+                        _retry_res = kis.sell_market_order(ticker, qty, data.get('exchange'))
+                    else:
+                        _retry_res = kis.sell_market_order(ticker, qty)
+
+                    if _retry_res and _retry_res.get('rt_cd') == '0':
+                        logger.info(f"[{ticker}] ✅ 손절매 재시도 성공.")
+                        send_alert(f"✅ [{ticker}] 손절매 재시도 성공. {qty}주 매도 완료.")
+                        data['status'] = 'sold_sl'
+                    else:
+                        fail_count = data.get('stop_loss_fail_count', 1) + 1
+                        data['stop_loss_fail_count'] = fail_count
+                        _retry_err = _retry_res.get('msg1', 'unknown') if _retry_res else 'no response'
+                        logger.error(f"[{ticker}] ❌ 손절매 재시도 실패 (누적 {fail_count}회): {_retry_err}")
+                        # 5회마다 한 번 재알림 (스팸 방지)
+                        if fail_count % 5 == 0:
+                            send_alert(
+                                f"🚨 [{ticker}] 손절매 {fail_count}회 연속 실패! 수동 확인 필요.\n오류: {_retry_err}",
+                                is_error=True
+                            )
+                except Exception as _e:
+                    logger.error(f"[{ticker}] 손절매 재시도 예외: {_e}")
+                continue
+
             # --- [Rule No.1] Risk Management for Bought Positions ---
             if data['status'] == 'bought':
                 try:
@@ -1087,7 +1116,9 @@ def job():
                             _sl_err = _sl_res.get('msg1', 'unknown') if _sl_res else 'no response'
                             logger.error(f"[{ticker}] ❌ Stop-loss sell FAILED after 3 attempts: {_sl_err}")
                             send_alert(f"🚨 [{ticker}] 손절매 주문 실패! 수동 확인 필요.\n오류: {_sl_err}", is_error=True)
-                            data['status'] = 'sl_failed'  # 반복 알람 방지
+                            # 다음 루프에서 즉시 재시도 (Rule No.0 처리)
+                            data['status'] = 'stop_loss_failed'
+                            data['stop_loss_fail_count'] = 1
                         continue
                         
                     # 2. Trailing Stop (시장별 차별화)
