@@ -7,7 +7,7 @@ if not os.path.exists('database'):
     os.makedirs('database')
 
 def setup_logger():
-    logger = logging.getLogger("US_ETF_Sniper")
+    logger = logging.getLogger("Alphatrader")
     logger.setLevel(logging.INFO)
     
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')

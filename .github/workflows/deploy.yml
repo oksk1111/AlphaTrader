@@ -26,7 +26,7 @@ jobs:
           script: |
             echo "🚀 Starting deployment via GitHub Actions..."
             REPO_DIR="$HOME/AlphaTrader"
-            LEGACY_DIR="$HOME/US-ETF-Sniper"
+            LEGACY_DIR="$HOME/Alphatrader"
 
             if [ -d "$REPO_DIR" ]; then
               cd "$REPO_DIR"

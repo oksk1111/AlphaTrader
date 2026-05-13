@@ -150,7 +150,7 @@ def _to_pct(value):
 def _build_markdown(summary):
     if summary.get("status") != "ok":
         return (
-            "# US ETF Sniper Backtest Report\n\n"
+            "# Alphatrader Backtest Report\n\n"
             f"- Generated: {summary.get('generated_at')}\n"
             f"- Status: {summary.get('status')}\n"
             f"- Message: {summary.get('message')}\n"
@@ -161,7 +161,7 @@ def _build_markdown(summary):
     period = summary["period"]
     trades = summary["trades"]
 
-    return f"""# US ETF Sniper Backtest Report
+    return f"""# Alphatrader Backtest Report
 
 - Generated: {summary['generated_at']}
 - Period: {period['start']} ~ {period['end']} ({period['days']} days)

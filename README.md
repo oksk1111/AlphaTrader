@@ -1,4 +1,4 @@
-# US ETF Sniper
+# Alphatrader
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/web-FastAPI-009688)](https://fastapi.tiangolo.com/)
@@ -82,6 +82,8 @@ python web/app.py
 ```
 
 기본 접속: `http://127.0.0.1:8501`
+
+참고: `web/app.py`(FastAPI + Jinja2)이 기본 대시보드이며, `dashboard.py`는 레거시 Streamlit 대시보드입니다.
 
 ## ⚙️ Configuration
 
