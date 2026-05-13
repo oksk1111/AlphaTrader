@@ -1434,6 +1434,7 @@ def run_with_recovery():
     error_count = 0
     kr_triggered_today = False
     us_triggered_today = False
+    opro_triggered_today = False  # 장 마감 후 백테스트+OPRO 자동 실행
     last_date = None
     
     # --- Startup Check (runs once at boot) ---
@@ -1472,9 +1473,41 @@ def run_with_recovery():
             if last_date != today_str:
                 kr_triggered_today = False
                 us_triggered_today = False
+                opro_triggered_today = False
                 last_date = today_str
                 logger.info(f"📅 New day: {today_str} (KST). Daily triggers reset.")
             
+            # KR 장 마감 후 16:00 KST — 백테스트 + OPRO 자동 최적화
+            if 1600 <= t <= 1605 and not opro_triggered_today:
+                opro_triggered_today = True
+                logger.info(f"🤖 [OPRO] 장 마감 후 자동 최적화 시작 (KST {now.strftime('%H:%M')})")
+                try:
+                    from modules.backtest_runner import build_backtest_summary, _build_markdown, REPORT_DIR, LATEST_SUMMARY_FILE
+                    import json as _json
+                    from datetime import datetime as _dt
+                    from pathlib import Path as _Path
+                    _summary = build_backtest_summary()
+                    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+                    _stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+                    with open(REPORT_DIR / f"backtest_{_stamp}.md", "w", encoding="utf-8") as _f:
+                        _f.write(_build_markdown(_summary))
+                    with open(LATEST_SUMMARY_FILE, "w", encoding="utf-8") as _f:
+                        _json.dump(_summary, _f, indent=2, ensure_ascii=False)
+                    logger.info(f"[Backtest] 생성 완료: status={_summary.get('status')}")
+
+                    if _summary.get("status") == "ok":
+                        from modules.opro_optimizer import run_opro_optimization
+                        _opro = run_opro_optimization(notifier=notifier if 'notifier' in dir() else None)
+                        if _opro.get("changed"):
+                            send_alert(_opro["summary"])
+                        else:
+                            logger.info(f"[OPRO] 변경 없음: {_opro.get('summary')}")
+                    else:
+                        logger.info("[OPRO] 백테스트 데이터 부족 — 최적화 건너뜀")
+                except Exception as _opro_e:
+                    logger.error(f"[OPRO] 자동 최적화 실패: {_opro_e}", exc_info=True)
+                    send_alert(f"⚠️ OPRO 자동 최적화 실패: {_opro_e}", is_error=True)
+
             # KR Market: Trigger between 09:00~09:05 KST (5-minute window)
             if 900 <= t <= 905 and not kr_triggered_today:
                 kr_triggered_today = True
