@@ -221,6 +221,32 @@ KR_ETF_CODES = {'122630', '233740', '449200', '426030', '069500', '229200', '114
 # US 레버리지 ETF 심볼 목록 (3X ETF는 DCA 매수 조건 완화 적용)
 US_LEVERAGED_ETF_SYMBOLS = {t['symbol'] for t in TARGET_TICKERS_US_3X}
 
+# ----------------------------------------------------
+# [Dynamic Portfolio] Load evaluated candidates if exists
+# ----------------------------------------------------
+import os
+try:
+    from modules.portfolio_manager import PortfolioManager
+    dyn_pf = PortfolioManager.load_portfolio()
+    if dyn_pf:
+        kr_dyn = dyn_pf.get('TARGET_TICKERS_KR_1X', [])
+        if kr_dyn:
+            # Append uniquely
+            for t in kr_dyn:
+                if t not in TARGET_TICKERS_KR_1X:
+                    TARGET_TICKERS_KR_1X.append(t)
+            KR_ETF_CODES.update(kr_dyn)
+            kr_dyn_us = dyn_pf.get('TARGET_TICKERS_US_1X', [])
+            TARGET_TICKERS_US_1X = kr_dyn_us if kr_dyn_us else TARGET_TICKERS_US_1X
+            us_dyn_3x = dyn_pf.get('TARGET_TICKERS_US_3X', [])
+            TARGET_TICKERS_US_3X = us_dyn_3x if us_dyn_3x else TARGET_TICKERS_US_3X
+        
+        # Redefine target tickers
+        TARGET_TICKERS_US = TARGET_TICKERS_US_3X + [t for t in TARGET_TICKERS_US_1X if t not in TARGET_TICKERS_US_3X]
+        TARGET_TICKERS_KR = TARGET_TICKERS_KR_1X if IS_SAFE_MODE else TARGET_TICKERS_KR_2X
+except Exception as e:
+    print(f'Dynamic Portfolio Load Error: {e}')
+
 def calculate_signal_strength(current_price, target_price, ma20, ohlc_data):
     """
     매수 신호 강도 계산 (0.0 ~ 1.0)
@@ -1705,8 +1731,20 @@ if __name__ == "__main__":
             except Exception as e:
                 logger.error(f"Scanner failed: {e}")
         
+    def update_dynamic_portfolio():
+        logger.info("🔄 Running Scheduled Dynamic Portfolio Update...")
+        try:
+            from modules.portfolio_manager import PortfolioManager
+            pm = PortfolioManager()
+            pm.generate_and_save_portfolio(max_kr=10)
+        except Exception as e:
+            logger.error(f"Failed to update dynamic portfolio: {e}")
+
     schedule.every(1).minutes.do(heartbeat)
     schedule.every(5).minutes.do(run_scanner) # Scan every 5 minutes
+    schedule.every().day.at("08:00").do(update_dynamic_portfolio) # Update before KR market opens
+    # For US market testing and stability
+    schedule.every().day.at("23:10").do(update_dynamic_portfolio)
     
     # Run main loop with automatic recovery (includes startup check)
     run_with_recovery()
