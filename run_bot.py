@@ -643,7 +643,9 @@ def job():
             for h in balance['output1']:
                 # US 종목은 ovrs_pdno 필드를 사용
                 ticker_id = h.get('ovrs_pdno', '') or h.get('pdno', '')
-                if ticker_id:
+                # hldg_qty > 0 체크: KIS API는 최근 매도한 종목도 qty=0으로 output1에 포함시킴
+                qty_check = int(safe_float(h.get('hldg_qty', h.get('ovrs_cblc_qty', '0')) or '0'))
+                if ticker_id and qty_check > 0:
                     current_holdings.append(ticker_id)
     except Exception as e:
         logger.error(f"Failed to parse holdings: {e}")
@@ -789,17 +791,22 @@ def job():
         if STRATEGY_MODE == 'dca':
             # === [NEW] Step 0: 기존 보유분 리스크 체크 (DCA도 반드시 실행) ===
             if ticker in current_holdings:
-                holding_qty = 1
+                holding_qty = 0
                 holding_avg_price = 0
                 try:
                     for h in balance.get('output1', []):
-                        if h['pdno'] == ticker or h.get('ovrs_pdno') == ticker:
-                            holding_qty = int(safe_float(h.get('hldg_qty', h.get('ovrs_cblc_qty', h.get('ord_psbl_qty', 1)))))
+                        if h.get('pdno') == ticker or h.get('ovrs_pdno') == ticker:  # h.get() 사용 (KeyError 방지)
+                            holding_qty = int(safe_float(h.get('hldg_qty', h.get('ovrs_cblc_qty', h.get('ord_psbl_qty', '0')))))
                             holding_avg_price = safe_float(h.get('pchs_avg_pric', h.get('avg_unpr3', 0)))
                             break
                 except:
                     pass
-                
+
+                # 실제 보유 수량이 0이면 skip (KIS API가 매도 후에도 qty=0으로 반환하는 경우 대비)
+                if holding_qty <= 0:
+                    logger.info(f"[{ticker}] 보유 수량 0, 매도 스킵 (이미 매도된 종목)")
+                    continue
+
                 if holding_avg_price > 0 and current_price > 0:
                     pnl_pct = ((current_price - holding_avg_price) / holding_avg_price) * 100
                     logger.info(f"[{ticker}] 📊 보유현황: {holding_qty}주, 평단가: {holding_avg_price:.2f}, 현재가: {current_price:.2f}, 손익: {pnl_pct:.2f}%")
@@ -843,17 +850,22 @@ def job():
         # Case 1: Already Holding
         if ticker in current_holdings:
             # 보유 수량 조회
-            holding_qty = 1
+            holding_qty = 0
             holding_avg_price = 0
             try:
                 for h in balance.get('output1', []):
                     if h.get('pdno') == ticker or h.get('ovrs_pdno') == ticker:
-                        holding_qty = int(safe_float(h.get('hldg_qty', h.get('ovrs_cblc_qty', 1))))
+                        holding_qty = int(safe_float(h.get('hldg_qty', h.get('ovrs_cblc_qty', '0'))))
                         holding_avg_price = safe_float(h.get('pchs_avg_pric', h.get('avg_unpr3', 0)))
                         break
             except:
                 pass
-            
+
+            # 실제 보유 수량이 0이면 skip (current_holdings 필터를 통과했더라도 재확인)
+            if holding_qty <= 0:
+                logger.info(f"[{ticker}] 보유 수량 0, 매도 스킵 (이미 매도된 종목)")
+                continue
+
             if not is_uptrend and not is_short_uptrend:
                 logger.info(f"[{ticker}] Trend Broken (Price < 20MA and < 5MA). Selling {holding_qty} shares immediately.")
                 sell_res = None
@@ -1099,6 +1111,11 @@ def job():
             if data['status'] == 'stop_loss_failed':
                 try:
                     qty = data.get('buys', 0)
+                    # qty=0이면 재시도 의미 없음 → 포지션 정리
+                    if qty <= 0:
+                        logger.warning(f"[{ticker}] 손절매 재시도 qty=0, 포지션 정리 (sold_sl 처리)")
+                        data['status'] = 'sold_sl'
+                        continue
                     _retry_res = None
                     if market == 'US':
                         _retry_res = kis.sell_market_order(ticker, qty, data.get('exchange'))
