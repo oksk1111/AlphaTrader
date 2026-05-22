@@ -306,21 +306,26 @@ def calculate_order_quantity(available_cash, current_price, signal_strength=0.5,
     # 분산 투자를 위해 종목 수로 나눔
     per_ticker_cash = available_cash / max(num_targets, 1)
     
-    # 신호 강도에 따른 투자 비율 결정
+    # 신호 강도에 따른 투자 비율 결정 (자본 대비 너무 적은 매수를 방지하기 위해 상향 조정)
     if signal_strength >= 0.8:
-        position_pct = 0.50  # 강한 신호: 50%
-        logger.info(f"📈 강한 매수 신호! (강도: {signal_strength:.2f}) → 포지션 50%")
+        position_pct = 1.0  # 강한 신호: 종목 할당 금액의 100%
+        logger.info(f"📈 강한 매수 신호! (강도: {signal_strength:.2f}) → 포지션 100%")
     elif signal_strength >= 0.5:
-        position_pct = 0.35  # 보통 신호: 35%
-        logger.info(f"📊 보통 매수 신호 (강도: {signal_strength:.2f}) → 포지션 35%")
+        position_pct = 0.7  # 보통 신호: 70%
+        logger.info(f"📊 보통 매수 신호 (강도: {signal_strength:.2f}) → 포지션 70%")
     elif signal_strength >= 0.3:
-        position_pct = 0.20  # 약한 신호: 20%
-        logger.info(f"📉 약한 매수 신호 (강도: {signal_strength:.2f}) → 포지션 20%")
+        position_pct = 0.4  # 약한 신호: 40%
+        logger.info(f"📉 약한 매수 신호 (강도: {signal_strength:.2f}) → 포지션 40%")
     else:
-        position_pct = 0.10  # 매우 약한 신호: 10% (최소)
-        logger.info(f"⚠️ 매우 약한 신호 (강도: {signal_strength:.2f}) → 최소 포지션 10%")
+        position_pct = 0.2  # 매우 약한 신호: 20%
+        logger.info(f"⚠️ 매우 약한 신호 (강도: {signal_strength:.2f}) → 최소 포지션 20%")
     
     max_investment = per_ticker_cash * position_pct
+    
+    # 1주당 가격이 할당 금액보다 비쌀 경우, 가용 자금이 충분하다면 우선 1주는 매수할 수 있도록 max_investment 보정
+    if max_investment < current_price and available_cash >= current_price:
+        max_investment = current_price
+        
     qty = int(max_investment / current_price)
     
     return max(qty, 1)  # 최소 1주
@@ -350,12 +355,19 @@ def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_set
     
     # 종목별 투자 금액 계산
     per_ticker_cash = available_cash / max(num_targets, 1)
-    investment_amount = per_ticker_cash * daily_pct
+    
+    # daily_pct를 목표별 할당금액(per_ticker_cash)이 아닌 가용 자금 전체(available_cash) 기준으로 계산하되,
+    # 한 종목에 너무 많은 자금이 몰리지 않도록 per_ticker_cash를 한도로 둠
+    target_investment_amount = available_cash * daily_pct
+    investment_amount = min(target_investment_amount, per_ticker_cash)
     
     # 최소/최대 제한 적용
     investment_amount = max(min_investment, min(max_investment, investment_amount))
 
-    # 주문 가능 금액이 1주 가격보다 작으면 무리하게 1주 주문하지 않음
+    # 주문 가능 금액이 1주 가격보다 작으나 가용 자금(available_cash)이 충분하다면 최소 1주는 살 수 있도록 조정
+    if investment_amount < current_price and available_cash >= current_price:
+        investment_amount = current_price
+
     if investment_amount < current_price:
         logger.warning(
             f"💸 DCA 스킵: 주문가능금액 부족 ({currency_symbol}{investment_amount:,.2f} < 1주 {currency_symbol}{current_price:,.2f})"
