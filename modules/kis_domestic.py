@@ -230,22 +230,86 @@ class KisDomestic:
         return self._request("POST", path, headers=headers, data=json.dumps(data))
 
     def sell_market_order(self, ticker, qty):
-        """국내주식 시장가 매도"""
+        """국내주식 시장가 매도 (ORD_DVSN=01)"""
         # 실전: TTTC0801U / 모의: VTTC0801U
         tr_id = "VTTC0801U" if "openapivts" in self.url else "TTTC0801U"
         path = "/uapi/domestic-stock/v1/trading/order-cash"
         headers = self._get_headers(tr_id)
-        
+
         data = {
             "CANO": self.acc_no_prefix,
             "ACNT_PRDT_CD": self.acc_no_suffix,
             "PDNO": ticker,
-            "ORD_DVSN": "01", # 01: 시장가
-            "ORD_QTY": str(qty),
+            "ORD_DVSN": "01",  # 01: 시장가
+            "ORD_QTY": str(int(qty)),
             "ORD_UNPR": "0"
         }
-        
-        return self._request("POST", path, headers=headers, data=json.dumps(data))
+
+        res = self._request("POST", path, headers=headers, data=json.dumps(data))
+        # 상세 로깅 (에러코드/메시지 노출)
+        if res and res.get('rt_cd') != '0':
+            print(f"[KIS-KR] Sell Market FAIL [{ticker}] qty={qty} "
+                  f"rt_cd={res.get('rt_cd')} msg_cd={res.get('msg_cd')} msg1={res.get('msg1')}")
+        return res
+
+    def sell_limit_order(self, ticker, qty, price):
+        """국내주식 지정가 매도 (ORD_DVSN=00) - 시장가 실패 시 fallback 용도.
+        호가단위 미준수 시 거부될 수 있어 호출부에서 호가단위 반올림 처리 권장.
+        """
+        tr_id = "VTTC0801U" if "openapivts" in self.url else "TTTC0801U"
+        path = "/uapi/domestic-stock/v1/trading/order-cash"
+        headers = self._get_headers(tr_id)
+
+        # 한국 호가단위 근사 (대략적): 가격대별 tick 적용
+        tick = self._tick_size(price)
+        if tick > 0:
+            price = int(price / tick) * tick  # 하향 라운딩 (즉시 체결 유도)
+
+        data = {
+            "CANO": self.acc_no_prefix,
+            "ACNT_PRDT_CD": self.acc_no_suffix,
+            "PDNO": ticker,
+            "ORD_DVSN": "00",  # 00: 지정가
+            "ORD_QTY": str(int(qty)),
+            "ORD_UNPR": str(int(price))
+        }
+
+        res = self._request("POST", path, headers=headers, data=json.dumps(data))
+        if res and res.get('rt_cd') != '0':
+            print(f"[KIS-KR] Sell Limit FAIL [{ticker}] qty={qty} price={price} "
+                  f"rt_cd={res.get('rt_cd')} msg_cd={res.get('msg_cd')} msg1={res.get('msg1')}")
+        return res
+
+    @staticmethod
+    def _tick_size(price):
+        """KRX 호가단위 (코스피/코스닥 일반, 2023-01 개정 반영)"""
+        p = float(price) if price else 0
+        if p < 2000: return 1
+        if p < 5000: return 5
+        if p < 20000: return 10
+        if p < 50000: return 50
+        if p < 200000: return 100
+        if p < 500000: return 500
+        return 1000
+
+    def get_holding_qty(self, ticker):
+        """ticker에 대한 실제 매도가능 수량 조회. 보유 없으면 0."""
+        try:
+            bal = self.get_balance()
+            if not bal or bal.get('rt_cd') != '0':
+                return 0
+            for h in bal.get('output1', []) or []:
+                if h.get('pdno') == ticker:
+                    # ord_psbl_qty(주문가능) 우선, 없으면 hldg_qty
+                    qty_str = h.get('ord_psbl_qty') or h.get('hldg_qty') or '0'
+                    try:
+                        return int(float(qty_str))
+                    except Exception:
+                        return 0
+            return 0
+        except Exception as e:
+            print(f"[KIS-KR] get_holding_qty error [{ticker}]: {e}")
+            return 0
 
     def get_volume_rank(self):
         """거래량 급증 종목 순위 (전일 대비 급증) - FHPST01710000"""

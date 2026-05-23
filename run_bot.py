@@ -52,6 +52,18 @@ DCA_MAX_BUYS_PER_SESSION = 3   # 종목당 세션 최대 DCA 매수 횟수
 AI_RETRY_COOLDOWN_SEC = 300    # AI 거부 후 재평가 쿨다운 (초)
 TREND_REENTRY_COOLDOWN_SEC = 180  # 추세 이탈 매도 후 재진입 재평가 주기 (초)
 
+# === [NEW] Sell Order Safety Constants ===
+SELL_MARKET_RETRY = 3          # 시장가 매도 시도 횟수
+SELL_LIMIT_RETRY = 2           # 지정가 fallback 시도 횟수
+SELL_LIMIT_DISCOUNT_PCT = 0.5  # 지정가 fallback 할인율 (현재가 대비 %)
+STOP_LOSS_MAX_RETRY_CYCLES = 5 # 손절매 재시도 사이클 한도 (이후 강제 정리)
+
+# === [NEW] Volatility Rebound (오버솔드 반등 매수) ===
+REBOUND_BUY_ENABLED = True       # 큰 하락 후 반등 매수 트리거 활성화
+REBOUND_DROP_THRESHOLD_PCT = 5.0 # 5일 누적 하락 또는 갭다운이 이 % 이상이면 후보
+REBOUND_INTRADAY_BOUNCE_PCT = 1.0 # 당일 저점 대비 반등 최소 %
+REBOUND_MAX_BUYS_PER_SESSION = 1 # 종목당 세션 반등 매수 한도
+
 # Telegram Notifier for alerts
 telegram = TelegramNotifier()
 
@@ -152,6 +164,10 @@ if risk_config:
     CONSECUTIVE_DECLINE_PCT = risk_config.get("consecutive_decline_pct", CONSECUTIVE_DECLINE_PCT)
     PORTFOLIO_DRAWDOWN_PCT = risk_config.get("portfolio_drawdown_pct", PORTFOLIO_DRAWDOWN_PCT)
     DCA_MONITOR_INTERVAL = risk_config.get("dca_monitor_interval_sec", DCA_MONITOR_INTERVAL)
+    REBOUND_BUY_ENABLED = risk_config.get("rebound_buy_enabled", REBOUND_BUY_ENABLED)
+    REBOUND_DROP_THRESHOLD_PCT = risk_config.get("rebound_drop_threshold_pct", REBOUND_DROP_THRESHOLD_PCT)
+    REBOUND_INTRADAY_BOUNCE_PCT = risk_config.get("rebound_intraday_bounce_pct", REBOUND_INTRADAY_BOUNCE_PCT)
+    REBOUND_MAX_BUYS_PER_SESSION = risk_config.get("rebound_max_buys_per_session", REBOUND_MAX_BUYS_PER_SESSION)
 
 logger.info(f"Loaded Config: Mode={user_config.get('trading_mode')}, Strategy={STRATEGY_MODE}, Persona={PERSONA}")
 
@@ -208,10 +224,10 @@ TARGET_TICKERS_US = TARGET_TICKERS_US_3X + [t for t in TARGET_TICKERS_US_1X if t
 TARGET_TICKERS_KR = TARGET_TICKERS_KR_1X if IS_SAFE_MODE else TARGET_TICKERS_KR_2X
 
 # === KR 시장별 차별화된 리스크 관리 상수 ===
-KR_STOCK_STOP_LOSS_PCT = -5.0       # KR 개별주 손절 (ETF 대비 완화)
-KR_STOCK_TRAILING_ACTIVATION = 5.0  # KR 개별주 트레일링 활성화
-KR_STOCK_TRAILING_DROP = 2.5        # KR 개별주 고점 대비 하락
-KR_STOCK_GAP_DOWN_THRESHOLD = 4.0   # KR 개별주 갭다운 기준
+KR_STOCK_STOP_LOSS_PCT = -7.0       # KR 개별주 손절 (ETF 대비 완화, 단기 변동성 흡수)
+KR_STOCK_TRAILING_ACTIVATION = 7.0  # KR 개별주 트레일링 활성화 (충분한 익절 폭 확보)
+KR_STOCK_TRAILING_DROP = 4.0        # KR 개별주 고점 대비 하락 (조기 청산 방지)
+KR_STOCK_GAP_DOWN_THRESHOLD = 6.0   # KR 개별주 갭다운 기준
 
 # KR ETF 종목 코드 (ETF인지 개별주인지 구분용)
 KR_ETF_CODES = {'122630', '233740', '449200', '426030', '069500', '229200', '114800',
@@ -406,6 +422,107 @@ def get_market_status():
         
     return 'CLOSED'
 
+def is_market_open_for(market):
+    """매도 주문이 실제로 체결될 수 있는 시장 시간인지 확인.
+    한국 정규장은 09:00~15:30, 동시호가/장 외 시간에는 시장가 거부.
+    """
+    try:
+        status = get_market_status()
+        if status == 'CLOSED':
+            return False
+        return status == market
+    except Exception:
+        # 안전하게 False 반환 (시간 정보 실패 시 매도 시도 안 함)
+        return False
+
+
+def safe_sell(kis_client, market, ticker, qty_hint, exchange=None,
+              reason="sell", allow_limit_fallback=True):
+    """매도 주문 안전 실행기.
+
+    Returns: dict {
+        'success': bool,
+        'sold_qty': int (실제 매도 수량 또는 이미 청산된 보유 0),
+        'phase': 'market'|'limit'|'already_flat'|'deferred'|'failed',
+        'error': str (실패 시 메시지)
+    }
+
+    동작:
+      1) 시장이 닫혀있으면 deferred 반환 (실패 알림 보내지 말 것)
+      2) 실제 보유 수량 재조회 → 0이면 already_flat (성공으로 처리)
+      3) 시장가 매도 SELL_MARKET_RETRY 회 시도
+      4) 실패 시 (allow_limit_fallback) 현재가 -SELL_LIMIT_DISCOUNT_PCT% 지정가로
+         SELL_LIMIT_RETRY 회 시도
+      5) 그래도 실패하면 failed 반환 + error 메시지 (호출자가 알림 결정)
+    """
+    if not is_market_open_for(market):
+        return {'success': False, 'sold_qty': 0, 'phase': 'deferred',
+                'error': f'market {market} closed'}
+
+    # 1) 실제 보유 수량 재조회 (KIS API mismatch 방지)
+    try:
+        actual_qty = kis_client.get_holding_qty(ticker)
+    except Exception as _e:
+        logger.warning(f"[{ticker}] get_holding_qty 실패 ({_e}) → 캐시 수량 사용")
+        actual_qty = qty_hint
+
+    effective_qty = max(0, min(int(qty_hint or 0), int(actual_qty or 0))) if actual_qty else 0
+
+    if actual_qty <= 0:
+        return {'success': True, 'sold_qty': 0, 'phase': 'already_flat',
+                'error': None}
+
+    if effective_qty <= 0:
+        # qty_hint=0 이지만 실제 보유분이 있는 경우 → 실제 수량으로 매도
+        effective_qty = int(actual_qty)
+
+    last_err = None
+
+    # 2) 시장가 매도 시도
+    for attempt in range(SELL_MARKET_RETRY):
+        try:
+            if market == 'US':
+                res = kis_client.sell_market_order(ticker, effective_qty, exchange or 'NAS')
+            else:
+                res = kis_client.sell_market_order(ticker, effective_qty)
+            if res and res.get('rt_cd') == '0':
+                logger.info(f"[{ticker}] ✅ {reason} 시장가 매도 성공 ({effective_qty}주)")
+                return {'success': True, 'sold_qty': effective_qty,
+                        'phase': 'market', 'error': None}
+            last_err = (res or {}).get('msg1') or 'no response'
+            logger.warning(f"[{ticker}] {reason} 시장가 시도 {attempt+1} 실패: {last_err}")
+        except Exception as e:
+            last_err = str(e)
+            logger.warning(f"[{ticker}] {reason} 시장가 예외: {e}")
+        time.sleep(1.5)
+
+    # 3) 지정가 fallback (KR 전용 - US는 sell_market_order가 이미 limit 기반)
+    if allow_limit_fallback and market == 'KR':
+        try:
+            curr = kis_client.get_current_price(ticker)
+            if curr and curr > 0:
+                limit_price = curr * (1.0 - SELL_LIMIT_DISCOUNT_PCT / 100.0)
+                for attempt in range(SELL_LIMIT_RETRY):
+                    res = kis_client.sell_limit_order(ticker, effective_qty, limit_price)
+                    if res and res.get('rt_cd') == '0':
+                        logger.info(
+                            f"[{ticker}] ✅ {reason} 지정가 fallback 성공 "
+                            f"({effective_qty}주 @ {int(limit_price):,})"
+                        )
+                        return {'success': True, 'sold_qty': effective_qty,
+                                'phase': 'limit', 'error': None}
+                    last_err = (res or {}).get('msg1') or 'no response'
+                    logger.warning(
+                        f"[{ticker}] {reason} 지정가 시도 {attempt+1} 실패: {last_err}"
+                    )
+                    time.sleep(1.5)
+        except Exception as e:
+            last_err = str(e)
+            logger.warning(f"[{ticker}] {reason} 지정가 예외: {e}")
+
+    return {'success': False, 'sold_qty': 0, 'phase': 'failed',
+            'error': last_err or 'unknown'}
+
 def job():
     # Reload config dynamically
     global IS_SAFE_MODE, STRATEGY_MODE, PERSONA, TARGET_TICKERS_US, TARGET_TICKERS_KR
@@ -572,6 +689,39 @@ def job():
                 buy_blocked = True
                 block_reasons.append(f"연속 {CONSECUTIVE_DECLINE_DAYS}일 하락 {cum_drop_pct:.1f}%")
 
+        # === [NEW] 변동성 반등 매수 (Oversold Rebound) ===
+        # 큰 하락 후 당일 저점에서 반등 중인 경우, 차단을 무효화하고 추가 매수 트리거
+        rebound_trigger = False
+        if REBOUND_BUY_ENABLED and buy_blocked and ohlc and len(ohlc) >= 1:
+            try:
+                today = ohlc[0]
+                today_low = safe_float(today.get('low', 0))
+                today_high = safe_float(today.get('high', 0))
+                # 오늘 저점에서 충분히 반등 + 당일 양봉 가능성
+                bounce_pct = ((current_price - today_low) / today_low * 100) if today_low > 0 else 0
+                large_drop = (
+                    (is_consecutive_decline and cum_drop_pct >= REBOUND_DROP_THRESHOLD_PCT)
+                    or (is_gap_down and gap_drop_pct >= REBOUND_DROP_THRESHOLD_PCT)
+                )
+                session_rebound_used = existing.get('rebound_buys_this_session', 0)
+                # 추세는 5MA 위로 회복 중인지 (단기 반전 신호)
+                short_recovering = bool(ma5 and current_price >= ma5)
+                if (large_drop
+                        and bounce_pct >= REBOUND_INTRADAY_BOUNCE_PCT
+                        and short_recovering
+                        and session_rebound_used < REBOUND_MAX_BUYS_PER_SESSION):
+                    rebound_trigger = True
+                    buy_blocked = False
+                    block_reasons.append(
+                        f"⚡반등매수 트리거 (드롭 {cum_drop_pct or gap_drop_pct:.1f}%, "
+                        f"저점반등 +{bounce_pct:.1f}%, 5MA복귀)"
+                    )
+                    logger.info(
+                        f"[{ticker}] ⚡ 오버솔드 반등 매수 트리거 발동 - 매수량 50% 적용"
+                    )
+            except Exception as _e:
+                logger.debug(f"[{ticker}] rebound check skipped: {_e}")
+
         if is_us_leveraged_etf:
             ma10 = calculate_ma([safe_float(x['clos']) for x in reversed(ohlc)], 10) if len(ohlc) >= 10 else ma20
             is_uptrend_for_buy = check_trend(current_price, ma10) if ma10 else is_uptrend
@@ -587,6 +737,9 @@ def job():
         if not is_short_uptrend and is_uptrend:
             dca_reduce_qty = True
             block_reasons.append("5MA 하회 (매수량 50% 축소)")
+        if rebound_trigger:
+            # 반등 매수는 위험 대비 보수적으로 수량을 50% 적용
+            dca_reduce_qty = True
 
         if buy_blocked:
             logger.info(f"[{ticker}] DCA 매수 차단 - {', '.join(block_reasons)}")
@@ -597,13 +750,17 @@ def job():
             logger.info(f"[{ticker}] DCA 경고: {', '.join(block_reasons)}")
             record_skip_reason(ticker, f"DCA 경고: {', '.join(block_reasons)}")
 
-        news = ai.fetch_news()
-        sentiment = ai.check_market_sentiment(news, persona=PERSONA)
-        if sentiment.get('market_condition') == 'CRASH' or sentiment.get('risk_level') == 'HIGH':
-            logger.warning(f"[{ticker}] DCA Paused - AI Risk HIGH: {sentiment.get('reason', 'N/A')}")
-            send_alert(f"⚠️ [{ticker}] DCA 중단 - AI 위험 감지: {sentiment.get('reason', 'N/A')}")
-            record_skip_reason(ticker, f"AI 위험: {sentiment.get('reason', 'N/A')}")
-            return False
+        # 반등 매수 트리거 시 AI veto는 우회 (오버솔드 진입 기회 확보)
+        if not rebound_trigger:
+            news = ai.fetch_news()
+            sentiment = ai.check_market_sentiment(news, persona=PERSONA)
+            if sentiment.get('market_condition') == 'CRASH' or sentiment.get('risk_level') == 'HIGH':
+                logger.warning(f"[{ticker}] DCA Paused - AI Risk HIGH: {sentiment.get('reason', 'N/A')}")
+                send_alert(f"⚠️ [{ticker}] DCA 중단 - AI 위험 감지: {sentiment.get('reason', 'N/A')}")
+                record_skip_reason(ticker, f"AI 위험: {sentiment.get('reason', 'N/A')}")
+                return False
+        else:
+            logger.info(f"[{ticker}] ⚡ 반등 매수 - AI veto 우회")
 
         qty = calculate_dca_quantity(available_cash, current_price, num_targets, DCA_SETTINGS, market)
         if dca_reduce_qty:
@@ -642,6 +799,9 @@ def job():
                 'ma5': ma5,
                 'ohlc': ohlc,
                 'dca_buys_this_session': existing.get('dca_buys_this_session', 0) + 1,
+                'rebound_buys_this_session': (
+                    existing.get('rebound_buys_this_session', 0) + (1 if rebound_trigger else 0)
+                ),
                 'last_dca_attempt_at': datetime.datetime.now(),
                 'dca_reentry_interval_min': existing.get('dca_reentry_interval_min', DCA_REENTRY_INTERVAL_MIN)
             }
@@ -865,14 +1025,31 @@ def job():
                     if pnl_pct <= eff_stop_loss:
                         logger.warning(f"[{ticker}] 🛑 DCA STOP LOSS! ({pnl_pct:.2f}% <= {eff_stop_loss}%). 즉시 매도 {holding_qty}주.")
                         send_alert(f"🛑 [{ticker}] DCA 손절매 발동! {pnl_pct:.2f}%. {holding_qty}주 매도.")
-                        if market == 'US':
-                            kis.sell_market_order(ticker, holding_qty, exchange)
+                        _dca_sl = safe_sell(kis, market, ticker, holding_qty, exchange,
+                                            reason='DCA손절매')
+                        if _dca_sl['phase'] == 'deferred':
+                            logger.info(f"[{ticker}] DCA 손절매 보류 (장 마감)")
+                            # 모니터링 상태는 그대로 두어 다음 사이클에서 재평가
+                            continue
+                        if _dca_sl['success'] or _dca_sl['phase'] == 'already_flat':
+                            monitoring_targets[ticker] = {
+                                'target': current_price, 'status': 'sold_sl',
+                                'buys': 0, 'exchange': exchange
+                            }
                         else:
-                            kis.sell_market_order(ticker, holding_qty)
-                        monitoring_targets[ticker] = {
-                            'target': current_price, 'status': 'sold_sl',
-                            'buys': 0, 'exchange': exchange
-                        }
+                            logger.error(
+                                f"[{ticker}] ❌ DCA 손절매 실패: {_dca_sl['error']}"
+                            )
+                            send_alert(
+                                f"🚨 [{ticker}] DCA 손절매 실패! 수동 확인 필요.\n오류: {_dca_sl['error']}",
+                                is_error=True
+                            )
+                            monitoring_targets[ticker] = {
+                                'target': current_price, 'status': 'stop_loss_failed',
+                                'buys': holding_qty, 'exchange': exchange,
+                                'buy_price': holding_avg_price if holding_avg_price > 0 else current_price,
+                                'stop_loss_fail_count': 1
+                            }
                         continue  # 손절 후 추가 매수 안 함
                 monitoring_targets[ticker] = {
                     'target': current_price,
@@ -1160,31 +1337,48 @@ def job():
             # --- [Rule No.0] 이전 루프에서 실패한 손절매 재시도 ---
             if data['status'] == 'stop_loss_failed':
                 try:
-                    qty = data.get('buys', 0)
-                    # qty=0이면 재시도 의미 없음 → 포지션 정리
-                    if qty <= 0:
-                        logger.warning(f"[{ticker}] 손절매 재시도 qty=0, 포지션 정리 (sold_sl 처리)")
+                    qty_hint = data.get('buys', 0)
+                    fail_count = data.get('stop_loss_fail_count', 1)
+
+                    # 최대 시도 한도 도달: 강제 정리 (실제 잔고는 다음 잔고 동기화 시 갱신)
+                    if fail_count >= STOP_LOSS_MAX_RETRY_CYCLES:
+                        logger.error(
+                            f"[{ticker}] 손절매 {fail_count}회 한도 도달 → 모니터링 종료(sold_sl), 수동 확인 필요"
+                        )
+                        send_alert(
+                            f"🚨 [{ticker}] 손절매 {fail_count}회 실패 후 모니터링 종료. 수동 확인 필요.",
+                            is_error=True
+                        )
                         data['status'] = 'sold_sl'
                         continue
-                    _retry_res = None
-                    if market == 'US':
-                        _retry_res = kis.sell_market_order(ticker, qty, data.get('exchange'))
-                    else:
-                        _retry_res = kis.sell_market_order(ticker, qty)
 
-                    if _retry_res and _retry_res.get('rt_cd') == '0':
-                        logger.info(f"[{ticker}] ✅ 손절매 재시도 성공.")
-                        send_alert(f"✅ [{ticker}] 손절매 재시도 성공. {qty}주 매도 완료.")
+                    _retry = safe_sell(
+                        kis, market, ticker, qty_hint, data.get('exchange'),
+                        reason='손절매-재시도'
+                    )
+
+                    if _retry['phase'] == 'deferred':
+                        # 장 마감 등으로 보류 → 알림 안 보냄, 다음 사이클에 자동 재시도
+                        continue
+                    if _retry['phase'] == 'already_flat':
+                        logger.info(f"[{ticker}] 손절매 재시도 - 실제 잔고 0 (이미 청산). sold_sl 처리.")
+                        data['status'] = 'sold_sl'
+                        continue
+                    if _retry['success']:
+                        send_alert(
+                            f"✅ [{ticker}] 손절매 재시도 성공 ({_retry['sold_qty']}주, {_retry['phase']})."
+                        )
                         data['status'] = 'sold_sl'
                     else:
-                        fail_count = data.get('stop_loss_fail_count', 1) + 1
+                        fail_count += 1
                         data['stop_loss_fail_count'] = fail_count
-                        _retry_err = _retry_res.get('msg1', 'unknown') if _retry_res else 'no response'
-                        logger.error(f"[{ticker}] ❌ 손절매 재시도 실패 (누적 {fail_count}회): {_retry_err}")
-                        # 5회마다 한 번 재알림 (스팸 방지)
-                        if fail_count % 5 == 0:
+                        logger.error(
+                            f"[{ticker}] ❌ 손절매 재시도 실패 (누적 {fail_count}회): {_retry['error']}"
+                        )
+                        # 첫 실패 직후 1회만 알림 (스팸 방지) - 한도 도달 시 위에서 별도 알림
+                        if fail_count == 2:
                             send_alert(
-                                f"🚨 [{ticker}] 손절매 {fail_count}회 연속 실패! 수동 확인 필요.\n오류: {_retry_err}",
+                                f"🚨 [{ticker}] 손절매 연속 실패. 시장가/지정가 모두 거부됨.\n오류: {_retry['error']}",
                                 is_error=True
                             )
                 except Exception as _e:
@@ -1231,24 +1425,26 @@ def job():
                     if pnl_pct <= pos_stop_loss:
                         logger.warning(f"[{ticker}] 🛑 Stop Loss Triggered! ({pnl_pct:.2f}% <= {pos_stop_loss}%). Selling {qty} shares.")
                         send_alert(f"🛑 [{ticker}] 손절매 발동! {pnl_pct:.2f}%. {qty}주 매도.")
-                        _sl_res = None
-                        for _sl_attempt in range(3):
-                            if market == 'US':
-                                _sl_res = kis.sell_market_order(ticker, qty, data.get('exchange'))
-                            else:
-                                _sl_res = kis.sell_market_order(ticker, qty)
-                            if _sl_res and _sl_res.get('rt_cd') == '0':
-                                break
-                            logger.warning(f"[{ticker}] Stop-loss sell attempt {_sl_attempt+1} failed. Retrying...")
-                            time.sleep(2)
-                        if _sl_res and _sl_res.get('rt_cd') == '0':
-                            logger.info(f"[{ticker}] ✅ Stop-loss sell success.")
-                            data['status'] = 'sold_sl'  # Mark as Sold (Stop Loss)
+                        _sl = safe_sell(kis, market, ticker, qty, data.get('exchange'),
+                                        reason='손절매')
+                        if _sl['phase'] == 'deferred':
+                            # 장 마감: 다음 KR 정규장 시작 시 자동 재평가됨
+                            logger.info(f"[{ticker}] 손절매 보류 (장 마감) - 다음 장에서 재시도")
+                            continue
+                        if _sl['phase'] == 'already_flat':
+                            logger.info(f"[{ticker}] 손절매 트리거됐지만 실제 보유 0 (외부 청산). sold_sl 처리.")
+                            data['status'] = 'sold_sl'
+                            continue
+                        if _sl['success']:
+                            data['status'] = 'sold_sl'
                         else:
-                            _sl_err = _sl_res.get('msg1', 'unknown') if _sl_res else 'no response'
-                            logger.error(f"[{ticker}] ❌ Stop-loss sell FAILED after 3 attempts: {_sl_err}")
-                            send_alert(f"🚨 [{ticker}] 손절매 주문 실패! 수동 확인 필요.\n오류: {_sl_err}", is_error=True)
-                            # 다음 루프에서 즉시 재시도 (Rule No.0 처리)
+                            logger.error(
+                                f"[{ticker}] ❌ Stop-loss sell FAILED (시장가+지정가): {_sl['error']}"
+                            )
+                            send_alert(
+                                f"🚨 [{ticker}] 손절매 주문 실패! 수동 확인 필요.\n오류: {_sl['error']}",
+                                is_error=True
+                            )
                             data['status'] = 'stop_loss_failed'
                             data['stop_loss_fail_count'] = 1
                         continue
@@ -1261,23 +1457,25 @@ def job():
                         if drop_from_peak >= pos_trailing_drop:
                             logger.info(f"[{ticker}] 💰 Trailing Stop Triggered! (Peak: {peak_pnl_pct:.2f}%, Drop: {drop_from_peak:.2f}% >= {pos_trailing_drop}%). Selling {qty} shares.")
                             send_alert(f"💰 [{ticker}] 트레일링 스탑! 고점 대비 {drop_from_peak:.2f}% 하락. {qty}주 매도.")
-                            _tp_res = None
-                            for _tp_attempt in range(3):
-                                if market == 'US':
-                                    _tp_res = kis.sell_market_order(ticker, qty, data.get('exchange'))
-                                else:
-                                    _tp_res = kis.sell_market_order(ticker, qty)
-                                if _tp_res and _tp_res.get('rt_cd') == '0':
-                                    break
-                                logger.warning(f"[{ticker}] Trailing-stop sell attempt {_tp_attempt+1} failed. Retrying...")
-                                time.sleep(2)
-                            if _tp_res and _tp_res.get('rt_cd') == '0':
-                                logger.info(f"[{ticker}] ✅ Trailing-stop sell success.")
-                                data['status'] = 'sold_tp'  # Mark as Sold (Take Profit)
+                            _tp = safe_sell(kis, market, ticker, qty, data.get('exchange'),
+                                            reason='트레일링스탑')
+                            if _tp['phase'] == 'deferred':
+                                logger.info(f"[{ticker}] 트레일링스탑 보류 (장 마감)")
+                                continue
+                            if _tp['phase'] == 'already_flat':
+                                logger.info(f"[{ticker}] 트레일링스탑 - 실제 보유 0. sold_tp 처리.")
+                                data['status'] = 'sold_tp'
+                                continue
+                            if _tp['success']:
+                                data['status'] = 'sold_tp'
                             else:
-                                _tp_err = _tp_res.get('msg1', 'unknown') if _tp_res else 'no response'
-                                logger.error(f"[{ticker}] ❌ Trailing-stop sell FAILED after 3 attempts: {_tp_err}")
-                                send_alert(f"🚨 [{ticker}] 트레일링스탑 주문 실패! 수동 확인 필요.\n오류: {_tp_err}", is_error=True)
+                                logger.error(
+                                    f"[{ticker}] ❌ Trailing-stop sell FAILED: {_tp['error']}"
+                                )
+                                send_alert(
+                                    f"🚨 [{ticker}] 트레일링스탑 주문 실패! 수동 확인 필요.\n오류: {_tp['error']}",
+                                    is_error=True
+                                )
                                 data['status'] = 'tp_failed'  # 반복 알람 방지
                             continue
                             

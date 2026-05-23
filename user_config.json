@@ -20,21 +20,25 @@
     },
     "dca_settings": {
         "enabled": true,
-        "daily_investment_pct": 15,
+        "daily_investment_pct": 30,
         "buy_delay_minutes": 30,
-        "min_investment_usd": 10,
-        "max_investment_usd": 500,
-        "max_buys_per_session": 3
+        "min_investment_usd": 25,
+        "max_investment_usd": 1500,
+        "max_buys_per_session": 5
     },
     "risk_management": {
-        "stop_loss_pct": -3.0,
-        "trailing_stop_activation_pct": 3.0,
-        "trailing_stop_drop_pct": 1.5,
-        "gap_down_threshold_pct": 3.0,
+        "stop_loss_pct": -5.0,
+        "trailing_stop_activation_pct": 5.0,
+        "trailing_stop_drop_pct": 3.0,
+        "gap_down_threshold_pct": 5.0,
         "consecutive_decline_days": 2,
-        "consecutive_decline_pct": 3.0,
-        "portfolio_drawdown_pct": 5.0,
-        "dca_monitor_interval_sec": 60
+        "consecutive_decline_pct": 5.0,
+        "portfolio_drawdown_pct": 7.0,
+        "dca_monitor_interval_sec": 60,
+        "rebound_buy_enabled": true,
+        "rebound_drop_threshold_pct": 5.0,
+        "rebound_intraday_bounce_pct": 1.0,
+        "rebound_max_buys_per_session": 1
     },
     "telegram": {
         "enabled": true,

@@ -16,7 +16,8 @@
 |------|------|------|
 | Trading Engine | 자동매매 실행 | 장 상태 감지(US/KR) 후 전략별 매매 루프 실행 |
 | Strategy | 다중 전략 | `day`, `swing`, `dca` 전략과 `safe/risky` 모드 지원 |
-| Risk Control | 리스크 관리 | 손절, 트레일링 스탑, 갭다운/연속하락/포트폴리오 드로다운 방어 |
+| Risk Control | 리스크 관리 | 손절, 트레일링 스탑, 갭다운/연속하락/포트폴리오 드로다운 방어, **시장가→지정가 fallback 매도** |
+| Rebound Trigger | 변동성 반등 매수 | 큰 하락 후 당일 반등 시 50% 수량으로 역방향 진입 (v2.3 신규) |
 | AI Assist | 시장 보조 분석 | 뉴스 기반 위험도 판단 및 매수 제한(페르소나 반영) |
 | Dynamic Portfolio | 동적 포트폴리오 | 고품질 ETF 풀 중 모멘텀/안정성이 우수한 종목을 시스템이 주기적으로 자동 필터링 및 교체(삭제) |
 | AI Consensus Policy | 설정 기반 합의 | 쿼럼/매수비율/CRASH veto/동률처리를 설정으로 제어 |
@@ -99,7 +100,12 @@ python web/app.py
 - `strategy`: `day` | `swing` | `dca`
 - `trading_mode`: `safe` | `risky`
 - `persona`: `aggressive` | `neutral` | `conservative`
-- `risk_management`: 손절/트레일링/드로다운 임계값
+- `risk_management`: 손절/트레일링/드로다운 임계값 및 **반등 매수** 옵션
+  - `stop_loss_pct` (기본 **-5.0%**), `trailing_stop_activation_pct` (**5.0%**), `trailing_stop_drop_pct` (**3.0%**)
+  - `gap_down_threshold_pct` (**5.0%**), `consecutive_decline_pct` (**5.0%**), `portfolio_drawdown_pct` (**7.0%**)
+  - `rebound_buy_enabled`, `rebound_drop_threshold_pct` (**5.0%**), `rebound_intraday_bounce_pct` (**1.0%**), `rebound_max_buys_per_session` (**1**)
+- `dca_settings`: 일간 투자비중/매수상한/세션 매수 횟수
+  - `daily_investment_pct` (기본 **30%**), `max_investment_usd` (**$1,500**), `max_buys_per_session` (**5**)
 
 LLM 합의 정책 파라미터:
 
@@ -160,6 +166,16 @@ python modules/backtest_runner.py
 
 - `database/backtest_reports/backtest_YYYYMMDD_HHMMSS.md`
 - `database/backtest_latest.json`
+
+### 🧪 Unit Tests
+
+매도 안전 로직(`safe_sell`)과 호가단위 헬퍼 단위 테스트:
+
+```bash
+python -m unittest tests.test_safe_sell -v
+```
+
+외부 KIS API를 mocking 하므로 토큰 없이 실행됩니다.
 
 ## 🖥️ Dashboard
 

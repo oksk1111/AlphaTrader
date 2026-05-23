@@ -12,3 +12,4 @@ pytz
 groq
 streamlit
 openai
+websockets

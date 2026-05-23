@@ -4,11 +4,13 @@ __pycache__/
 *.log
 
 venv/
+.venv/
 ignored/
 cloudflared
 nohup.out
 # Test & Debug files
 debug_*.py
 test_*.py
+!tests/test_*.py
 database/kis_token_cache.json
 database/account_cache.json

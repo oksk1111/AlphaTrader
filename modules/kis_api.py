@@ -331,6 +331,26 @@ class KisOverseas:
             print(f"[KIS] Sell Order failed: {e}")
             return None
 
+    def get_holding_qty(self, ticker):
+        """해외주식 ticker의 매도가능 수량. 보유 없으면 0."""
+        try:
+            bal = self.get_balance()
+            if not bal:
+                return 0
+            for h in bal.get('output1', []) or []:
+                if h.get('ovrs_pdno') == ticker or h.get('pdno') == ticker:
+                    qty_str = (h.get('ord_psbl_qty')
+                               or h.get('ovrs_cblc_qty')
+                               or h.get('hldg_qty') or '0')
+                    try:
+                        return int(float(qty_str))
+                    except Exception:
+                        return 0
+            return 0
+        except Exception as e:
+            print(f"[KIS] get_holding_qty error [{ticker}]: {e}")
+            return 0
+
     def get_balance(self):
         """잔고 조회 (전체 거래소)"""
         tr_id = "VTTS3012R" if "openapivts" in self.url else "TTTS3012R"
