@@ -81,9 +81,9 @@ def _fetch_ohlc_us(ticker, days, exchange="NAS"):
 def run(tickers, market, days, exchange):
     market = market.upper()
     if market == "KR":
-        sets = ("v2.2_kr_stock", "v2.3_kr_stock")
+        sets = ("v2.2_kr_stock", "v2.3_kr_stock", "v2.4_kr_stock")
     else:
-        sets = ("v2.2_us", "v2.3_us")
+        sets = ("v2.2_us", "v2.3_us", "v2.4_us")
 
     report = {
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -125,6 +125,7 @@ def run(tickers, market, days, exchange):
 
 
 def _print_verdict(report):
+    wins_v24 = 0
     wins_v23 = 0
     total = 0
     for tick, info in report.get("results", {}).items():
@@ -133,18 +134,25 @@ def _print_verdict(report):
         m = info.get("metrics", {})
         v22 = next((v for k, v in m.items() if k.startswith("v2.2")), None)
         v23 = next((v for k, v in m.items() if k.startswith("v2.3")), None)
-        if v22 and v23 and v23.get("n") and v22.get("n"):
-            total += 1
-            if (v23.get("total_pnl_pct") or 0) > (v22.get("total_pnl_pct") or 0):
-                wins_v23 += 1
+        v24 = next((v for k, v in m.items() if k.startswith("v2.4")), None)
+        if not (v22 and v23 and v22.get("n") and v23.get("n")):
+            continue
+        total += 1
+        if (v23.get("total_pnl_pct") or 0) > (v22.get("total_pnl_pct") or 0):
+            wins_v23 += 1
+        if v24 and v24.get("n") and (v24.get("total_pnl_pct") or 0) > (v23.get("total_pnl_pct") or 0):
+            wins_v24 += 1
     if total == 0:
         print("\n[Verdict] 비교 가능한 종목 없음.")
-    else:
-        print(f"\n[Verdict] v2.3 우세: {wins_v23}/{total} 종목")
-        if wins_v23 * 2 < total:
-            print("  ⚠️ v2.2 보다 v2.3 가 열위 → 파라미터 롤백 검토 권장")
-        elif wins_v23 == total:
-            print("  ✅ 전 종목 v2.3 우세")
+        return
+    print(f"\n[Verdict] v2.3 > v2.2 : {wins_v23}/{total} 종목")
+    print(f"[Verdict] v2.4 > v2.3 : {wins_v24}/{total} 종목 (부분 익절 효과)")
+    if wins_v23 * 2 < total:
+        print("  ⚠️ v2.3 가 v2.2 보다 열위 → 파라미터 롤백 검토 권장")
+    if wins_v24 > total / 2:
+        print("  ✅ v2.4 부분 익절이 통계적으로 우세 → PARTIAL_TP_ENABLED 유지 권장")
+    elif wins_v24 * 2 < total:
+        print("  ⚠️ v2.4 부분 익절이 열위 → PARTIAL_TP_RATIO 재조정 또는 비활성화 검토")
 
 
 def main():

@@ -65,6 +65,14 @@ REBOUND_DROP_THRESHOLD_PCT = 5.0 # 5일 누적 하락 또는 갭다운이 이 % 
 REBOUND_INTRADAY_BOUNCE_PCT = 1.0 # 당일 저점 대비 반등 최소 %
 REBOUND_MAX_BUYS_PER_SESSION = 1 # 종목당 세션 반등 매수 한도
 
+# === [NEW v2.4] Partial Take-Profit (1차 부분 익절) ===
+# trailing_stop 활성가(+5%/+7%) 도달 시 보유의 일부를 먼저 청산해 수익을 잠그고,
+# 나머지는 trailing_stop 으로 추가 상승을 추적하는 비대칭 청산 전략.
+# 효과: profit factor 개선 + 평균 win 증가 + 최대 win 손실 위험 감소.
+PARTIAL_TP_ENABLED = True        # 부분 익절 활성화
+PARTIAL_TP_RATIO = 0.5           # 1차 청산 비율 (0.5 = 보유 수량의 50%)
+PARTIAL_TP_MIN_QTY = 2           # 1차 청산 최소 수량 (이보다 적으면 부분익절 skip → 전량 trailing 유지)
+
 # Telegram Notifier for alerts
 telegram = TelegramNotifier()
 
@@ -1497,7 +1505,57 @@ def job():
                         
                     # 2. Trailing Stop (시장별 차별화)
                     peak_pnl_pct = ((highest_price - buy_price) / buy_price) * 100
-                    
+
+                    # 2-A. Partial Take-Profit (1차 부분 익절, v2.4)
+                    # peak_pnl_pct 가 trailing 활성가에 도달했고 아직 1차 청산을 안 했다면
+                    # 보유의 PARTIAL_TP_RATIO 만 먼저 청산하고 나머지는 trailing 유지.
+                    if (PARTIAL_TP_ENABLED
+                            and peak_pnl_pct >= pos_trailing_act
+                            and not data.get('partial_tp_done')
+                            and qty >= PARTIAL_TP_MIN_QTY):
+                        partial_qty = max(1, int(qty * PARTIAL_TP_RATIO))
+                        # 최소 1주는 trailing 으로 남겨야 의미가 있음
+                        if partial_qty >= qty:
+                            partial_qty = qty - 1
+                        if partial_qty >= 1:
+                            logger.info(
+                                f"[{ticker}] 🎯 Partial TP! Peak {peak_pnl_pct:.2f}% "
+                                f"→ {partial_qty}/{qty}주 1차 청산 (나머지 trailing 유지)"
+                            )
+                            _ptp = safe_sell(
+                                kis, market, ticker, partial_qty, data.get('exchange'),
+                                reason='부분익절', monitor_data=data,
+                            )
+                            if _ptp['phase'] == 'deferred':
+                                logger.info(f"[{ticker}] 부분익절 보류 (장 마감)")
+                                continue
+                            if _ptp['phase'] == 'already_flat':
+                                # 이미 외부 청산됨 → 전량 sold_tp 처리
+                                logger.info(f"[{ticker}] 부분익절 - 실제 보유 0. sold_tp 처리.")
+                                data['status'] = 'sold_tp'
+                                continue
+                            if _ptp['success']:
+                                # 남은 수량 갱신 + 마킹
+                                remaining = max(0, qty - _ptp['sold_qty'])
+                                data['buys'] = remaining
+                                data['partial_tp_done'] = True
+                                data['partial_tp_qty'] = _ptp['sold_qty']
+                                data['partial_tp_price'] = curr
+                                send_alert(
+                                    f"🎯 [{ticker}] 1차 부분익절 {_ptp['sold_qty']}주 "
+                                    f"@{curr:.2f} (peak {peak_pnl_pct:.2f}%). "
+                                    f"잔여 {remaining}주 trailing 유지."
+                                )
+                                # 잔여 수량이 0 이면 trailing 검사 의미 없음
+                                if remaining <= 0:
+                                    data['status'] = 'sold_tp'
+                                continue
+                            else:
+                                # 부분익절 실패 → trailing 로직 그대로 진행 (전량 청산 시도)
+                                logger.warning(
+                                    f"[{ticker}] 부분익절 실패({_ptp['error']}) → 전량 trailing 로 진행"
+                                )
+
                     if peak_pnl_pct >= pos_trailing_act:
                         drop_from_peak = ((highest_price - curr) / highest_price) * 100
                         if drop_from_peak >= pos_trailing_drop:

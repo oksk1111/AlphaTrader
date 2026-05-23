@@ -75,6 +75,31 @@ class TestWalkForward(unittest.TestCase):
         self.assertEqual(res.n, 0)
         self.assertEqual(res.metrics()["n"], 0)
 
+    def test_partial_tp_blends_returns(self):
+        """v2.4 부분 익절: trailing 활성가에서 50% 잠그면 trailing-stop 손실 일부를 상쇄."""
+        # 진입 100, 고가 105 (활성가 +5% 도달 → 50% 잠금), 저가 101.85 (105*(1-3%)) 도달 → trailing
+        # v2.3 (단일 청산): pnl = (101.85-100)/100 = +1.85%
+        # v2.4 (부분 익절 0.5): pnl = 0.5 * 5.0 + 0.5 * 1.85 = +3.425%
+        ohlc = [_bar(100, 100, 100, 100), _bar(100, 105, 101.85, 102)]
+        v23 = _simulate_position(ohlc, 0, PARAM_SETS["v2.3_us"])
+        v24 = _simulate_position(ohlc, 0, PARAM_SETS["v2.4_us"])
+        self.assertIsNotNone(v23)
+        self.assertIsNotNone(v24)
+        self.assertEqual(v23.trigger, "trailing_stop")
+        self.assertEqual(v24.trigger, "trailing_stop+partial")
+        self.assertAlmostEqual(v23.pnl_pct, 1.85, places=2)
+        self.assertAlmostEqual(v24.pnl_pct, 3.425, places=3)
+        self.assertGreater(v24.pnl_pct, v23.pnl_pct)
+
+    def test_partial_tp_does_not_help_when_no_trailing_activation(self):
+        """trailing 활성화 전에 손절 맞으면 partial 미발동 → v2.3과 동일."""
+        ohlc = [_bar(100, 100, 100, 100), _bar(100, 102, 94, 95)]
+        v23 = _simulate_position(ohlc, 0, PARAM_SETS["v2.3_us"])
+        v24 = _simulate_position(ohlc, 0, PARAM_SETS["v2.4_us"])
+        self.assertEqual(v23.trigger, "stop_loss")
+        self.assertEqual(v24.trigger, "stop_loss")
+        self.assertAlmostEqual(v24.pnl_pct, v23.pnl_pct, places=4)
+
 
 if __name__ == "__main__":
     unittest.main()

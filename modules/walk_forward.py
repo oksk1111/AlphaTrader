@@ -24,30 +24,49 @@ from typing import Dict, List, Optional, Sequence
 
 
 # === 비교 대상 파라미터 셋 ===
+# partial_tp_ratio: 0.0 = 단일 청산 (기존), 0.5 = trailing 활성가에서 50% 청산
 PARAM_SETS: Dict[str, Dict[str, float]] = {
     "v2.2_us": {
         "stop_loss_pct": -3.0,
         "trailing_activation_pct": 3.0,
         "trailing_drop_pct": 1.5,
         "time_cut_days": 5,
+        "partial_tp_ratio": 0.0,
     },
     "v2.3_us": {
         "stop_loss_pct": -5.0,
         "trailing_activation_pct": 5.0,
         "trailing_drop_pct": 3.0,
         "time_cut_days": 5,
+        "partial_tp_ratio": 0.0,
+    },
+    "v2.4_us": {
+        "stop_loss_pct": -5.0,
+        "trailing_activation_pct": 5.0,
+        "trailing_drop_pct": 3.0,
+        "time_cut_days": 5,
+        "partial_tp_ratio": 0.5,
     },
     "v2.2_kr_stock": {
         "stop_loss_pct": -5.0,
         "trailing_activation_pct": 5.0,
         "trailing_drop_pct": 2.5,
         "time_cut_days": 5,
+        "partial_tp_ratio": 0.0,
     },
     "v2.3_kr_stock": {
         "stop_loss_pct": -7.0,
         "trailing_activation_pct": 7.0,
         "trailing_drop_pct": 4.0,
         "time_cut_days": 5,
+        "partial_tp_ratio": 0.0,
+    },
+    "v2.4_kr_stock": {
+        "stop_loss_pct": -7.0,
+        "trailing_activation_pct": 7.0,
+        "trailing_drop_pct": 4.0,
+        "time_cut_days": 5,
+        "partial_tp_ratio": 0.5,
     },
 }
 
@@ -115,7 +134,12 @@ def _simulate_position(
     entry_idx: int,
     params: Dict[str, float],
 ) -> Optional[Trade]:
-    """단일 포지션 시뮬레이션 (entry_idx 시점 매수 후 청산까지)."""
+    """단일 포지션 시뮬레이션 (entry_idx 시점 매수 후 청산까지).
+
+    partial_tp_ratio > 0 이면 trailing_activation 도달 시 해당 비율만큼 1차 청산한
+    것으로 가정하고, 나머지는 trailing_stop 으로 계속 추적. 최종 pnl_pct 는
+    두 청산의 가중 평균 변화율로 반환한다.
+    """
     if entry_idx >= len(ohlc):
         return None
 
@@ -127,11 +151,26 @@ def _simulate_position(
     trail_act = params["trailing_activation_pct"]
     trail_drop = params["trailing_drop_pct"]
     time_cut_days = int(params["time_cut_days"])
+    partial_tp_ratio = float(params.get("partial_tp_ratio", 0.0) or 0.0)
 
     highest = entry_price
     trail_active = False
+    partial_done = False
+    partial_exit_price = 0.0
 
     last_idx = min(len(ohlc) - 1, entry_idx + time_cut_days)
+
+    def _finalize(exit_idx: int, exit_price: float, trigger: str) -> Trade:
+        if partial_done and partial_tp_ratio > 0:
+            # 가중 평균: partial 처음 청산분 + 나머지 잔여 청산분
+            r1 = (partial_exit_price - entry_price) / entry_price * 100.0
+            r2 = (exit_price - entry_price) / entry_price * 100.0
+            blended = partial_tp_ratio * r1 + (1.0 - partial_tp_ratio) * r2
+            return Trade(entry_idx, entry_price, exit_idx, exit_price,
+                         round(blended, 4), trigger + "+partial")
+        pnl = (exit_price - entry_price) / entry_price * 100.0
+        return Trade(entry_idx, entry_price, exit_idx, exit_price,
+                     round(pnl, 4), trigger)
 
     for i in range(entry_idx, last_idx + 1):
         bar = ohlc[i]
@@ -143,28 +182,28 @@ def _simulate_position(
         low_pnl = (low - entry_price) / entry_price * 100.0
         if low_pnl <= stop_loss_pct:
             sl_price = entry_price * (1.0 + stop_loss_pct / 100.0)
-            return Trade(entry_idx, entry_price, i, sl_price,
-                         round(stop_loss_pct, 4), "stop_loss")
+            return _finalize(i, sl_price, "stop_loss")
 
-        # 2) Trailing Stop — 활성화 후 고점 대비 하락
-        if not trail_active:
-            peak_pnl = (high - entry_price) / entry_price * 100.0
-            if peak_pnl >= trail_act:
-                trail_active = True
-                highest = high
+        # 2) Trailing 활성화 조건 체크
+        peak_pnl = (high - entry_price) / entry_price * 100.0
+        if not trail_active and peak_pnl >= trail_act:
+            trail_active = True
+            highest = max(highest, high)
+            # 2-A) Partial Take-Profit: trailing 활성가에 도달하면 그 가격으로 일부 청산
+            if partial_tp_ratio > 0 and not partial_done:
+                partial_done = True
+                partial_exit_price = entry_price * (1.0 + trail_act / 100.0)
+
         if trail_active:
             highest = max(highest, high)
             trail_trigger_price = highest * (1.0 - trail_drop / 100.0)
             if low <= trail_trigger_price:
-                pnl_pct = (trail_trigger_price - entry_price) / entry_price * 100.0
-                return Trade(entry_idx, entry_price, i, trail_trigger_price,
-                             round(pnl_pct, 4), "trailing_stop")
+                return _finalize(i, trail_trigger_price, "trailing_stop")
 
     # 3) Time Cut — 마지막 바 종가 청산
     last_close = float(ohlc[last_idx]["close"])
-    pnl_pct = (last_close - entry_price) / entry_price * 100.0
-    return Trade(entry_idx, entry_price, last_idx, last_close,
-                 round(pnl_pct, 4), "time_cut" if last_idx < len(ohlc) - 1 else "end_of_series")
+    trig = "time_cut" if last_idx < len(ohlc) - 1 else "end_of_series"
+    return _finalize(last_idx, last_close, trig)
 
 
 def simulate_exit_rules(

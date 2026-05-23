@@ -179,6 +179,32 @@ class TestSafeSell(unittest.TestCase):
             self.assertEqual(KisDomestic._tick_size(price), expected,
                              msg=f"price={price}")
 
+    def test_partial_tp_constants_present(self):
+        """v2.4 부분 익절 상수가 정의되어 있어야 함."""
+        self.assertTrue(hasattr(self.run_bot, 'PARTIAL_TP_ENABLED'))
+        self.assertTrue(hasattr(self.run_bot, 'PARTIAL_TP_RATIO'))
+        self.assertTrue(hasattr(self.run_bot, 'PARTIAL_TP_MIN_QTY'))
+        # 기본값 무결성
+        self.assertIsInstance(self.run_bot.PARTIAL_TP_ENABLED, bool)
+        self.assertGreater(self.run_bot.PARTIAL_TP_RATIO, 0.0)
+        self.assertLess(self.run_bot.PARTIAL_TP_RATIO, 1.0)
+        self.assertGreaterEqual(self.run_bot.PARTIAL_TP_MIN_QTY, 1)
+
+    def test_partial_sell_via_safe_sell(self):
+        """safe_sell 이 partial qty 만 매도하고 ratio 만큼만 체결하는지 검증."""
+        fake = FakeKR(holding=10, sell_responses=[{'rt_cd': '0'}])
+        with self._force_market_open():
+            res = self.run_bot.safe_sell(
+                fake, 'KR', '005930', qty_hint=5,  # 10주 중 50% = 5주
+                reason='부분익절',
+                monitor_data={'buy_price': 70000, 'buys': 10},
+            )
+        self.assertTrue(res['success'])
+        self.assertEqual(res['sold_qty'], 5)
+        self.assertEqual(res['phase'], 'market')
+        # 5주만 시장가로 발주됐어야 함
+        self.assertEqual(fake.calls, [('market', '005930', 5)])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
