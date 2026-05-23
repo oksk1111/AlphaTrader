@@ -17,7 +17,12 @@
 | Trading Engine | 자동매매 실행 | 장 상태 감지(US/KR) 후 전략별 매매 루프 실행 |
 | Strategy | 다중 전략 | `day`, `swing`, `dca` 전략과 `safe/risky` 모드 지원 |
 | Risk Control | 리스크 관리 | 손절, 트레일링 스탑, 갭다운/연속하락/포트폴리오 드로다운 방어, **시장가→지정가 fallback 매도** |
-| Rebound Trigger | 변동성 반등 매수 | 큰 하락 후 당일 반등 시 50% 수량으로 역방향 진입 (v2.3 신규) |
+| Rebound Trigger | 변동성 반등 매수 | 큰 하락 후 당일 반등 시 50% 수량으로 역방향 진입 (v2.3) |
+| Partial Take-Profit | 1차 부분 익절 | Trailing 활성가 도달 시 50% 청산 + 잔량 trailing (v2.4) |
+| Breakeven Stop | 본전 스탑 | 고점 +3%/+4% 도달 후 손절선을 매수가 +0.2% 위로 끌어올림 (v2.5) |
+| Correlation Cap | 상관 그룹 한도 | 동일 섹터 그룹 동시 보유 최대 2종목 (v2.5) |
+| Losing Streak Throttle | 일일 손실 회로차단 | 손절 3건 또는 누적 -3% 시 신규 매수 즉시 중단 (v2.5) |
+| ATR Dynamic Stop | 변동성 적응 손절 | 14일 ATR 기반으로 종목별 손절폭 동적 보강 (v2.5) |
 | AI Assist | 시장 보조 분석 | 뉴스 기반 위험도 판단 및 매수 제한(페르소나 반영) |
 | Dynamic Portfolio | 동적 포트폴리오 | 고품질 ETF 풀 중 모멘텀/안정성이 우수한 종목을 시스템이 주기적으로 자동 필터링 및 교체(삭제) |
 | AI Consensus Policy | 설정 기반 합의 | 쿼럼/매수비율/CRASH veto/동률처리를 설정으로 제어 |
@@ -104,6 +109,12 @@ python web/app.py
   - `stop_loss_pct` (기본 **-5.0%**), `trailing_stop_activation_pct` (**5.0%**), `trailing_stop_drop_pct` (**3.0%**)
   - `gap_down_threshold_pct` (**5.0%**), `consecutive_decline_pct` (**5.0%**), `portfolio_drawdown_pct` (**7.0%**)
   - `rebound_buy_enabled`, `rebound_drop_threshold_pct` (**5.0%**), `rebound_intraday_bounce_pct` (**1.0%**), `rebound_max_buys_per_session` (**1**)
+  - v2.4: `partial_tp_enabled` (**true**), `partial_tp_ratio` (**0.5**)
+  - **v2.5 신규**:
+    - `breakeven_enabled` (**true**), `breakeven_trigger_pct_us` (**3.0**), `breakeven_trigger_pct_kr_stock` (**4.0**), `breakeven_buffer_pct` (**0.2**)
+    - `correlation_cap_enabled` (**true**), `correlation_max_per_group` (**2**), `correlation_groups` (TQQQ/TECL/.., 005930/000660 기본)
+    - `losing_streak_enabled` (**true**), `losing_streak_max_stops` (**3**), `losing_streak_daily_pnl_pct` (**-3.0**)
+    - `atr_dynamic_stop_enabled` (**true**), `atr_period` (**14**), `atr_stop_multiplier` (**2.0**)
 - `dca_settings`: 일간 투자비중/매수상한/세션 매수 횟수
   - `daily_investment_pct` (기본 **30%**), `max_investment_usd` (**$1,500**), `max_buys_per_session` (**5**)
 

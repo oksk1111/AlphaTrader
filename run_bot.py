@@ -13,7 +13,8 @@ from modules.logger import logger
 from modules.telegram_notifier import TelegramNotifier
 from strategies.technical import (
     calculate_ma, calculate_short_ma, check_trend, check_volume_spike,
-    check_gap_down, check_consecutive_decline, check_portfolio_drawdown
+    check_gap_down, check_consecutive_decline, check_portfolio_drawdown,
+    calculate_atr_pct
 )
 from strategies.volatility_breakout import calculate_target_price
 from modules.account_manager import update_all_accounts
@@ -72,6 +73,38 @@ REBOUND_MAX_BUYS_PER_SESSION = 1 # 종목당 세션 반등 매수 한도
 PARTIAL_TP_ENABLED = True        # 부분 익절 활성화
 PARTIAL_TP_RATIO = 0.5           # 1차 청산 비율 (0.5 = 보유 수량의 50%)
 PARTIAL_TP_MIN_QTY = 2           # 1차 청산 최소 수량 (이보다 적으면 부분익절 skip → 전량 trailing 유지)
+
+# === [NEW v2.5] Risk Improvements ===
+# (1) Breakeven Stop — 일정 수익 도달 시 손절을 매수가(+버퍼)로 끌어올려 이긴거래 손실화 차단
+BREAKEVEN_ENABLED = True
+BREAKEVEN_TRIGGER_PCT_US = 3.0          # +3% 도달 시 Breakeven 아밍 (US/ETF)
+BREAKEVEN_TRIGGER_PCT_KR_STOCK = 4.0    # +4% 도달 시 Breakeven 아밍 (KR 개별주)
+BREAKEVEN_BUFFER_PCT = 0.2              # 매수가 대비 +0.2% 위치에 스탑 고정 (수수료 커버)
+
+# (2) Correlation Cap — 같은 섭터/지수 그룹 동시 보유 수 한도 (분산 강제)
+CORRELATION_CAP_ENABLED = True
+CORRELATION_MAX_PER_GROUP = 2           # 그룹당 동시 보유 최대 종목 수
+CORRELATION_GROUPS = [
+    # 원자재 세트는 user_config.json 의 risk_management.correlation_groups 에서 덮어쓰기 가능
+    {"TQQQ", "TECL", "FNGU", "NVDL", "SOXL", "QQQ", "NVDA"},
+    {"005930", "000660"},  # 삼성전자 · SK하이닉스 (반도체 상관도 고움)
+]
+
+# (3) Losing Streak Throttle — 당일 손절/손실 누적 시 자동 신규 매수 일시정지
+LOSING_STREAK_ENABLED = True
+LOSING_STREAK_MAX_STOPS = 3             # 일일 손절/트레일링 손실 누적 건수
+LOSING_STREAK_DAILY_PNL_PCT = -3.0      # 일일 실현 PnL이 이 % 이하면 구매 중단
+
+# (4) ATR-based Dynamic Stop — 종목별 변동성에 맞춰 손절 폭 자동 조정
+ATR_DYNAMIC_STOP_ENABLED = True
+ATR_PERIOD = 14
+ATR_STOP_MULTIPLIER = 2.0               # eff_stop = min(base_stop, -ATR*mult) (절대값이 큰 것 채택 → 더 느슨한 손절)
+ATR_STOP_MAX_PCT = -10.0                # 손절폭 하한 (아무리 변동성 커도 -10% 이상 바이아스 견제)
+
+# (5) Pullback Re-buy — 부분익절 후 5MA 재터치 시 소량 재진입
+PULLBACK_REBUY_ENABLED = True
+PULLBACK_REBUY_RATIO = 0.3              # 재진입 수량 비율 (최초 매수 수량의 30%)
+PULLBACK_REBUY_MAX_PER_TICKER = 1       # 종목당 세션 최대 재진입 횟수
 
 # Telegram Notifier for alerts
 telegram = TelegramNotifier()
@@ -177,6 +210,29 @@ if risk_config:
     REBOUND_DROP_THRESHOLD_PCT = risk_config.get("rebound_drop_threshold_pct", REBOUND_DROP_THRESHOLD_PCT)
     REBOUND_INTRADAY_BOUNCE_PCT = risk_config.get("rebound_intraday_bounce_pct", REBOUND_INTRADAY_BOUNCE_PCT)
     REBOUND_MAX_BUYS_PER_SESSION = risk_config.get("rebound_max_buys_per_session", REBOUND_MAX_BUYS_PER_SESSION)
+    # === v2.5 risk knobs (모두 선택 사항, 미설정 시 코드 상단 기본값 사용) ===
+    PARTIAL_TP_ENABLED = bool(risk_config.get("partial_tp_enabled", PARTIAL_TP_ENABLED))
+    PARTIAL_TP_RATIO = float(risk_config.get("partial_tp_ratio", PARTIAL_TP_RATIO))
+    BREAKEVEN_ENABLED = bool(risk_config.get("breakeven_enabled", BREAKEVEN_ENABLED))
+    BREAKEVEN_TRIGGER_PCT_US = float(risk_config.get("breakeven_trigger_pct_us", BREAKEVEN_TRIGGER_PCT_US))
+    BREAKEVEN_TRIGGER_PCT_KR_STOCK = float(risk_config.get("breakeven_trigger_pct_kr_stock", BREAKEVEN_TRIGGER_PCT_KR_STOCK))
+    BREAKEVEN_BUFFER_PCT = float(risk_config.get("breakeven_buffer_pct", BREAKEVEN_BUFFER_PCT))
+    CORRELATION_CAP_ENABLED = bool(risk_config.get("correlation_cap_enabled", CORRELATION_CAP_ENABLED))
+    CORRELATION_MAX_PER_GROUP = int(risk_config.get("correlation_max_per_group", CORRELATION_MAX_PER_GROUP))
+    _user_groups = risk_config.get("correlation_groups")
+    if isinstance(_user_groups, list) and _user_groups:
+        try:
+            CORRELATION_GROUPS = [set(map(str, g)) for g in _user_groups if g]
+        except Exception:
+            pass
+    LOSING_STREAK_ENABLED = bool(risk_config.get("losing_streak_enabled", LOSING_STREAK_ENABLED))
+    LOSING_STREAK_MAX_STOPS = int(risk_config.get("losing_streak_max_stops", LOSING_STREAK_MAX_STOPS))
+    LOSING_STREAK_DAILY_PNL_PCT = float(risk_config.get("losing_streak_daily_pnl_pct", LOSING_STREAK_DAILY_PNL_PCT))
+    ATR_DYNAMIC_STOP_ENABLED = bool(risk_config.get("atr_dynamic_stop_enabled", ATR_DYNAMIC_STOP_ENABLED))
+    ATR_PERIOD = int(risk_config.get("atr_period", ATR_PERIOD))
+    ATR_STOP_MULTIPLIER = float(risk_config.get("atr_stop_multiplier", ATR_STOP_MULTIPLIER))
+    PULLBACK_REBUY_ENABLED = bool(risk_config.get("pullback_rebuy_enabled", PULLBACK_REBUY_ENABLED))
+    PULLBACK_REBUY_RATIO = float(risk_config.get("pullback_rebuy_ratio", PULLBACK_REBUY_RATIO))
 
 logger.info(f"Loaded Config: Mode={user_config.get('trading_mode')}, Strategy={STRATEGY_MODE}, Persona={PERSONA}")
 
@@ -466,13 +522,122 @@ def _journal_record(market, ticker, reason, exit_price, sold_qty, phase, monitor
             sold_qty=int(sold_qty or 0),
             monitor_data=monitor_data or {},
             phase=phase,
-            version='v2.3',
+            version='v2.5',
         )
     except Exception as _je:
         try:
             logger.warning(f"[{ticker}] trade_journal 기록 실패: {_je}")
         except Exception:
             pass
+
+
+# ============================================================
+# [v2.5] Daily Risk State - 일일 손절/손실 누적 추적기
+# ============================================================
+_daily_state = {
+    'date': None,
+    'stop_count': 0,
+    'realized_pnl_pct': 0.0,
+    'paused': False,
+}
+
+
+def _daily_state_reset_if_needed():
+    """KST 자정 기준 일일 상태 리셋."""
+    try:
+        today = datetime.datetime.now(KST).strftime('%Y-%m-%d')
+    except Exception:
+        today = datetime.datetime.now().strftime('%Y-%m-%d')
+    if _daily_state.get('date') != today:
+        _daily_state['date'] = today
+        _daily_state['stop_count'] = 0
+        _daily_state['realized_pnl_pct'] = 0.0
+        _daily_state['paused'] = False
+
+
+def _record_loss_event(pnl_pct, trigger):
+    """손절/트레일링 손실 이벤트 누적. losing-streak throttle 판정에 사용."""
+    if not LOSING_STREAK_ENABLED:
+        return
+    _daily_state_reset_if_needed()
+    # 손실(또는 stop_loss 트리거) 만 카운트
+    if trigger in ('stop_loss', 'breakeven_stop') or (pnl_pct is not None and pnl_pct < 0):
+        _daily_state['stop_count'] = int(_daily_state.get('stop_count', 0)) + 1
+    if pnl_pct is not None:
+        try:
+            _daily_state['realized_pnl_pct'] = float(_daily_state.get('realized_pnl_pct', 0.0)) + float(pnl_pct)
+        except Exception:
+            pass
+    if (_daily_state['stop_count'] >= LOSING_STREAK_MAX_STOPS
+            or _daily_state['realized_pnl_pct'] <= LOSING_STREAK_DAILY_PNL_PCT):
+        if not _daily_state.get('paused'):
+            _daily_state['paused'] = True
+            try:
+                logger.warning(
+                    f"🛑 [LosingStreak] 일일 손절 {_daily_state['stop_count']}건 / "
+                    f"누적 {_daily_state['realized_pnl_pct']:.2f}% → 신규 매수 일시 중단"
+                )
+            except Exception:
+                pass
+
+
+def is_losing_streak_pause():
+    """오늘 신규 매수가 차단되어야 하는지 여부."""
+    if not LOSING_STREAK_ENABLED:
+        return False
+    _daily_state_reset_if_needed()
+    return bool(_daily_state.get('paused'))
+
+
+def is_correlation_capped(ticker, monitoring_targets):
+    """상관 그룹 내 이미 보유(status=='bought') 종목 수가 한도 이상인지 체크.
+
+    True 면 신규 매수 차단.
+    """
+    if not CORRELATION_CAP_ENABLED or not CORRELATION_GROUPS:
+        return False, None
+    try:
+        t = str(ticker)
+        for grp in CORRELATION_GROUPS:
+            if t not in grp:
+                continue
+            held = 0
+            for tk, d in (monitoring_targets or {}).items():
+                if str(tk) == t:
+                    continue
+                if str(tk) in grp and d and d.get('status') == 'bought' and int(d.get('buys', 0)) > 0:
+                    held += 1
+            if held >= CORRELATION_MAX_PER_GROUP:
+                return True, sorted(list(grp))
+        return False, None
+    except Exception:
+        return False, None
+
+
+def get_breakeven_trigger_pct(market, ticker):
+    """시장/종목별 Breakeven 활성화 임계치."""
+    if not BREAKEVEN_ENABLED:
+        return None
+    if market == 'KR' and ticker not in KR_ETF_CODES:
+        return float(BREAKEVEN_TRIGGER_PCT_KR_STOCK)
+    return float(BREAKEVEN_TRIGGER_PCT_US)
+
+
+def effective_stop_loss_pct(base_pct, ohlc):
+    """ATR 동적 손절폭 산정.
+
+    base_pct: 기존 손절 % (음수, 예: -5.0)
+    반환: 더 보수적(=절대값 큰) 손절폭, 단 ATR_STOP_MAX_PCT 로 하한 보호.
+    """
+    if not ATR_DYNAMIC_STOP_ENABLED or not ohlc:
+        return base_pct
+    atr_pct = calculate_atr_pct(ohlc, period=ATR_PERIOD)
+    if atr_pct is None or atr_pct <= 0:
+        return base_pct
+    atr_stop = -ATR_STOP_MULTIPLIER * atr_pct
+    # 더 큰 절대값을 채택 (= 더 느슨한 손절) → 노이즈 컷 회피
+    candidate = min(base_pct, atr_stop)
+    return max(candidate, ATR_STOP_MAX_PCT)
 
 
 def safe_sell(kis_client, market, ticker, qty_hint, exchange=None,
@@ -705,6 +870,17 @@ def job():
     def attempt_dca_buy(ticker, exchange, current_price, ma20, ma5, ohlc, eff_gap_down_threshold, num_targets):
         """DCA 후보를 재평가하여 조건 충족 시 1회 매수"""
         existing = monitoring_targets.get(ticker, {})
+
+        # [v2.5] Losing-streak throttle: 오늘 누적 손실/손절 한도 초과 시 전 종목 매수 차단
+        if is_losing_streak_pause():
+            record_skip_reason(ticker, "losing-streak 차단 (일일 손실 한도 초과)")
+            return False
+
+        # [v2.5] Correlation cap: 같은 그룹 보유 종목 수 한도 초과 시 차단
+        capped, grp = is_correlation_capped(ticker, monitoring_targets)
+        if capped:
+            record_skip_reason(ticker, f"상관그룹 한도 초과 (group={grp})")
+            return False
 
         if existing.get('dca_buys_this_session', 0) >= DCA_MAX_BUYS_PER_SESSION:
             record_skip_reason(ticker, f"세션 매수 한도 ({DCA_MAX_BUYS_PER_SESSION})")
@@ -1473,7 +1649,50 @@ def job():
                     pos_stop_loss = KR_STOCK_STOP_LOSS_PCT if is_kr_stock_pos else STOP_LOSS_PCT
                     pos_trailing_act = KR_STOCK_TRAILING_ACTIVATION if is_kr_stock_pos else TRAILING_STOP_ACTIVATION
                     pos_trailing_drop = KR_STOCK_TRAILING_DROP if is_kr_stock_pos else TRAILING_STOP_DROP
-                    
+
+                    # [v2.5] ATR 동적 손절폭 적용 (보수적 = 절대값 큰 쪽 채택)
+                    try:
+                        pos_stop_loss = effective_stop_loss_pct(pos_stop_loss, data.get('ohlc'))
+                    except Exception:
+                        pass
+
+                    # [v2.5] Breakeven Stop 활성화 판정
+                    be_trigger = get_breakeven_trigger_pct(market, ticker)
+                    if BREAKEVEN_ENABLED and be_trigger is not None and not data.get('breakeven_armed'):
+                        # 고점 기준이 아닌 현재 pnl 기준으로 한 번이라도 +trigger% 를 찍었는지 본다
+                        if pnl_pct >= be_trigger or ((highest_price - buy_price) / buy_price * 100) >= be_trigger:
+                            data['breakeven_armed'] = True
+                            data['breakeven_price'] = buy_price * (1.0 + BREAKEVEN_BUFFER_PCT / 100.0)
+                            logger.info(
+                                f"[{ticker}] 🛡️ Breakeven 활성화 (peak +{be_trigger}% 도달) → "
+                                f"floor={data['breakeven_price']:.4f}"
+                            )
+
+                    # [v2.5] Breakeven floor 도달 시 즉시 청산 (손실 전환 차단)
+                    if data.get('breakeven_armed') and curr <= float(data.get('breakeven_price', 0)):
+                        logger.warning(
+                            f"[{ticker}] 🛡️ Breakeven Stop! curr={curr:.4f} <= "
+                            f"floor={data['breakeven_price']:.4f}. {qty}주 매도."
+                        )
+                        send_alert(f"🛡️ [{ticker}] 본전 스탑 발동! {qty}주 매도 (pnl≈{pnl_pct:.2f}%).")
+                        _be = safe_sell(kis, market, ticker, qty, data.get('exchange'),
+                                        reason='breakeven_stop', monitor_data=data)
+                        if _be['phase'] == 'deferred':
+                            continue
+                        if _be['phase'] == 'already_flat':
+                            data['status'] = 'sold_be'
+                            continue
+                        if _be['success']:
+                            data['status'] = 'sold_be'
+                            try:
+                                _record_loss_event(pnl_pct, 'breakeven_stop')
+                            except Exception:
+                                pass
+                        else:
+                            logger.error(f"[{ticker}] ❌ Breakeven sell FAILED: {_be['error']}")
+                            data['status'] = 'be_failed'
+                        continue
+
                     # 1. Stop Loss - ABSOLUTE RULE (시장별 차별화)
                     if pnl_pct <= pos_stop_loss:
                         logger.warning(f"[{ticker}] 🛑 Stop Loss Triggered! ({pnl_pct:.2f}% <= {pos_stop_loss}%). Selling {qty} shares.")
@@ -1491,6 +1710,10 @@ def job():
                             continue
                         if _sl['success']:
                             data['status'] = 'sold_sl'
+                            try:
+                                _record_loss_event(pnl_pct, 'stop_loss')
+                            except Exception:
+                                pass
                         else:
                             logger.error(
                                 f"[{ticker}] ❌ Stop-loss sell FAILED (시장가+지정가): {_sl['error']}"

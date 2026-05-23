@@ -68,6 +68,31 @@ PARAM_SETS: Dict[str, Dict[str, float]] = {
         "time_cut_days": 5,
         "partial_tp_ratio": 0.5,
     },
+    # === v2.5: breakeven stop + slippage/fee 모델 ===
+    # breakeven_trigger_pct: 이 % 도달 이후 하락시 매수가에서 청산(손실 전환 방지)
+    # slippage_pct: 청산가 하향 조정(%), fee_pct: 양방향 수수료(%)
+    "v2.5_us": {
+        "stop_loss_pct": -5.0,
+        "trailing_activation_pct": 5.0,
+        "trailing_drop_pct": 3.0,
+        "time_cut_days": 5,
+        "partial_tp_ratio": 0.5,
+        "breakeven_trigger_pct": 3.0,
+        "breakeven_buffer_pct": 0.2,
+        "slippage_pct": 0.05,
+        "fee_pct": 0.015,
+    },
+    "v2.5_kr_stock": {
+        "stop_loss_pct": -7.0,
+        "trailing_activation_pct": 7.0,
+        "trailing_drop_pct": 4.0,
+        "time_cut_days": 5,
+        "partial_tp_ratio": 0.5,
+        "breakeven_trigger_pct": 4.0,
+        "breakeven_buffer_pct": 0.2,
+        "slippage_pct": 0.05,
+        "fee_pct": 0.015,
+    },
 }
 
 
@@ -152,23 +177,35 @@ def _simulate_position(
     trail_drop = params["trailing_drop_pct"]
     time_cut_days = int(params["time_cut_days"])
     partial_tp_ratio = float(params.get("partial_tp_ratio", 0.0) or 0.0)
+    # v2.5 삽입 파라미터 (미설정 시 0 → 원래 동작)
+    be_trigger = float(params.get("breakeven_trigger_pct", 0.0) or 0.0)
+    be_buffer = float(params.get("breakeven_buffer_pct", 0.0) or 0.0)
+    slippage_pct = float(params.get("slippage_pct", 0.0) or 0.0)
+    fee_pct = float(params.get("fee_pct", 0.0) or 0.0)
 
     highest = entry_price
     trail_active = False
     partial_done = False
     partial_exit_price = 0.0
+    breakeven_armed = False
+    breakeven_price = 0.0
 
     last_idx = min(len(ohlc) - 1, entry_idx + time_cut_days)
 
+    def _apply_costs(raw_pnl_pct: float) -> float:
+        # 수수료는 양방향(매수+매도) 2회 차감, 슬리피지는 청산에만 1회 적용
+        return raw_pnl_pct - (2.0 * fee_pct) - slippage_pct
+
     def _finalize(exit_idx: int, exit_price: float, trigger: str) -> Trade:
         if partial_done and partial_tp_ratio > 0:
-            # 가중 평균: partial 처음 청산분 + 나머지 잔여 청산분
             r1 = (partial_exit_price - entry_price) / entry_price * 100.0
             r2 = (exit_price - entry_price) / entry_price * 100.0
             blended = partial_tp_ratio * r1 + (1.0 - partial_tp_ratio) * r2
+            blended = _apply_costs(blended)
             return Trade(entry_idx, entry_price, exit_idx, exit_price,
                          round(blended, 4), trigger + "+partial")
         pnl = (exit_price - entry_price) / entry_price * 100.0
+        pnl = _apply_costs(pnl)
         return Trade(entry_idx, entry_price, exit_idx, exit_price,
                      round(pnl, 4), trigger)
 
@@ -184,12 +221,21 @@ def _simulate_position(
             sl_price = entry_price * (1.0 + stop_loss_pct / 100.0)
             return _finalize(i, sl_price, "stop_loss")
 
+        # 1-A) Breakeven Stop — v2.5
+        if be_trigger > 0 and breakeven_armed and low <= breakeven_price:
+            return _finalize(i, breakeven_price, "breakeven_stop")
+
         # 2) Trailing 활성화 조건 체크
         peak_pnl = (high - entry_price) / entry_price * 100.0
+
+        # 1-B) Breakeven 아밍 (고점이 trigger 도달 시)
+        if be_trigger > 0 and not breakeven_armed and peak_pnl >= be_trigger:
+            breakeven_armed = True
+            breakeven_price = entry_price * (1.0 + be_buffer / 100.0)
+
         if not trail_active and peak_pnl >= trail_act:
             trail_active = True
             highest = max(highest, high)
-            # 2-A) Partial Take-Profit: trailing 활성가에 도달하면 그 가격으로 일부 청산
             if partial_tp_ratio > 0 and not partial_done:
                 partial_done = True
                 partial_exit_price = entry_price * (1.0 + trail_act / 100.0)

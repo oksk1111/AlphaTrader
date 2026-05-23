@@ -38,7 +38,38 @@
         "rebound_buy_enabled": true,
         "rebound_drop_threshold_pct": 5.0,
         "rebound_intraday_bounce_pct": 1.0,
-        "rebound_max_buys_per_session": 1
+        "rebound_max_buys_per_session": 1,
+        "partial_tp_enabled": true,
+        "partial_tp_ratio": 0.5,
+        "breakeven_enabled": true,
+        "breakeven_trigger_pct_us": 3.0,
+        "breakeven_trigger_pct_kr_stock": 4.0,
+        "breakeven_buffer_pct": 0.2,
+        "correlation_cap_enabled": true,
+        "correlation_max_per_group": 2,
+        "correlation_groups": [
+            [
+                "TQQQ",
+                "TECL",
+                "FNGU",
+                "NVDL",
+                "SOXL",
+                "QQQ",
+                "NVDA"
+            ],
+            [
+                "005930",
+                "000660"
+            ]
+        ],
+        "losing_streak_enabled": true,
+        "losing_streak_max_stops": 3,
+        "losing_streak_daily_pnl_pct": -3.0,
+        "atr_dynamic_stop_enabled": true,
+        "atr_period": 14,
+        "atr_stop_multiplier": 2.0,
+        "pullback_rebuy_enabled": true,
+        "pullback_rebuy_ratio": 0.3
     },
     "telegram": {
         "enabled": true,

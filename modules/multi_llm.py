@@ -20,6 +20,44 @@ from modules.deepseek_analyst import DeepSeekAnalyst
 from modules.groq_analyst import GroqAnalyst
 from modules.logger import logger
 
+# === [v2.5 refactor] Consensus 결과 캐시 ===
+# 동일 뉴스 입력에 대해 짧은 시간 내 반복 질의 시 LLM API 호출/쿼터를 절약.
+import hashlib
+import time as _time
+
+_CONSENSUS_CACHE: dict = {}
+_CONSENSUS_CACHE_TTL_SEC = 300  # 5분
+
+
+def _cache_key(news_text: str, persona: str) -> str:
+    h = hashlib.sha256(f"{persona}::{news_text or ''}".encode("utf-8")).hexdigest()
+    return h[:32]
+
+
+def _cache_get(key: str):
+    item = _CONSENSUS_CACHE.get(key)
+    if not item:
+        return None
+    ts, value = item
+    if _time.time() - ts > _CONSENSUS_CACHE_TTL_SEC:
+        try:
+            del _CONSENSUS_CACHE[key]
+        except KeyError:
+            pass
+        return None
+    return value
+
+
+def _cache_put(key: str, value: dict) -> None:
+    # 단순 LRU 흉내: 200개 초과 시 가장 오래된 항목 1개 제거
+    if len(_CONSENSUS_CACHE) > 200:
+        try:
+            oldest = min(_CONSENSUS_CACHE.items(), key=lambda kv: kv[1][0])[0]
+            del _CONSENSUS_CACHE[oldest]
+        except Exception:
+            pass
+    _CONSENSUS_CACHE[key] = (_time.time(), value)
+
 
 class MultiLLMAnalyst:
     def __init__(self, consensus_config=None):
@@ -129,6 +167,16 @@ class MultiLLMAnalyst:
                 "consensus": "N/A",
                 "votes": {}
             }
+        
+        # [v2.5] 캐시 히트 시 즉시 반환 (동일 뉴스 텍스트 5분 내 재질의 회피)
+        _ck = _cache_key(news_text, persona)
+        cached = _cache_get(_ck)
+        if cached is not None:
+            try:
+                logger.info("[MultiLLM] consensus cache HIT — skipping LLM round-trip")
+            except Exception:
+                pass
+            return cached
         
         # 병렬로 모든 LLM 질의
         results = []
@@ -272,4 +320,8 @@ class MultiLLMAnalyst:
             }
         
         logger.info(f"[MultiLLM] 합의 결과: {consensus_result['consensus']} → can_buy={consensus_result['can_buy']}")
+        try:
+            _cache_put(_ck, consensus_result)
+        except Exception:
+            pass
         return consensus_result

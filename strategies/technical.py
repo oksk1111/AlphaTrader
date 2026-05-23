@@ -145,6 +145,45 @@ def calculate_short_ma(prices, window=5):
     return ma.iloc[-1]
 
 
+def calculate_atr_pct(ohlc_data, period=14):
+    """ATR(Average True Range) 을 현재가 대비 % 로 반환.
+
+    종목별 변동성에 맞춰 동적 손절폭/익절폭을 산정하기 위함.
+
+    Args:
+        ohlc_data (list): KIS OHLC (index 0 = 최근). 각 row 에 'high','low','clos' 필요.
+        period (int): ATR 산정 기간 (기본 14일)
+
+    Returns:
+        float | None: ATR 을 가장 최근 종가 대비 %로 환산한 값.
+                       데이터가 부족하면 None.
+    """
+    if not ohlc_data or len(ohlc_data) < period + 1:
+        return None
+    try:
+        # index 0 이 최근 → 시간 오름차순으로 정렬
+        bars = list(reversed(ohlc_data))
+        trs = []
+        for i in range(1, len(bars)):
+            high = float(bars[i].get('high', bars[i].get('stck_hgpr', 0)) or 0)
+            low = float(bars[i].get('low', bars[i].get('stck_lwpr', 0)) or 0)
+            prev_close = float(bars[i - 1].get('clos', bars[i - 1].get('stck_clpr', 0)) or 0)
+            if high <= 0 or low <= 0 or prev_close <= 0:
+                continue
+            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            trs.append(tr)
+        if len(trs) < period:
+            return None
+        atr = sum(trs[-period:]) / period
+        last_close = float(bars[-1].get('clos', bars[-1].get('stck_clpr', 0)) or 0)
+        if last_close <= 0:
+            return None
+        return (atr / last_close) * 100.0
+    except Exception as e:
+        print(f"ATR calc error: {e}")
+        return None
+
+
 def check_portfolio_drawdown(holdings, threshold_pct=5.0):
     """
     포트폴리오 전체 드로다운 체크: 총 평가손익률이 기준 이상 손실이면 경고.
