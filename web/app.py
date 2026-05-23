@@ -1032,6 +1032,46 @@ async def api_profit_summary():
         pass
     return JSONResponse(result)
 
+
+@app.get("/api/measurement")
+async def api_measurement(limit: int = 20):
+    """Trade Journal 기반 측정 metric (Phase 0).
+
+    overall / by_trigger / by_ticker / by_market / by_version 및 최근 N건 거래 반환.
+    """
+    try:
+        from modules.measurement import build_metrics, format_brief
+    except Exception as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+    try:
+        metrics = build_metrics(recent_limit=max(1, min(int(limit or 20), 200)))
+        metrics["brief"] = format_brief(metrics)
+        metrics["status"] = "ok"
+        return JSONResponse(metrics)
+    except Exception as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+
+@app.get("/api/walk-forward/latest")
+async def api_walk_forward_latest():
+    """최근 walk-forward 리포트 1건 반환 (없으면 빈 응답)."""
+    try:
+        report_dir = BASE_DIR / "database" / "walk_forward_reports"
+        if not report_dir.exists():
+            return JSONResponse({"status": "empty"})
+        files = sorted(report_dir.glob("walk_forward_*.json"))
+        if not files:
+            return JSONResponse({"status": "empty"})
+        with open(files[-1], "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data["status"] = "ok"
+        data["file"] = files[-1].name
+        return JSONResponse(data)
+    except Exception as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+
 @app.post("/api/restart")
 async def restart_bot():
     old_pid = get_bot_pid()

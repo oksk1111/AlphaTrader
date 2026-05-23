@@ -20,6 +20,7 @@ from modules.account_manager import update_all_accounts
 from modules.market_scanner import scanner  # New scanner module
 from modules.multi_llm import MultiLLMAnalyst
 from modules.auto_strategy import AutoStrategyOptimizer
+from modules import trade_journal
 
 def safe_float(value, default=0.0):
     """빈 문자열이나 None을 안전하게 float로 변환"""
@@ -436,8 +437,38 @@ def is_market_open_for(market):
         return False
 
 
+def _lookup_price(kis_client, ticker, market, exchange):
+    """journal 기록용 현재가 조회 (실패 시 0.0)."""
+    try:
+        if market == 'US':
+            return float(kis_client.get_current_price(ticker, exchange or 'NAS') or 0.0)
+        return float(kis_client.get_current_price(ticker) or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _journal_record(market, ticker, reason, exit_price, sold_qty, phase, monitor_data=None):
+    """trade_journal 기록 헬퍼. 절대로 매매 흐름을 막지 않는다."""
+    try:
+        trade_journal.record_close(
+            ticker=ticker,
+            market=market,
+            trigger=str(reason or 'unknown'),
+            exit_price=float(exit_price or 0.0),
+            sold_qty=int(sold_qty or 0),
+            monitor_data=monitor_data or {},
+            phase=phase,
+            version='v2.3',
+        )
+    except Exception as _je:
+        try:
+            logger.warning(f"[{ticker}] trade_journal 기록 실패: {_je}")
+        except Exception:
+            pass
+
+
 def safe_sell(kis_client, market, ticker, qty_hint, exchange=None,
-              reason="sell", allow_limit_fallback=True):
+              reason="sell", allow_limit_fallback=True, monitor_data=None):
     """매도 주문 안전 실행기.
 
     Returns: dict {
@@ -469,6 +500,9 @@ def safe_sell(kis_client, market, ticker, qty_hint, exchange=None,
     effective_qty = max(0, min(int(qty_hint or 0), int(actual_qty or 0))) if actual_qty else 0
 
     if actual_qty <= 0:
+        # 외부 청산도 trade_journal 에 기록 (exit_price 미상 → 0)
+        _journal_record(market, ticker, reason, exit_price=0.0, sold_qty=0,
+                        phase='already_flat', monitor_data=monitor_data)
         return {'success': True, 'sold_qty': 0, 'phase': 'already_flat',
                 'error': None}
 
@@ -487,6 +521,10 @@ def safe_sell(kis_client, market, ticker, qty_hint, exchange=None,
                 res = kis_client.sell_market_order(ticker, effective_qty)
             if res and res.get('rt_cd') == '0':
                 logger.info(f"[{ticker}] ✅ {reason} 시장가 매도 성공 ({effective_qty}주)")
+                _journal_record(market, ticker, reason,
+                                exit_price=_lookup_price(kis_client, ticker, market, exchange),
+                                sold_qty=effective_qty, phase='market',
+                                monitor_data=monitor_data)
                 return {'success': True, 'sold_qty': effective_qty,
                         'phase': 'market', 'error': None}
             last_err = (res or {}).get('msg1') or 'no response'
@@ -509,6 +547,10 @@ def safe_sell(kis_client, market, ticker, qty_hint, exchange=None,
                             f"[{ticker}] ✅ {reason} 지정가 fallback 성공 "
                             f"({effective_qty}주 @ {int(limit_price):,})"
                         )
+                        _journal_record(market, ticker, reason,
+                                        exit_price=limit_price,
+                                        sold_qty=effective_qty, phase='limit',
+                                        monitor_data=monitor_data)
                         return {'success': True, 'sold_qty': effective_qty,
                                 'phase': 'limit', 'error': None}
                     last_err = (res or {}).get('msg1') or 'no response'
@@ -798,6 +840,7 @@ def job():
                 'ma20': ma20,
                 'ma5': ma5,
                 'ohlc': ohlc,
+                'entry_time': existing.get('entry_time') or datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'dca_buys_this_session': existing.get('dca_buys_this_session', 0) + 1,
                 'rebound_buys_this_session': (
                     existing.get('rebound_buys_this_session', 0) + (1 if rebound_trigger else 0)
@@ -1026,7 +1069,8 @@ def job():
                         logger.warning(f"[{ticker}] 🛑 DCA STOP LOSS! ({pnl_pct:.2f}% <= {eff_stop_loss}%). 즉시 매도 {holding_qty}주.")
                         send_alert(f"🛑 [{ticker}] DCA 손절매 발동! {pnl_pct:.2f}%. {holding_qty}주 매도.")
                         _dca_sl = safe_sell(kis, market, ticker, holding_qty, exchange,
-                                            reason='DCA손절매')
+                                            reason='DCA손절매',
+                                            monitor_data=monitoring_targets.get(ticker))
                         if _dca_sl['phase'] == 'deferred':
                             logger.info(f"[{ticker}] DCA 손절매 보류 (장 마감)")
                             # 모니터링 상태는 그대로 두어 다음 사이클에서 재평가
@@ -1354,7 +1398,8 @@ def job():
 
                     _retry = safe_sell(
                         kis, market, ticker, qty_hint, data.get('exchange'),
-                        reason='손절매-재시도'
+                        reason='손절매-재시도',
+                        monitor_data=data,
                     )
 
                     if _retry['phase'] == 'deferred':
@@ -1426,7 +1471,8 @@ def job():
                         logger.warning(f"[{ticker}] 🛑 Stop Loss Triggered! ({pnl_pct:.2f}% <= {pos_stop_loss}%). Selling {qty} shares.")
                         send_alert(f"🛑 [{ticker}] 손절매 발동! {pnl_pct:.2f}%. {qty}주 매도.")
                         _sl = safe_sell(kis, market, ticker, qty, data.get('exchange'),
-                                        reason='손절매')
+                                        reason='손절매',
+                                        monitor_data=data)
                         if _sl['phase'] == 'deferred':
                             # 장 마감: 다음 KR 정규장 시작 시 자동 재평가됨
                             logger.info(f"[{ticker}] 손절매 보류 (장 마감) - 다음 장에서 재시도")
@@ -1458,7 +1504,8 @@ def job():
                             logger.info(f"[{ticker}] 💰 Trailing Stop Triggered! (Peak: {peak_pnl_pct:.2f}%, Drop: {drop_from_peak:.2f}% >= {pos_trailing_drop}%). Selling {qty} shares.")
                             send_alert(f"💰 [{ticker}] 트레일링 스탑! 고점 대비 {drop_from_peak:.2f}% 하락. {qty}주 매도.")
                             _tp = safe_sell(kis, market, ticker, qty, data.get('exchange'),
-                                            reason='트레일링스탑')
+                                            reason='트레일링스탑',
+                                            monitor_data=data)
                             if _tp['phase'] == 'deferred':
                                 logger.info(f"[{ticker}] 트레일링스탑 보류 (장 마감)")
                                 continue

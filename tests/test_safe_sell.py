@@ -64,6 +64,7 @@ def _import_safe_sell():
         'modules.multi_llm': MagicMock(),
         'modules.auto_strategy': MagicMock(),
         'modules.portfolio_manager': MagicMock(),
+        'modules.trade_journal': MagicMock(),
         'schedule': MagicMock(),
     }
     with patch.dict('sys.modules', fake_modules):
@@ -78,6 +79,8 @@ class TestSafeSell(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.run_bot = _import_safe_sell()
+        # 테스트 격리: 실제 trade_journal 파일 오염 방지
+        cls.run_bot._journal_record = lambda *a, **k: None
 
     def _force_market_open(self, market='KR'):
         # is_market_open_for 가 True 반환하도록 patch
