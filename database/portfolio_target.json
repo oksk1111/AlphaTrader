@@ -1,34 +1,49 @@
 {
-    "updated_at": "2026-05-16T00:32:02.273610+09:00",
+    "updated_at": "2026-05-26T22:54:41.958804+09:00",
     "TARGET_TICKERS_KR_1X": [
         "0174B0",
-        "456600",
-        "292150",
         "0180V0",
-        "069500",
         "495230",
+        "069500",
+        "292150",
+        "456600",
         "0015B0",
-        "0173Y0",
         "0151P0",
-        "364980"
+        "0173Y0",
+        "133690"
     ],
     "TARGET_TICKERS_US_1X": [
         {
             "symbol": "SMH",
-            "weight": 0.3,
-            "exchange": "NAS"
+            "exchange": "NAS",
+            "weight": 0.3
         },
         {
             "symbol": "QQQ",
-            "weight": 0.3,
-            "exchange": "NAS"
+            "exchange": "NAS",
+            "weight": 0.3
+        },
+        {
+            "symbol": "SPY",
+            "exchange": "AMS",
+            "weight": 0.3
         }
     ],
     "TARGET_TICKERS_US_3X": [
         {
+            "symbol": "SOXL",
+            "exchange": "AMS",
+            "weight": 0.7
+        },
+        {
+            "symbol": "TECL",
+            "exchange": "AMS",
+            "weight": 0.7
+        },
+        {
             "symbol": "TQQQ",
-            "weight": 0.7,
-            "exchange": "NAS"
+            "exchange": "NAS",
+            "weight": 0.7
         }
     ],
     "meta": {
@@ -36,91 +51,115 @@
             {
                 "code": "0174B0",
                 "name": "KoAct 글로벌AI메모리반도체 액티브",
-                "momentum": 35.18867924528302
-            },
-            {
-                "code": "456600",
-                "name": "TIME 글로벌AI인공지능 액티브",
-                "momentum": 26.770610414755936
-            },
-            {
-                "code": "292150",
-                "name": "TIGER 코리아TOP10",
-                "momentum": 23.964232488822653
+                "momentum": 44.64993394980185
             },
             {
                 "code": "0180V0",
                 "name": "ACE 미국우주테크 액티브",
-                "momentum": 23.759541984732824
-            },
-            {
-                "code": "069500",
-                "name": "KODEX 200",
-                "momentum": 23.74617252666033
+                "momentum": 34.90654205607477
             },
             {
                 "code": "495230",
                 "name": "KoAct 코리아밸류업 액티브",
-                "momentum": 23.66157626821134
+                "momentum": 29.61951885343798
+            },
+            {
+                "code": "069500",
+                "name": "KODEX 200",
+                "momentum": 29.341836734693878
+            },
+            {
+                "code": "292150",
+                "name": "TIGER 코리아TOP10",
+                "momentum": 29.05158556188806
+            },
+            {
+                "code": "456600",
+                "name": "TIME 글로벌AI인공지능 액티브",
+                "momentum": 23.966553927095077
             },
             {
                 "code": "0015B0",
                 "name": "KoAct 미국나스닥성장기업 액티브",
-                "momentum": 23.595505617977526
-            },
-            {
-                "code": "0173Y0",
-                "name": "KODEX 미국AI광통신네트워크",
-                "momentum": 22.21770917952884
+                "momentum": 19.328791319707292
             },
             {
                 "code": "0151P0",
                 "name": "RISE 코리아전략산업액티브",
-                "momentum": 19.682959048877148
+                "momentum": 19.047619047619047
             },
             {
-                "code": "364980",
-                "name": "TIGER KRX2차전지K-뉴딜",
-                "momentum": 13.20754716981132
+                "code": "0173Y0",
+                "name": "KODEX 미국AI광통신네트워크",
+                "momentum": 18.01456496742047
             },
             {
                 "code": "133690",
                 "name": "TIGER 미국나스닥100",
-                "momentum": 12.968400244193145
+                "momentum": 11.85417195744801
             },
             {
                 "code": "379800",
                 "name": "KODEX 미국엔비디아밸류체인",
-                "momentum": 7.30050933786078
+                "momentum": 6.800166875260742
+            },
+            {
+                "code": "364980",
+                "name": "TIGER KRX2차전지K-뉴딜",
+                "momentum": -4.134078212290502
             },
             {
                 "code": "305720",
                 "name": "KODEX 2차전지산업",
-                "momentum": 7.044956140350878
+                "momentum": -5.78296049500238
             },
             {
                 "code": "0080G0",
                 "name": "KODEX 방산TOP10",
-                "momentum": -12.93961512939615
+                "momentum": -7.6746474253853725
             }
         ],
         "us_eval": [
             {
+                "symbol": "SOXL",
+                "name": "SOXL (Semiconductor 3X)",
+                "momentum": 100.33771449434101,
+                "type": "3X"
+            },
+            {
+                "symbol": "TECL",
+                "name": "TECL (S&P500 3X)",
+                "momentum": 55.122157290713226,
+                "type": "3X"
+            },
+            {
                 "symbol": "TQQQ",
                 "name": "TQQQ (Nasdaq 3X)",
-                "momentum": 31.525482093663914,
+                "momentum": 33.40484030293053,
                 "type": "3X"
             },
             {
                 "symbol": "SMH",
                 "name": "SMH (Semiconductor 1X)",
-                "momentum": 21.035218553323556,
+                "momentum": 21.546792614156875,
                 "type": "1X"
+            },
+            {
+                "symbol": "UPRO",
+                "name": "UPRO (Nasdaq 3X)",
+                "momentum": 15.864428355477761,
+                "type": "3X"
             },
             {
                 "symbol": "QQQ",
                 "name": "QQQ (Nasdaq 1X)",
-                "momentum": 10.102197003664255,
+                "momentum": 10.615162345068827,
+                "type": "1X"
+            },
+            {
+                "symbol": "SPY",
+                "name": "SPY (S&P500 1X)",
+                "momentum": 5.386474448144546,
                 "type": "1X"
             }
         ]

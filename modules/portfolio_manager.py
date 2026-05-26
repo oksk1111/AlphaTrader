@@ -46,6 +46,12 @@ ETF_CANDIDATES = {
     }
 }
 
+# US 종목 거래소 매핑 (NAS=NASDAQ, AMS=NYSE/AMEX 통합 KIS 코드)
+US_EXCHANGE_MAP = {
+    'TQQQ': 'NAS', 'SOXL': 'AMS', 'NVDL': 'NAS', 'TECL': 'AMS', 'FNGU': 'AMS',
+    'UPRO': 'AMS', 'QQQ': 'NAS', 'SMH': 'NAS', 'SPY': 'AMS', 'SOXX': 'NAS', 'XLK': 'AMS',
+}
+
 class PortfolioManager:
     def __init__(self):
         self.kis_kr = KisDomestic()
@@ -89,7 +95,8 @@ class PortfolioManager:
                 
         # 2. 미국 직상장 ETF 평가
         for symbol, name in ETF_CANDIDATES["US_DIRECT"].items():
-            ohlc = self.kis_us.get_daily_ohlc(symbol, period='day')
+            exchange = US_EXCHANGE_MAP.get(symbol, 'NAS')
+            ohlc = self.kis_us.get_daily_ohlc(symbol, exchange=exchange)
             if ohlc:
                 score = self.get_momemtum_score(ohlc)
                 target_type = "3X" if "3X" in name else "1X"
