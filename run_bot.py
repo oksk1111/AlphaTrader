@@ -781,9 +781,17 @@ def safe_sell(kis_client, market, ticker, qty_hint, exchange=None,
     return {'success': False, 'sold_qty': 0, 'phase': 'failed',
             'error': last_err or 'unknown'}
 
+WS_PRICES = {}
+ws_client = None
+
+def ws_price_callback(ticker, price):
+    global WS_PRICES
+    if price > 0:
+        WS_PRICES[ticker] = price
+
 def job():
     # Reload config dynamically
-    global IS_SAFE_MODE, STRATEGY_MODE, PERSONA, TARGET_TICKERS_US, TARGET_TICKERS_KR
+    global IS_SAFE_MODE, STRATEGY_MODE, PERSONA, TARGET_TICKERS_US, TARGET_TICKERS_KR, ws_client
     user_config = load_config()
 
     market = get_market_status()
@@ -1499,6 +1507,26 @@ def job():
     num_active_targets = len([t for t in monitoring_targets.values() if t['status'] == 'monitoring'])
     logger.info(f"[{market}] Watch List: {list(monitoring_targets.keys())} ({num_active_targets} active)")
     
+    # Clean up previous WebSocket if running
+    if ws_client:
+        try:
+            logger.info("🔌 [WS] Stopping previous WebSocket stream before starting brand new session.")
+            ws_client.stop()
+            ws_client = None
+        except Exception as ws_err:
+            logger.error(f"❌ [WS] Error stopping previous websocket: {ws_err}")
+
+    # WebSocket Initialization for US Market
+    if market == 'US':
+        try:
+            from modules.kis_websocket import KisWebSocket
+            tickers_to_sub = list(monitoring_targets.keys())
+            logger.info(f"🚀 [WS] Starting US Real-Time WebSocket stream for {tickers_to_sub}...")
+            ws_client = KisWebSocket(tickers_to_sub, ws_price_callback)
+            ws_client.start_background()
+        except Exception as ws_err:
+            logger.error(f"❌ [WS] Failed to initialize WebSocket: {ws_err}. Falling back to REST polling.")
+
     # 2. Watch Loop
     last_scan_time = datetime.datetime.now()
 
@@ -1668,8 +1696,13 @@ def job():
                 try:
                     # Fetch current price
                     if market == 'US':
-                        quote = kis.get_quote(ticker, data.get('exchange'))
-                        curr = safe_float(quote.get('last')) if quote else 0
+                        # Prefer WebSocket real-time price if available
+                        ws_p = WS_PRICES.get(ticker, 0.0)
+                        if ws_p > 0:
+                            curr = ws_p
+                        else:
+                            quote = kis.get_quote(ticker, data.get('exchange'))
+                            curr = safe_float(quote.get('last')) if quote else 0
                     else:
                         curr = kis.get_current_price(ticker)
                         
@@ -1995,12 +2028,24 @@ def job():
             exchange = data.get('exchange')
             
             # --- [Enhanced] Volume & Price Check ---
-            # 1. Fetch Price & Volume
+            # 1. Fetch Price & Volume (Optimized via Real-time WebSocket fallback)
             if market == 'US':
-                # Use get_quote to get real-time volume (tvol) + price (last)
-                quote = kis.get_quote(ticker, exchange)
-                current_price = safe_float(quote.get('last')) if quote else 0
-                current_vol = safe_float(quote.get('tvol')) if quote else 0
+                ws_p = WS_PRICES.get(ticker, 0.0)
+                if ws_p > 0:
+                    current_price = ws_p
+                    # Fast Skip: If real-time price hasn't broken the target, avoid heavy REST API volume polling
+                    if current_price < target_price:
+                        current_vol = 0.0
+                    else:
+                        # Price broke out! Fetch full quote (last + tvol) to confirm price & volume spike before trading
+                        quote = kis.get_quote(ticker, exchange)
+                        current_price = safe_float(quote.get('last')) if quote else ws_p
+                        current_vol = safe_float(quote.get('tvol')) if quote else 0.0
+                else:
+                    # Fallback to REST polling if WebSocket price is unavailable
+                    quote = kis.get_quote(ticker, exchange)
+                    current_price = safe_float(quote.get('last')) if quote else 0.0
+                    current_vol = safe_float(quote.get('tvol')) if quote else 0.0
             else:
                 current_price = kis.get_current_price(ticker)
                 # KR API might need separate call for volume if get_current_price doesn't return it
@@ -2110,6 +2155,15 @@ def job():
         else:
             time.sleep(1)  # VBO/Day 모드는 1초 간격
         
+    # Stop WebSocket real-time subscription
+    if ws_client:
+        try:
+            logger.info("🔌 [WS] Stopping Real-Time WebSocket stream as watch loop ended.")
+            ws_client.stop()
+            ws_client = None
+        except Exception as ws_err:
+            logger.error(f"❌ [WS] Error stopping websocket: {ws_err}")
+
     # 3. Market Close Sell-off
     logger.info(f"[{market}] Session End. Checking Exit Rules...")
     
