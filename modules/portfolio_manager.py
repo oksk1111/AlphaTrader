@@ -106,9 +106,18 @@ class PortfolioManager:
         results = self.evaluate_candidates()
         
         # 필터링: 모멘텀이 양수인 종목만 통과시키되 부족하면 상위 N개
+        # US 종목 거래소 매핑 (NAS=NASDAQ, AMS=NYSE/AMEX 통합 KIS 코드)
+        US_EXCHANGE_MAP = {
+            'TQQQ': 'NAS', 'SOXL': 'AMS', 'NVDL': 'NAS', 'TECL': 'AMS', 'FNGU': 'AMS',
+            'UPRO': 'AMS', 'QQQ': 'NAS', 'SMH': 'NAS', 'SPY': 'AMS', 'SOXX': 'NAS', 'XLK': 'AMS',
+        }
+        def _us_entry(item, weight):
+            sym = item['symbol']
+            return {"symbol": sym, "exchange": US_EXCHANGE_MAP.get(sym, 'NAS'), "weight": weight}
+
         kr_selected = [item['code'] for item in results["KR"] if item['momentum'] > -5.0][:max_kr]
-        us_1x_selected = [{"symbol": item['symbol'], "weight": 0.3} for item in results["US"] if item['type'] == '1X'][:max_us_1x]
-        us_3x_selected = [{"symbol": item['symbol'], "weight": 0.7} for item in results["US"] if item['type'] == '3X'][:max_us_3x]
+        us_1x_selected = [_us_entry(item, 0.3) for item in results["US"] if item['type'] == '1X'][:max_us_1x]
+        us_3x_selected = [_us_entry(item, 0.7) for item in results["US"] if item['type'] == '3X'][:max_us_3x]
         
         portfolio = {
             "updated_at": datetime.datetime.now(pytz.timezone('Asia/Seoul')).isoformat(),

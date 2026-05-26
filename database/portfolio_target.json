@@ -15,17 +15,20 @@
     "TARGET_TICKERS_US_1X": [
         {
             "symbol": "SMH",
-            "weight": 0.3
+            "weight": 0.3,
+            "exchange": "NAS"
         },
         {
             "symbol": "QQQ",
-            "weight": 0.3
+            "weight": 0.3,
+            "exchange": "NAS"
         }
     ],
     "TARGET_TICKERS_US_3X": [
         {
             "symbol": "TQQQ",
-            "weight": 0.7
+            "weight": 0.7,
+            "exchange": "NAS"
         }
     ],
     "meta": {

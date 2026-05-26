@@ -302,6 +302,25 @@ KR_ETF_CODES = {'122630', '233740', '449200', '426030', '069500', '229200', '114
 # US 레버리지 ETF 심볼 목록 (3X ETF는 DCA 매수 조건 완화 적용)
 US_LEVERAGED_ETF_SYMBOLS = {t['symbol'] for t in TARGET_TICKERS_US_3X}
 
+# === US 거래소 매핑 ===
+# 동적 포트폴리오(portfolio_target.json)는 symbol/weight만 저장하고 exchange가 빠질 수 있으므로
+# 심볼 → 거래소 코드 매핑 테이블을 두어 KeyError 로 인한 US 세션 전체 중단을 방지한다.
+US_EXCHANGE_MAP = {
+    # 3X / 레버리지 ETF
+    'TQQQ': 'NAS', 'SOXL': 'AMS', 'NVDL': 'NAS', 'TECL': 'AMS', 'FNGU': 'AMS', 'UPRO': 'AMS',
+    # 1X ETF
+    'QQQ': 'NAS', 'SMH': 'NAS', 'SPY': 'AMS', 'SOXX': 'NAS', 'XLK': 'AMS',
+    # 개별주 (대부분 NASDAQ)
+    'NVDA': 'NAS', 'MSFT': 'NAS', 'AAPL': 'NAS', 'GOOGL': 'NAS',
+    'TSLA': 'NAS', 'PLTR': 'NAS', 'TSM': 'NAS',
+}
+
+def _resolve_us_exchange(symbol, default='NAS'):
+    """심볼 → KIS 해외 거래소 코드 (NAS/AMS 등). 모르면 기본값(NAS) 반환."""
+    if not symbol:
+        return default
+    return US_EXCHANGE_MAP.get(symbol.upper(), default)
+
 # ----------------------------------------------------
 # [Dynamic Portfolio] Load evaluated candidates if exists
 # ----------------------------------------------------
@@ -317,13 +336,37 @@ try:
                 if t not in TARGET_TICKERS_KR_1X:
                     TARGET_TICKERS_KR_1X.append(t)
             KR_ETF_CODES.update(kr_dyn)
-            kr_dyn_us = dyn_pf.get('TARGET_TICKERS_US_1X', [])
-            TARGET_TICKERS_US_1X = kr_dyn_us if kr_dyn_us else TARGET_TICKERS_US_1X
-            us_dyn_3x = dyn_pf.get('TARGET_TICKERS_US_3X', [])
-            TARGET_TICKERS_US_3X = us_dyn_3x if us_dyn_3x else TARGET_TICKERS_US_3X
-        
-        # Redefine target tickers
-        TARGET_TICKERS_US = TARGET_TICKERS_US_3X + [t for t in TARGET_TICKERS_US_1X if t not in TARGET_TICKERS_US_3X]
+
+        # ⚠️ US 동적 포트폴리오 적용은 KR 갱신과 독립이어야 함 (kr_dyn 이 비어 있어도 US 는 갱신)
+        def _normalize_us_entry(item):
+            """동적 포트폴리오 항목에 exchange 가 빠져 있으면 US_EXCHANGE_MAP 으로 보정한다."""
+            if isinstance(item, dict):
+                sym = item.get('symbol') or item.get('code')
+                if not sym:
+                    return None
+                out = dict(item)
+                out['symbol'] = sym
+                if not out.get('exchange'):
+                    # 사전적으로 안전한 기본값(NAS) 으로 보정
+                    out['exchange'] = (lambda s: {'TQQQ':'NAS','SOXL':'AMS','NVDL':'NAS','TECL':'AMS','FNGU':'AMS','UPRO':'AMS','QQQ':'NAS','SMH':'NAS','SPY':'AMS','SOXX':'NAS','XLK':'AMS'}.get(s.upper(),'NAS'))(sym)
+                return out
+            # 문자열(심볼)만 들어온 경우
+            sym = str(item)
+            return {'symbol': sym, 'exchange': (lambda s: {'TQQQ':'NAS','SOXL':'AMS','NVDL':'NAS','TECL':'AMS','FNGU':'AMS','UPRO':'AMS','QQQ':'NAS','SMH':'NAS','SPY':'AMS','SOXX':'NAS','XLK':'AMS'}.get(s.upper(),'NAS'))(sym)}
+
+        kr_dyn_us = dyn_pf.get('TARGET_TICKERS_US_1X', [])
+        if kr_dyn_us:
+            TARGET_TICKERS_US_1X = [e for e in (_normalize_us_entry(x) for x in kr_dyn_us) if e]
+        us_dyn_3x = dyn_pf.get('TARGET_TICKERS_US_3X', [])
+        if us_dyn_3x:
+            TARGET_TICKERS_US_3X = [e for e in (_normalize_us_entry(x) for x in us_dyn_3x) if e]
+
+        # Redefine target tickers (심볼 기준 중복 제거)
+        _3x_symbols = {t['symbol'] for t in TARGET_TICKERS_US_3X if isinstance(t, dict) and t.get('symbol')}
+        TARGET_TICKERS_US = TARGET_TICKERS_US_3X + [
+            t for t in TARGET_TICKERS_US_1X
+            if isinstance(t, dict) and t.get('symbol') not in _3x_symbols
+        ]
         TARGET_TICKERS_KR = TARGET_TICKERS_KR_1X if IS_SAFE_MODE else TARGET_TICKERS_KR_2X
 except Exception as e:
     print(f'Dynamic Portfolio Load Error: {e}')
@@ -1156,11 +1199,17 @@ def job():
     # 1. Initialize Targets for each ticker
     for t_obj in tickers:
         if isinstance(t_obj, dict):
-            ticker = t_obj['symbol']
-            exchange = t_obj['exchange']
+            ticker = t_obj.get('symbol') or t_obj.get('code')
+            # exchange 가 누락되면 (동적 포트폴리오의 symbol/weight 포맷 등) US_EXCHANGE_MAP 으로 보정
+            exchange = t_obj.get('exchange')
+            if not exchange and market == 'US':
+                exchange = _resolve_us_exchange(ticker)
         else:
             ticker = t_obj
-            exchange = None
+            exchange = _resolve_us_exchange(t_obj) if market == 'US' else None
+        if not ticker:
+            logger.warning(f"Skipping ticker entry with no symbol: {t_obj}")
+            continue
 
         logger.info(f"Analyzing {ticker}...")
         

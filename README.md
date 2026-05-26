@@ -231,6 +231,17 @@ docs/         운영/설정/기획 문서
 - 모바일 대시보드 접근성 개선
 - 알림 채널/필터 세분화
 
+## 🛠️ 핫픽스 노트
+
+- **2026-05-26 — 미국장 거래 중단 이슈 수정**
+  - 증상: 수 주간 US 시장에서 단 한 건도 매매가 발생하지 않음.
+  - 원인: `PortfolioManager.generate_and_save_portfolio()` 가 `TARGET_TICKERS_US_1X/3X` 를 `{symbol, weight}` 형태로만 저장했고, `run_bot.py` 의 메인 루프가 `t_obj['exchange']` 로 직접 접근하면서 `KeyError: 'exchange'` 가 발생 → `job()` 의 US 세션이 매 사이클 즉시 크래시.
+  - 수정:
+    - `run_bot.py` 에 `US_EXCHANGE_MAP` / `_resolve_us_exchange()` 추가 → 동적 포트폴리오 로드 시 누락된 `exchange` 자동 보정.
+    - 매매 루프(`for t_obj in tickers`)는 `t_obj.get('exchange')` 로 안전 접근하고, 없으면 심볼 기준으로 거래소 매핑 적용.
+    - `modules/portfolio_manager.py` 가 이제 US 종목 저장 시 `exchange` 필드를 포함.
+    - 기존 `database/portfolio_target.json` 도 거래소 필드를 백필.
+
 ## ⚠️ Disclaimer
 
 이 프로젝트는 정보 제공 및 개인 자동화 목적입니다.
