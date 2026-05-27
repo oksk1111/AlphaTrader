@@ -1200,6 +1200,35 @@ def job():
             
         except Exception as e:
             logger.error(f"[AutoStrategy] 자동 전략 최적화 실패 (기존 설정 유지): {e}")
+
+    # Existing holdings must always be risk-managed, even if the dynamic
+    # portfolio has rotated them out of the new-entry target list.
+    try:
+        existing_ticker_keys = set()
+        for t_obj in tickers:
+            if isinstance(t_obj, dict):
+                key = t_obj.get('symbol') or t_obj.get('code')
+            else:
+                key = t_obj
+            if key:
+                existing_ticker_keys.add(str(key))
+
+        added_holdings = []
+        for held_ticker in current_holdings:
+            held_ticker = str(held_ticker)
+            if held_ticker in existing_ticker_keys:
+                continue
+            if market == 'US':
+                tickers.append({'symbol': held_ticker, 'exchange': _resolve_us_exchange(held_ticker), 'source': 'holding'})
+            else:
+                tickers.append(held_ticker)
+            existing_ticker_keys.add(held_ticker)
+            added_holdings.append(held_ticker)
+
+        if added_holdings:
+            logger.info(f"[{market}] Added existing holdings to risk watch: {added_holdings}")
+    except Exception as e:
+        logger.warning(f"[{market}] Failed to merge holdings into watch list: {e}")
     
     # 활성 타겟 수 (분산 투자 계산용)
     num_active_targets = len(tickers)
@@ -1704,7 +1733,7 @@ def job():
                             quote = kis.get_quote(ticker, data.get('exchange'))
                             curr = safe_float(quote.get('last')) if quote else 0
                     else:
-                        curr = kis.get_current_price(ticker)
+                        curr = safe_float(kis.get_current_price(ticker))
                         
                     if curr <= 0: continue
 
