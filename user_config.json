@@ -23,7 +23,9 @@
         "daily_investment_pct": 30,
         "buy_delay_minutes": 30,
         "min_investment_usd": 25,
+        "min_investment_krw": 200000,
         "max_investment_usd": 1500,
+        "max_investment_krw": 1500000,
         "max_buys_per_session": 5
     },
     "risk_management": {

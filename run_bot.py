@@ -249,6 +249,8 @@ TARGET_TICKERS_KR_2X = [
     "122630", # KODEX Leverage (KOSPI 200 2x)
     "233740", # KODEX KOSDAQ150 Leverage
     "449200", # KODEX US Tech Top10
+    "0193T0", # KODEX SK하이닉스단일종목레버리지
+    "0193W0", # KODEX 삼성전자단일종목레버리지
 ]
 
 # 2. Non-Leveraged (1x) Targets (Stock Centric for < 10M KRW restrictions)
@@ -280,6 +282,8 @@ TARGET_TICKERS_KR_1X = [
     "0174B0", # KoAct 글로벌AI메모리반도체 액티브
     "0180V0", # ACE 미국우주테크 액티브
     "0173Y0", # KODEX 미국AI광통신네트워크
+    "0193T0", # KODEX SK하이닉스단일종목레버리지
+    "0193W0", # KODEX 삼성전자단일종목레버리지
 ]
 
 # Select Tickers based on Mode
@@ -297,7 +301,7 @@ KR_STOCK_GAP_DOWN_THRESHOLD = 6.0   # KR 개별주 갭다운 기준
 # KR ETF 종목 코드 (ETF인지 개별주인지 구분용)
 KR_ETF_CODES = {'122630', '233740', '449200', '426030', '069500', '229200', '114800',
                 '292150', '495230', '0080G0', '0151P0', '0015B0',
-                '456600', '0174B0', '0180V0', '0173Y0'}
+                '456600', '0174B0', '0180V0', '0173Y0', '0193T0', '0193W0'}
 
 # US 레버리지 ETF 심볼 목록 (3X ETF는 DCA 매수 조건 완화 적용)
 US_LEVERAGED_ETF_SYMBOLS = {t['symbol'] for t in TARGET_TICKERS_US_3X}
@@ -473,8 +477,8 @@ def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_set
     currency_symbol = "$"
     if market != 'US':
         exchange_rate = 1450 # Conservative Exchange Rate
-        min_investment *= exchange_rate
-        max_investment *= exchange_rate
+        min_investment = dca_settings.get("min_investment_krw", max(200_000, min_investment * exchange_rate))
+        max_investment = dca_settings.get("max_investment_krw", max_investment * exchange_rate)
         currency_symbol = "₩"
     
     # 종목별 투자 금액 계산

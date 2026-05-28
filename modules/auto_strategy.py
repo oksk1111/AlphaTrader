@@ -265,9 +265,14 @@ class AutoStrategyOptimizer:
             reasons.append("CRASH 감지 → Day Trading (당일 청산)")
             confidence = 0.9
 
-        # --- US 시장: 양의 추세 → VBO(Day) 전략 우선 적용 ---
+        # --- US 시장: 상승 추세 내 약한 모멘텀은 DCA, 강한 모멘텀은 VBO(Day) ---
         # 3X ETF는 변동성이 구조적으로 높아 swing 조건(volatility < 0.6)을 충족하지 못함
-        # trend > 0이면 변동성 무관하게 VBO Day 전략으로 진입 기회 확보
+        # 단기 조정장에서는 돌파 주문만 기다리지 않고 분할매수 기회를 확보
+        elif market == 'US' and trend > 0 and momentum < 0.3 and ai_condition != 'CRASH':
+            strategy = 'dca'
+            reasons.append(f"US 상승 추세 내 단기 조정(momentum={momentum:.2f}) → DCA 저가 분할매수")
+            confidence = 0.7
+
         elif market == 'US' and trend > 0 and ai_condition != 'CRASH':
             strategy = 'day'
             reasons.append(f"US 상승 추세(trend={trend:.2f}) → VBO(Day) 전략 우선")
