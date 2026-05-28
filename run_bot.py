@@ -23,6 +23,9 @@ from modules.multi_llm import MultiLLMAnalyst
 from modules.auto_strategy import AutoStrategyOptimizer
 from modules import trade_journal
 
+# Timezone
+KST = pytz.timezone('Asia/Seoul')
+
 def safe_float(value, default=0.0):
     """빈 문자열이나 None을 안전하게 float로 변환"""
     try:
@@ -510,6 +513,34 @@ def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_set
 
 K_VALUE = 0.4  # 0.5 → 0.4: 타겟가를 낮춰 상승 초기 진입 용이 (레버리지 ETF 최적화)
 
+def is_market_stabilizing_now(market, buy_delay_minutes):
+    """시장 개장 후 buy_delay_minutes(분) 소요될 때까지 변동성 조율을 위해 신규 진입을 중단하는 non-blocking 체크."""
+    if buy_delay_minutes <= 0:
+        return False, 0.0
+
+    kst = pytz.timezone('Asia/Seoul')
+    now = datetime.datetime.now(kst)
+
+    if market == 'US':
+        # US Open time은 오늘 밤 23:30 또는 어젯밤 23:30 KST
+        if now.hour >= 23:
+            open_time = now.replace(hour=23, minute=30, second=0, microsecond=0)
+        else:
+            open_time = (now - datetime.timedelta(days=1)).replace(hour=23, minute=30, second=0, microsecond=0)
+    elif market == 'KR':
+        open_time = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    else:
+        return False, 0.0
+
+    target_time = open_time + datetime.timedelta(minutes=buy_delay_minutes)
+    if now < open_time:
+        return True, (target_time - now).total_seconds()
+    
+    if now < target_time:
+        return True, (target_time - now).total_seconds()
+
+    return False, 0.0
+
 def get_market_status():
     """
     Returns 'US', 'KR', or 'CLOSED' based on current KST time.
@@ -817,31 +848,13 @@ def job():
 
     logger.info(f"[{market}] Effective Config: Mode={effective_config.get('trading_mode')}, Strategy={STRATEGY_MODE}, Persona={PERSONA}")
 
-    # --- [New] Buy Delay Logic for Market Stabilization ---
+    # --- [New] Buy Delay Logic for Market Stabilization (Non-blocking) ---
     buy_delay = DCA_SETTINGS.get("buy_delay_minutes", 0) if STRATEGY_MODE == 'dca' else 0
-    if buy_delay > 0:
-        kst = pytz.timezone('Asia/Seoul')
-        now = datetime.datetime.now(kst)
-        
-        # Determine Market Open Time
-        if market == 'US':
-            # US Open: 23:30 KST
-            market_open = now.replace(hour=23, minute=30, second=0, microsecond=0)
-            if 0 <= now.hour < 9: # Early morning (next day in KST)
-                market_open = market_open - datetime.timedelta(days=1)
-        else:
-            # KR Open: 09:00 KST
-            market_open = now.replace(hour=9, minute=0, second=0, microsecond=0)
-        
-        target_time = market_open + datetime.timedelta(minutes=buy_delay)
-        wait_seconds = (target_time - now).total_seconds()
-        
-        # Only wait if we are within the delay window (don't wait if we started late)
-        # also check if wait_seconds is reasonable (e.g. < 2 hours)
-        if 0 < wait_seconds <= (buy_delay * 60) + 60: 
-            logger.info(f"⏳ Waiting {buy_delay} minutes for market stabilization... ({wait_seconds/60:.1f} min left)")
-            time.sleep(wait_seconds)
-            logger.info("⚡ Market stabilized. Starting analysis.")
+    is_stabilizing, rem_sec = is_market_stabilizing_now(market, buy_delay)
+    if is_stabilizing:
+        logger.info(f"⏳ Market is currently stabilizing ({buy_delay} minutes from open). "
+                    f"New buying is paused for {rem_sec/60:.1f} more minutes. "
+                    f"Real-time tracking and risk management are fully ACTIVE.")
 
     # Select Market Context
     if market == 'US':
@@ -1389,7 +1402,15 @@ def job():
                 continue  # 이미 보유 중인 종목은 리스크 관리만 수행
 
             prepare_dca_wait_target(ticker, exchange, current_price, ma20, ma5, ohlc)
-            attempt_dca_buy(ticker, exchange, current_price, ma20, ma5, ohlc, eff_gap_down_threshold, num_active_targets)
+            
+            dca_settings_dynamic = user_config.get("dca_settings", {})
+            b_delay = dca_settings_dynamic.get("buy_delay_minutes", 30)
+            is_st, rem_sec = is_market_stabilizing_now(market, b_delay)
+            if is_st:
+                logger.info(f"⏳ [{ticker}] Market stabilizing... Skipping initial DCA buy. Status set to 'dca_wait'. ({rem_sec/60:.1f} min left)")
+                record_skip_reason(ticker, "DCA 초기 매수 보류: 시장 안정화 대기 중")
+            else:
+                attempt_dca_buy(ticker, exchange, current_price, ma20, ma5, ohlc, eff_gap_down_threshold, num_active_targets)
             continue  # DCA는 주기적 재평가 대상으로 전환
         
         # Case 1: Already Holding
@@ -1931,6 +1952,20 @@ def job():
                 if data['status'] != 'dca_wait':
                     continue
 
+                # --- Market stabilization non-blocking check ---
+                dca_settings_dynamic = load_config().get("dca_settings", {})
+                b_delay = dca_settings_dynamic.get("buy_delay_minutes", 30)
+                is_st, rem_sec = is_market_stabilizing_now(market, b_delay)
+                if is_st:
+                    # Still stabilizing, skip this buy check
+                    if not data.get('_dca_stabilize_logged'):
+                        logger.info(f"⏳ [{ticker}] Holding DCA buy. Market is stabilizing. ({rem_sec/60:.1f} min left)")
+                        data['_dca_stabilize_logged'] = True
+                    continue
+                else:
+                    if data.get('_dca_stabilize_logged'):
+                        data['_dca_stabilize_logged'] = False
+
                 now_dt = datetime.datetime.now()
                 reentry_interval_min = data.get('dca_reentry_interval_min', DCA_REENTRY_INTERVAL_MIN)
                 last_attempt_at = data.get('last_dca_attempt_at')
@@ -2087,6 +2122,17 @@ def job():
             
             # 2. Check Conditions
             if current_price and current_price >= target_price:
+                # [v2.5] Losing-streak throttle
+                if is_losing_streak_pause():
+                    record_skip_reason(ticker, "losing-streak 차단 (일일 손실 한도 초과)")
+                    continue
+
+                # [v2.5] Correlation cap
+                capped, grp = is_correlation_capped(ticker, monitoring_targets)
+                if capped:
+                    record_skip_reason(ticker, f"상관그룹 한도 초과 (group={grp})")
+                    continue
+
                 logger.info(f"[{ticker}] Price Breakout! ({current_price} >= {target_price})")
                 
                 # Volume Spike Check (Only for US currently as we fetched quote)
