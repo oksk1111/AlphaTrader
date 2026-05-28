@@ -36,6 +36,17 @@ fake_modules = {
     'modules.groq_analyst': MagicMock(),
 }
 
+_run_bot_cached = None
+
+def _get_run_bot():
+    global _run_bot_cached
+    if _run_bot_cached is None:
+        for k, v in fake_modules.items():
+            sys.modules.setdefault(k, v)
+        import run_bot
+        _run_bot_cached = run_bot
+    return _run_bot_cached
+
 
 class TestV25BreakevenWalkForward(unittest.TestCase):
     """walk_forward 시뮬레이터 breakeven_stop 트리거 검증."""
@@ -154,11 +165,7 @@ class TestV25ATR(unittest.TestCase):
 
     def test_effective_stop_picks_more_conservative(self):
         # ATR 가 충분히 크면 stop 이 더 느슨해져야 함
-        sys.modules.update(fake_modules)
-        import importlib
-        if 'run_bot' in sys.modules:
-            del sys.modules['run_bot']
-        run_bot = importlib.import_module('run_bot')
+        run_bot = _get_run_bot()
         ohlc = [{'high': 110, 'low': 90, 'clos': 100}] * 20  # 큰 변동성
         eff = run_bot.effective_stop_loss_pct(-3.0, ohlc)
         # ATR ≈ 20%, mult=2 → -40% 인데 ATR_STOP_MAX_PCT=-10% 로 클램프
@@ -168,11 +175,7 @@ class TestV25ATR(unittest.TestCase):
 
 class TestV25CorrelationCap(unittest.TestCase):
     def test_under_cap_allows(self):
-        sys.modules.update(fake_modules)
-        import importlib
-        if 'run_bot' in sys.modules:
-            del sys.modules['run_bot']
-        run_bot = importlib.import_module('run_bot')
+        run_bot = _get_run_bot()
         targets = {
             "TQQQ": {"status": "bought", "buys": 5},
         }
@@ -180,11 +183,7 @@ class TestV25CorrelationCap(unittest.TestCase):
         self.assertFalse(capped)  # 1개 보유 < cap(2)
 
     def test_at_cap_blocks(self):
-        sys.modules.update(fake_modules)
-        import importlib
-        if 'run_bot' in sys.modules:
-            del sys.modules['run_bot']
-        run_bot = importlib.import_module('run_bot')
+        run_bot = _get_run_bot()
         targets = {
             "TQQQ": {"status": "bought", "buys": 5},
             "TECL": {"status": "bought", "buys": 3},
@@ -196,11 +195,7 @@ class TestV25CorrelationCap(unittest.TestCase):
 
 class TestV25LosingStreak(unittest.TestCase):
     def setUp(self):
-        sys.modules.update(fake_modules)
-        import importlib
-        if 'run_bot' in sys.modules:
-            del sys.modules['run_bot']
-        self.run_bot = importlib.import_module('run_bot')
+        self.run_bot = _get_run_bot()
         # 상태 초기화
         self.run_bot._daily_state['date'] = None
         self.run_bot._daily_state['stop_count'] = 0

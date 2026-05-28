@@ -67,12 +67,10 @@ def _import_safe_sell():
         'modules.trade_journal': MagicMock(),
         'schedule': MagicMock(),
     }
-    with patch.dict('sys.modules', fake_modules):
-        import importlib
-        if 'run_bot' in sys.modules:
-            del sys.modules['run_bot']
-        run_bot = importlib.import_module('run_bot')
-        return run_bot
+    for k, v in fake_modules.items():
+        sys.modules.setdefault(k, v)
+    import run_bot
+    return run_bot
 
 
 class TestSafeSell(unittest.TestCase):
