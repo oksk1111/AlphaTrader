@@ -332,17 +332,70 @@ def _resolve_us_exchange(symbol, default='NAS'):
 # [Dynamic Portfolio] Load evaluated candidates if exists
 # ----------------------------------------------------
 import os
+
+# 동적 포트폴리오로 들어온 심볼별 가중치 (ETF=1.0 / STOCK=0.4 등).
+# 코어 ETF 는 기본 1.0 → 기존 매매 사이즈와 100% 동일 (수익률 영향 없음).
+# 신규 편입 개별주(STOCK)만 저비중으로 매수되어 단일종목 변동성을 흡수.
+TICKER_WEIGHTS = {}
+
+def _kr_dyn_to_code(item):
+    """KR 동적 포트폴리오 항목(문자열 또는 dict)에서 종목 코드만 추출."""
+    if isinstance(item, dict):
+        return item.get('code') or item.get('symbol')
+    return str(item) if item else None
+
+def reload_ticker_weights():
+    """database/portfolio_target.json 을 다시 읽어 TICKER_WEIGHTS 를 갱신.
+
+    job() 진입 시점마다 호출되며 일일 동적 포트폴리오 갱신 직후에도 즉시 반영됨.
+    """
+    global TICKER_WEIGHTS
+    weights = {}
+    try:
+        from modules.portfolio_manager import PortfolioManager
+        pf = PortfolioManager.load_portfolio() or {}
+        for key in ('TARGET_TICKERS_KR_1X', 'TARGET_TICKERS_US_1X', 'TARGET_TICKERS_US_3X'):
+            for entry in pf.get(key, []) or []:
+                if isinstance(entry, dict):
+                    sym = entry.get('symbol') or entry.get('code')
+                    if sym:
+                        w = entry.get('weight')
+                        weights[str(sym)] = float(w) if w is not None else 1.0
+                # 문자열 엔트리(=레거시 ETF) 는 weight 1.0 → 사전에 굳이 넣지 않음 (default)
+    except Exception as e:
+        print(f'reload_ticker_weights error: {e}')
+    TICKER_WEIGHTS = weights
+    return TICKER_WEIGHTS
+
+def get_ticker_weight(ticker):
+    """심볼에 매핑된 동적 가중치 반환 (없으면 1.0 = 기존 사이즈 그대로)."""
+    if not ticker:
+        return 1.0
+    return TICKER_WEIGHTS.get(str(ticker), 1.0)
+
 try:
     from modules.portfolio_manager import PortfolioManager
     dyn_pf = PortfolioManager.load_portfolio()
     if dyn_pf:
         kr_dyn = dyn_pf.get('TARGET_TICKERS_KR_1X', [])
         if kr_dyn:
-            # Append uniquely
+            # 신규 스키마: dict({code, weight, category}) 와 레거시 문자열 모두 지원
             for t in kr_dyn:
-                if t not in TARGET_TICKERS_KR_1X:
-                    TARGET_TICKERS_KR_1X.append(t)
-            KR_ETF_CODES.update(kr_dyn)
+                code = _kr_dyn_to_code(t)
+                if not code:
+                    continue
+                # 중복 방지: 이미 정적 리스트에 코드가 있으면 skip
+                existing_codes = {_kr_dyn_to_code(x) for x in TARGET_TICKERS_KR_1X}
+                if code in existing_codes:
+                    continue
+                TARGET_TICKERS_KR_1X.append(t)
+                # ETF 카테고리만 KR_ETF_CODES 에 등록 (STOCK 은 제외 → 개별주 리스크 파라미터 적용)
+                if isinstance(t, dict):
+                    if t.get('category') in (None, 'ETF', 'ETF_LEV'):
+                        KR_ETF_CODES.add(code)
+                else:
+                    # 레거시 문자열 = ETF 로 간주
+                    KR_ETF_CODES.add(code)
 
         # ⚠️ US 동적 포트폴리오 적용은 KR 갱신과 독립이어야 함 (kr_dyn 이 비어 있어도 US 는 갱신)
         def _normalize_us_entry(item):
@@ -354,12 +407,10 @@ try:
                 out = dict(item)
                 out['symbol'] = sym
                 if not out.get('exchange'):
-                    # 사전적으로 안전한 기본값(NAS) 으로 보정
-                    out['exchange'] = (lambda s: {'TQQQ':'NAS','SOXL':'AMS','NVDL':'NAS','TECL':'AMS','FNGU':'AMS','UPRO':'AMS','QQQ':'NAS','SMH':'NAS','SPY':'AMS','SOXX':'NAS','XLK':'AMS'}.get(s.upper(),'NAS'))(sym)
+                    out['exchange'] = _resolve_us_exchange(sym)
                 return out
-            # 문자열(심볼)만 들어온 경우
             sym = str(item)
-            return {'symbol': sym, 'exchange': (lambda s: {'TQQQ':'NAS','SOXL':'AMS','NVDL':'NAS','TECL':'AMS','FNGU':'AMS','UPRO':'AMS','QQQ':'NAS','SMH':'NAS','SPY':'AMS','SOXX':'NAS','XLK':'AMS'}.get(s.upper(),'NAS'))(sym)}
+            return {'symbol': sym, 'exchange': _resolve_us_exchange(sym)}
 
         kr_dyn_us = dyn_pf.get('TARGET_TICKERS_US_1X', [])
         if kr_dyn_us:
@@ -375,6 +426,9 @@ try:
             if isinstance(t, dict) and t.get('symbol') not in _3x_symbols
         ]
         TARGET_TICKERS_KR = TARGET_TICKERS_KR_1X if IS_SAFE_MODE else TARGET_TICKERS_KR_2X
+
+    # 부팅 시점 가중치 사전 로드
+    reload_ticker_weights()
 except Exception as e:
     print(f'Dynamic Portfolio Load Error: {e}')
 
@@ -421,22 +475,24 @@ def calculate_signal_strength(current_price, target_price, ma20, ohlc_data):
     
     return min(strength, 1.0)
 
-def calculate_order_quantity(available_cash, current_price, signal_strength=0.5, num_targets=1):
+def calculate_order_quantity(available_cash, current_price, signal_strength=0.5, num_targets=1, weight=1.0):
     """
     신호 강도에 따른 동적 매수 수량 계산
-    
+
     - signal_strength: 0.0 ~ 1.0 (약한 신호 ~ 강한 신호)
     - 강한 신호(0.8+): 가용 자금의 30%까지 투자
     - 보통 신호(0.5~0.8): 가용 자금의 20%까지 투자
     - 약한 신호(0.3~0.5): 가용 자금의 10%까지 투자
     - 매우 약한 신호(<0.3): 최소 수량만 투자
+    - weight: 동적 포트폴리오 가중치 (ETF=1.0, STOCK=0.4 등). 기본 1.0 이면
+      코어 ETF 사이즈는 그대로 유지, 신규 편입 STOCK 만 자동 저비중 매수.
     """
     if not available_cash or not current_price or current_price <= 0:
         return 1
-    
+
     # 분산 투자를 위해 종목 수로 나눔
     per_ticker_cash = available_cash / max(num_targets, 1)
-    
+
     # 신호 강도에 따른 투자 비율 결정 (자본 대비 너무 적은 매수를 방지하기 위해 상향 조정)
     if signal_strength >= 0.8:
         position_pct = 1.0  # 강한 신호: 종목 할당 금액의 100%
@@ -450,28 +506,44 @@ def calculate_order_quantity(available_cash, current_price, signal_strength=0.5,
     else:
         position_pct = 0.2  # 매우 약한 신호: 20%
         logger.info(f"⚠️ 매우 약한 신호 (강도: {signal_strength:.2f}) → 최소 포지션 20%")
-    
-    max_investment = per_ticker_cash * position_pct
-    
-    # 1주당 가격이 할당 금액보다 비쌀 경우, 가용 자금이 충분하다면 우선 1주는 매수할 수 있도록 max_investment 보정
-    if max_investment < current_price and available_cash >= current_price:
-        max_investment = current_price
-        
-    qty = int(max_investment / current_price)
-    
-    return max(qty, 1)  # 최소 1주
 
-def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_settings=None, market='US'):
+    # 동적 가중치 적용 (1.0 = 변화 없음)
+    try:
+        w = float(weight) if weight is not None else 1.0
+    except (TypeError, ValueError):
+        w = 1.0
+    if w <= 0:
+        w = 1.0
+    if w < 1.0:
+        logger.info(f"⚖️ 동적 가중치 적용: weight={w:.2f} → 포지션 {position_pct*100:.0f}% × {w:.2f}")
+    position_pct = position_pct * w
+
+    max_investment = per_ticker_cash * position_pct
+
+    # 1주당 가격이 할당 금액보다 비쌀 경우, 가용 자금이 충분하다면 우선 1주는 매수할 수 있도록 max_investment 보정
+    # 단, weight 가 1.0 미만(=저비중 STOCK) 이면 이 보정을 건너뛰어 의도된 소액 매수 유지
+    if max_investment < current_price and available_cash >= current_price and w >= 1.0:
+        max_investment = current_price
+
+    qty = int(max_investment / current_price)
+
+    # 저비중 종목은 0주가 나올 수 있으나, 최소 1주 보장은 일관성을 위해 유지
+    return max(qty, 1)
+
+def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_settings=None, market='US', weight=1.0):
     """
     DCA 전략용 매수 수량 계산
     - 매일 일정 비율/금액을 분할 매수
+    - weight: 동적 포트폴리오 가중치 (ETF=1.0, STOCK=0.4 등). 기본 1.0 이면
+      기존 동작 그대로, 1.0 미만이면 투자 상한/목표 금액 모두 함께 축소되어
+      저비중 매수 의도가 보존됨.
     """
     if not available_cash or not current_price or current_price <= 0:
         return 1
-    
+
     if dca_settings is None:
         dca_settings = DCA_SETTINGS
-    
+
     daily_pct = dca_settings.get("daily_investment_pct", 5) / 100
     min_investment = dca_settings.get("min_investment_usd", 10)
     max_investment = dca_settings.get("max_investment_usd", 100)
@@ -483,20 +555,31 @@ def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_set
         min_investment = dca_settings.get("min_investment_krw", max(200_000, min_investment * exchange_rate))
         max_investment = dca_settings.get("max_investment_krw", max_investment * exchange_rate)
         currency_symbol = "₩"
-    
+
     # 종목별 투자 금액 계산
     per_ticker_cash = available_cash / max(num_targets, 1)
-    
-    # daily_pct를 목표별 할당금액(per_ticker_cash)이 아닌 가용 자금 전체(available_cash) 기준으로 계산하되,
-    # 한 종목에 너무 많은 자금이 몰리지 않도록 per_ticker_cash를 한도로 둠
-    target_investment_amount = available_cash * daily_pct
-    investment_amount = min(target_investment_amount, per_ticker_cash)
-    
-    # 최소/최대 제한 적용
-    investment_amount = max(min_investment, min(max_investment, investment_amount))
+
+    # 동적 가중치 정규화
+    try:
+        w = float(weight) if weight is not None else 1.0
+    except (TypeError, ValueError):
+        w = 1.0
+    if w <= 0:
+        w = 1.0
+
+    # daily_pct 를 가용 자금 기준으로 계산하되 종목별 한도 적용
+    # weight < 1.0 (저비중 STOCK) 이면 목표 금액·종목별 한도·상한·하한이 함께 축소되어 의도된 소액 매수 유지
+    target_investment_amount = available_cash * daily_pct * w
+    per_ticker_limit = per_ticker_cash * w
+    investment_amount = min(target_investment_amount, per_ticker_limit)
+
+    effective_max = max_investment * w if w < 1.0 else max_investment
+    effective_min = min(min_investment, effective_max)
+    investment_amount = max(effective_min, min(effective_max, investment_amount))
 
     # 주문 가능 금액이 1주 가격보다 작으나 가용 자금(available_cash)이 충분하다면 최소 1주는 살 수 있도록 조정
-    if investment_amount < current_price and available_cash >= current_price:
+    # 단, 저비중 종목(weight<1.0) 은 의도적 소액 매수를 위해 1주 강제 올림 생략 가능
+    if investment_amount < current_price and available_cash >= current_price and w >= 1.0:
         investment_amount = current_price
 
     if investment_amount < current_price:
@@ -829,6 +912,12 @@ def job():
     global IS_SAFE_MODE, STRATEGY_MODE, PERSONA, TARGET_TICKERS_US, TARGET_TICKERS_KR, ws_client
     user_config = load_config()
 
+    # 매 job 실행 시 동적 포트폴리오 가중치를 최신화 (파일이 스케줄러로 갱신되었을 수도 있으므로)
+    try:
+        reload_ticker_weights()
+    except Exception as _e:
+        logger.warning(f"reload_ticker_weights 실패: {_e}")
+
     market = get_market_status()
     
     if market == 'CLOSED':
@@ -1056,7 +1145,8 @@ def job():
         else:
             logger.info(f"[{ticker}] ⚡ 반등 매수 - AI veto 우회")
 
-        qty = calculate_dca_quantity(available_cash, current_price, num_targets, DCA_SETTINGS, market)
+        qty = calculate_dca_quantity(available_cash, current_price, num_targets, DCA_SETTINGS, market,
+                                     weight=get_ticker_weight(ticker))
         if dca_reduce_qty:
             qty = max(1, qty // 2)
             logger.info(f"[{ticker}] 📉 5MA 하회로 매수량 축소: {qty}주")
@@ -2040,7 +2130,8 @@ def job():
                         logger.warning(f"[{ticker}] Re-entry blocked: account restriction")
                         continue
 
-                    qty = calculate_order_quantity(available_cash, current_price, 0.6, num_active_targets)
+                    qty = calculate_order_quantity(available_cash, current_price, 0.6, num_active_targets,
+                                                    weight=get_ticker_weight(ticker))
                     if reduce_qty:
                         qty = max(1, qty // 2)
                         logger.info(f"[{ticker}] 🔄 Re-entry: MA20 복귀, MA5 미복귀 → 수량 50% 축소 {qty}주")
@@ -2180,12 +2271,13 @@ def job():
                     )
                     logger.info(f"[{ticker}] Signal Strength: {signal_strength:.2f}")
                     
-                    # 신호 강도에 따른 동적 수량 계산
+                    # 신호 강도에 따른 동적 수량 계산 (동적 포트폴리오 weight 반영)
                     qty = calculate_order_quantity(
-                        available_cash, 
-                        current_price, 
+                        available_cash,
+                        current_price,
                         signal_strength,
-                        num_active_targets
+                        num_active_targets,
+                        weight=get_ticker_weight(ticker),
                     )
                     logger.info(f"[{ticker}] AI Approved. Buying {qty} shares (Signal: {signal_strength:.2f})...")
                     
@@ -2456,7 +2548,12 @@ if __name__ == "__main__":
         try:
             from modules.portfolio_manager import PortfolioManager
             pm = PortfolioManager()
-            pm.generate_and_save_portfolio(max_kr=10)
+            pm.generate_and_save_portfolio()
+            # 새로 저장된 포트폴리오 파일을 즉시 적용해 주문 사이징에 반영
+            try:
+                reload_ticker_weights()
+            except Exception as _e:
+                logger.warning(f"reload_ticker_weights 실패: {_e}")
         except Exception as e:
             logger.error(f"Failed to update dynamic portfolio: {e}")
 

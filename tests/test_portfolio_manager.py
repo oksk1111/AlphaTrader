@@ -3,7 +3,7 @@ import pprint
 
 def test_manager():
     pm = PortfolioManager()
-    portfolio = pm.generate_and_save_portfolio(max_kr=10)
+    portfolio = pm.generate_and_save_portfolio(max_kr_etf=10)
     print("\n--- Created Portfolio ---")
     pprint.pprint(portfolio)
 
