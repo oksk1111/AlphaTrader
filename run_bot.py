@@ -309,6 +309,24 @@ KR_ETF_CODES = {'122630', '233740', '449200', '426030', '069500', '229200', '114
 # US 레버리지 ETF 심볼 목록 (3X ETF는 DCA 매수 조건 완화 적용)
 US_LEVERAGED_ETF_SYMBOLS = {t['symbol'] for t in TARGET_TICKERS_US_3X}
 
+# === 레버리지 ETF 배율 매핑 (v2.6) ===
+# 레버리지 ETF는 기초지수 대비 N배 움직이므로, 동일한 수익실현 기준을
+# 적용하면 기초지수가 아직 상승 여력이 있어도 조기 매도된다.
+# 예: SOXX +2% → SOXL +6% → 기존 5% trailing 활성으로 조기 청산.
+# 해결: 수익실현/손절 임계값에 배율(leverage factor)을 곱하여 기초지수 기준으로 동작.
+LEVERAGED_ETF_FACTOR = {
+    'TQQQ': 3,   # ProShares UltraPro QQQ → QQQ 3배
+    'SOXL': 3,   # Direxion Semiconductor 3X → SOXX 3배
+    'TECL': 3,   # Direxion Technology 3X → XLK 3배
+    'FNGU': 3,   # MicroSectors FANG+ 3X
+    'UPRO': 3,   # ProShares UltraPro S&P500 → SPY 3배
+    'NVDL': 2,   # GraniteShares 2x Long NVDA → NVDA 2배
+}
+
+def get_leverage_factor(ticker):
+    """레버리지 ETF의 배율 반환. 비레버리지 종목은 1."""
+    return LEVERAGED_ETF_FACTOR.get(ticker, 1)
+
 # === US 거래소 매핑 ===
 # 동적 포트폴리오(portfolio_target.json)는 symbol/weight만 저장하고 exchange가 빠질 수 있으므로
 # 심볼 → 거래소 코드 매핑 테이블을 두어 KeyError 로 인한 US 세션 전체 중단을 방지한다.
@@ -776,19 +794,23 @@ def is_correlation_capped(ticker, monitoring_targets):
 
 
 def get_breakeven_trigger_pct(market, ticker):
-    """시장/종목별 Breakeven 활성화 임계치."""
+    """시장/종목별 Breakeven 활성화 임계치. 레버리지 ETF는 배율 스케일링 적용."""
     if not BREAKEVEN_ENABLED:
         return None
     if market == 'KR' and ticker not in KR_ETF_CODES:
         return float(BREAKEVEN_TRIGGER_PCT_KR_STOCK)
-    return float(BREAKEVEN_TRIGGER_PCT_US)
+    base = float(BREAKEVEN_TRIGGER_PCT_US)
+    # [v2.6] 레버리지 ETF는 기초지수 기준으로 breakeven 판정
+    lev_factor = get_leverage_factor(ticker)
+    return base * lev_factor
 
 
-def effective_stop_loss_pct(base_pct, ohlc):
+def effective_stop_loss_pct(base_pct, ohlc, lev_factor=1):
     """ATR 동적 손절폭 산정.
 
     base_pct: 기존 손절 % (음수, 예: -5.0)
-    반환: 더 보수적(=절대값 큰) 손절폭, 단 ATR_STOP_MAX_PCT 로 하한 보호.
+    lev_factor: 레버리지 배율 (1=일반, 3=3배 ETF). 상한도 배율에 비례.
+    반환: 더 보수적(=절대값 큰) 손절폭, 단 ATR_STOP_MAX_PCT*lev_factor 로 하한 보호.
     """
     if not ATR_DYNAMIC_STOP_ENABLED or not ohlc:
         return base_pct
@@ -798,7 +820,7 @@ def effective_stop_loss_pct(base_pct, ohlc):
     atr_stop = -ATR_STOP_MULTIPLIER * atr_pct
     # 더 큰 절대값을 채택 (= 더 느슨한 손절) → 노이즈 컷 회피
     candidate = min(base_pct, atr_stop)
-    return max(candidate, ATR_STOP_MAX_PCT)
+    return max(candidate, ATR_STOP_MAX_PCT * lev_factor)
 
 
 def safe_sell(kis_client, market, ticker, qty_hint, exchange=None,
@@ -1395,6 +1417,13 @@ def job():
             eff_trailing_activation = TRAILING_STOP_ACTIVATION
             eff_trailing_drop = TRAILING_STOP_DROP
             eff_gap_down_threshold = GAP_DOWN_THRESHOLD
+
+        # [v2.6] 레버리지 ETF 배율 스케일링 (DCA 경로 포함)
+        lev_factor = get_leverage_factor(ticker)
+        if lev_factor > 1:
+            eff_stop_loss = eff_stop_loss * lev_factor
+            eff_trailing_activation = eff_trailing_activation * lev_factor
+            eff_trailing_drop = eff_trailing_drop * lev_factor
         
         # --- STRATEGY BRANCHING ---
         is_uptrend = check_trend(current_price, ma20)
@@ -1876,9 +1905,18 @@ def job():
                     pos_trailing_act = KR_STOCK_TRAILING_ACTIVATION if is_kr_stock_pos else TRAILING_STOP_ACTIVATION
                     pos_trailing_drop = KR_STOCK_TRAILING_DROP if is_kr_stock_pos else TRAILING_STOP_DROP
 
+                    # [v2.6] 레버리지 ETF 배율 스케일링
+                    # 레버리지 ETF는 기초지수 대비 N배 움직이므로 동일 임계값으로는 조기 청산됨.
+                    # 예: SOXL(3x) +15%는 SOXX +5% 수준 → 임계값을 3배로 확대해야 기초지수 기준 동작.
+                    lev_factor = get_leverage_factor(ticker)
+                    if lev_factor > 1:
+                        pos_stop_loss = pos_stop_loss * lev_factor       # -5% → -15% (3x)
+                        pos_trailing_act = pos_trailing_act * lev_factor  # +5% → +15% (3x)
+                        pos_trailing_drop = pos_trailing_drop * lev_factor  # -3% → -9% (3x)
+
                     # [v2.5] ATR 동적 손절폭 적용 (보수적 = 절대값 큰 쪽 채택)
                     try:
-                        pos_stop_loss = effective_stop_loss_pct(pos_stop_loss, data.get('ohlc'))
+                        pos_stop_loss = effective_stop_loss_pct(pos_stop_loss, data.get('ohlc'), lev_factor)
                     except Exception:
                         pass
 
