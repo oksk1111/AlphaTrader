@@ -23,6 +23,14 @@ CATEGORY_WEIGHTS = {
     "STOCK": 0.4,
 }
 
+# 한 계좌 통합 KR 포트폴리오 기본 오버라이드.
+# 코어 ETF는 full size 로 두고, 밸류체인/소프트웨어 테마는 저비중으로만 편입한다.
+KR_WEIGHT_OVERRIDES = {
+    "483320": 0.50,  # ACE 엔비디아밸류체인액티브
+    "483340": 0.25,  # ACE 구글밸류체인액티브
+    "0041D0": 0.25,  # KODEX 미국AI소프트웨어TOP10
+}
+
 # 후보군 풀 (Pool) - KIS API 검색의 한계를 보완하기 위한 고품질/장기 우상향/미래산업 ETF 사전 리스트
 # 주기적으로 이 풀에서 상위 N개를 선택하여 실제 매매 포트폴리오로 승격
 # 각 항목: code -> (name, category)
@@ -34,10 +42,9 @@ ETF_CANDIDATES = {
         "0080G0": ("KODEX 방산TOP10", "ETF"),
         "0151P0": ("RISE 코리아전략산업액티브", "ETF"),
         "069500": ("KODEX 200", "ETF"),
+        "091160": ("KODEX 반도체", "ETF"),
         "305720": ("KODEX 2차전지산업", "ETF"),
         "364980": ("TIGER KRX2차전지K-뉴딜", "ETF"),
-        "0193T0": ("KODEX SK하이닉스단일종목레버리지", "ETF_LEV"),
-        "0193W0": ("KODEX 삼성전자단일종목레버리지", "ETF_LEV"),
     },
     # 한국 상장 해외 기술 (나스닥/AI/반도체)
     # ISA 제안안 반영: 우주항공 테마는 축소하고, 반도체/전력/광통신/AI 소프트웨어로 재편.
@@ -215,7 +222,7 @@ class PortfolioManager:
 
         def _kr_entry(item):
             cat = item.get("category", "ETF")
-            weight = CATEGORY_WEIGHTS.get(cat, 1.0)
+            weight = KR_WEIGHT_OVERRIDES.get(item["code"], CATEGORY_WEIGHTS.get(cat, 1.0))
             # 코어 ETF/레버리지 ETF 는 기존 스키마(단순 코드 문자열) 유지 → 다운스트림 호환
             if cat in ("ETF", "ETF_LEV") and weight == 1.0:
                 return item["code"]

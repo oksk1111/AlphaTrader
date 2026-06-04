@@ -267,27 +267,18 @@ TARGET_TICKERS_US_1X = [
     {'symbol': "TSM",  'exchange': "NAS"},  # TSMC
 ]
 
-# Changed from ETF to Blue Chip Logic for users with deposit restrictions
+# KR 안전 모드 기본 바스켓: 한 계좌 통합 운용 기준의 코어 ETF 중심 구성.
 TARGET_TICKERS_KR_1X = [
     "426030", # TIME 미국나스닥100액티브
-    "000660", # SK Hynix (SK하이닉스)
-    "005930", # Samsung Electronics (삼성전자)
-    "012450", # Hanwha Aerospace (한화에어로스페이스)
-    "005380", # Hyundai Motor (현대차)
-    "035420", # Naver (네이버)
-    # ===== 신규 추가 요청 ETF =====
-    "292150", # TIGER 코리아TOP10
     "495230", # KoAct 코리아밸류업 액티브
-    "0080G0", # KODEX 방산TOP10
+    "069500", # KODEX 200
     "0151P0", # RISE 코리아전략산업액티브
-    "0015B0", # KoAct 미국나스닥성장기업 액티브
     "456600", # TIME 글로벌AI인공지능 액티브
     "0174B0", # KoAct 글로벌AI메모리반도체 액티브
     "0173Y0", # KODEX 미국AI광통신네트워크
     "381180", # TIGER 미국필라델피아반도체나스닥
     "487230", # KODEX 미국AI전력핵심인프라
-    "0193T0", # KODEX SK하이닉스단일종목레버리지
-    "0193W0", # KODEX 삼성전자단일종목레버리지
+    "091160", # KODEX 반도체
 ]
 
 # Select Tickers based on Mode
@@ -305,7 +296,7 @@ KR_STOCK_GAP_DOWN_THRESHOLD = 6.0   # KR 개별주 갭다운 기준
 # KR ETF 종목 코드 (ETF인지 개별주인지 구분용)
 KR_ETF_CODES = {'122630', '233740', '449200', '426030', '069500', '229200', '114800',
                 '292150', '495230', '0080G0', '0151P0', '0015B0',
-                '456600', '0174B0', '0173Y0', '381180', '487230',
+                '456600', '0174B0', '0173Y0', '381180', '487230', '091160',
                 '379800', '483320', '483340', '0041D0', '0193T0', '0193W0'}
 
 # US 레버리지 ETF 심볼 목록 (3X ETF는 DCA 매수 조건 완화 적용)
