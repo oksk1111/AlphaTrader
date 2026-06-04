@@ -314,6 +314,13 @@ US_LEVERAGED_ETF_SYMBOLS = {t['symbol'] for t in TARGET_TICKERS_US_3X}
 # 적용하면 기초지수가 아직 상승 여력이 있어도 조기 매도된다.
 # 예: SOXX +2% → SOXL +6% → 기존 5% trailing 활성으로 조기 청산.
 # 해결: 수익실현/손절 임계값에 배율(leverage factor)을 곱하여 기초지수 기준으로 동작.
+#
+# ⚠️ 상승/하락 비대칭 스케일링:
+#   - 상승 (trailing 활성, breakeven): 풀 배율 → 수익 극대화
+#   - 하락 (stop loss, trailing drop): 보수적 배율 (1+배율)/2 → 자본 보호
+#   이유: 레버리지 ETF는 하락 시 복리 손실(volatility decay)이 가속됨.
+#   예: 3x ETF -15% → 회복에 +17.6% 필요 (1x -5% → +5.3%만 필요)
+#   따라서 하락 방어는 더 빠르게 발동해야 손실을 제한할 수 있다.
 LEVERAGED_ETF_FACTOR = {
     'TQQQ': 3,   # ProShares UltraPro QQQ → QQQ 3배
     'SOXL': 3,   # Direxion Semiconductor 3X → SOXX 3배
@@ -324,8 +331,21 @@ LEVERAGED_ETF_FACTOR = {
 }
 
 def get_leverage_factor(ticker):
-    """레버리지 ETF의 배율 반환. 비레버리지 종목은 1."""
+    """레버리지 ETF의 상승(수익실현) 배율 반환. 비레버리지 종목은 1."""
     return LEVERAGED_ETF_FACTOR.get(ticker, 1)
+
+def get_leverage_stop_factor(ticker):
+    """레버리지 ETF의 하락 방어 배율 (보수적).
+
+    상승 시는 풀 배율로 수익을 최대한 추적하지만,
+    하락 시는 (1+배율)/2 로 보수적 접근하여 복리 손실을 조기에 차단한다.
+      3x ETF → 2.0배: stop -5% → -10%, trailing drop -3% → -6%
+      2x ETF → 1.5배: stop -5% → -7.5%, trailing drop -3% → -4.5%
+    """
+    lev = LEVERAGED_ETF_FACTOR.get(ticker, 1)
+    if lev <= 1:
+        return 1
+    return (1 + lev) / 2
 
 # === US 거래소 매핑 ===
 # 동적 포트폴리오(portfolio_target.json)는 symbol/weight만 저장하고 exchange가 빠질 수 있으므로
@@ -805,12 +825,12 @@ def get_breakeven_trigger_pct(market, ticker):
     return base * lev_factor
 
 
-def effective_stop_loss_pct(base_pct, ohlc, lev_factor=1):
+def effective_stop_loss_pct(base_pct, ohlc, lev_stop_factor=1):
     """ATR 동적 손절폭 산정.
 
     base_pct: 기존 손절 % (음수, 예: -5.0)
-    lev_factor: 레버리지 배율 (1=일반, 3=3배 ETF). 상한도 배율에 비례.
-    반환: 더 보수적(=절대값 큰) 손절폭, 단 ATR_STOP_MAX_PCT*lev_factor 로 하한 보호.
+    lev_stop_factor: 레버리지 하락 방어 배율 (1=일반, 2.0=3배ETF 보수적). 상한도 배율에 비례.
+    반환: 더 보수적(=절대값 큰) 손절폭, 단 ATR_STOP_MAX_PCT*lev_stop_factor 로 하한 보호.
     """
     if not ATR_DYNAMIC_STOP_ENABLED or not ohlc:
         return base_pct
@@ -820,7 +840,7 @@ def effective_stop_loss_pct(base_pct, ohlc, lev_factor=1):
     atr_stop = -ATR_STOP_MULTIPLIER * atr_pct
     # 더 큰 절대값을 채택 (= 더 느슨한 손절) → 노이즈 컷 회피
     candidate = min(base_pct, atr_stop)
-    return max(candidate, ATR_STOP_MAX_PCT * lev_factor)
+    return max(candidate, ATR_STOP_MAX_PCT * lev_stop_factor)
 
 
 def safe_sell(kis_client, market, ticker, qty_hint, exchange=None,
@@ -1418,12 +1438,14 @@ def job():
             eff_trailing_drop = TRAILING_STOP_DROP
             eff_gap_down_threshold = GAP_DOWN_THRESHOLD
 
-        # [v2.6] 레버리지 ETF 배율 스케일링 (DCA 경로 포함)
+        # [v2.6] 레버리지 ETF 비대칭 스케일링 (DCA 경로 포함)
+        # 상승: 풀 배율 / 하락: 보수적 배율 (복리 손실 방어)
         lev_factor = get_leverage_factor(ticker)
+        lev_stop_factor = get_leverage_stop_factor(ticker)
         if lev_factor > 1:
-            eff_stop_loss = eff_stop_loss * lev_factor
-            eff_trailing_activation = eff_trailing_activation * lev_factor
-            eff_trailing_drop = eff_trailing_drop * lev_factor
+            eff_stop_loss = eff_stop_loss * lev_stop_factor          # 하락 보수적
+            eff_trailing_activation = eff_trailing_activation * lev_factor  # 상승 풀 배율
+            eff_trailing_drop = eff_trailing_drop * lev_stop_factor  # 하락 보수적
         
         # --- STRATEGY BRANCHING ---
         is_uptrend = check_trend(current_price, ma20)
@@ -1905,18 +1927,19 @@ def job():
                     pos_trailing_act = KR_STOCK_TRAILING_ACTIVATION if is_kr_stock_pos else TRAILING_STOP_ACTIVATION
                     pos_trailing_drop = KR_STOCK_TRAILING_DROP if is_kr_stock_pos else TRAILING_STOP_DROP
 
-                    # [v2.6] 레버리지 ETF 배율 스케일링
-                    # 레버리지 ETF는 기초지수 대비 N배 움직이므로 동일 임계값으로는 조기 청산됨.
-                    # 예: SOXL(3x) +15%는 SOXX +5% 수준 → 임계값을 3배로 확대해야 기초지수 기준 동작.
+                    # [v2.6] 레버리지 ETF 비대칭 스케일링
+                    # 상승(수익실현): 풀 배율 → 기초지수 기준으로 동일 판정, 수익 극대화
+                    # 하락(손절/trailing drop): 보수적 배율 (1+N)/2 → 복리 손실 조기 차단
                     lev_factor = get_leverage_factor(ticker)
+                    lev_stop_factor = get_leverage_stop_factor(ticker)
                     if lev_factor > 1:
-                        pos_stop_loss = pos_stop_loss * lev_factor       # -5% → -15% (3x)
-                        pos_trailing_act = pos_trailing_act * lev_factor  # +5% → +15% (3x)
-                        pos_trailing_drop = pos_trailing_drop * lev_factor  # -3% → -9% (3x)
+                        pos_stop_loss = pos_stop_loss * lev_stop_factor      # -5% → -10% (3x, 보수적)
+                        pos_trailing_act = pos_trailing_act * lev_factor      # +5% → +15% (3x, 풀 배율)
+                        pos_trailing_drop = pos_trailing_drop * lev_stop_factor  # -3% → -6% (3x, 보수적)
 
                     # [v2.5] ATR 동적 손절폭 적용 (보수적 = 절대값 큰 쪽 채택)
                     try:
-                        pos_stop_loss = effective_stop_loss_pct(pos_stop_loss, data.get('ohlc'), lev_factor)
+                        pos_stop_loss = effective_stop_loss_pct(pos_stop_loss, data.get('ohlc'), lev_stop_factor)
                     except Exception:
                         pass
 
