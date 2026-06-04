@@ -283,8 +283,9 @@ TARGET_TICKERS_KR_1X = [
     "0015B0", # KoAct 미국나스닥성장기업 액티브
     "456600", # TIME 글로벌AI인공지능 액티브
     "0174B0", # KoAct 글로벌AI메모리반도체 액티브
-    "0180V0", # ACE 미국우주테크 액티브
     "0173Y0", # KODEX 미국AI광통신네트워크
+    "381180", # TIGER 미국필라델피아반도체나스닥
+    "487230", # KODEX 미국AI전력핵심인프라
     "0193T0", # KODEX SK하이닉스단일종목레버리지
     "0193W0", # KODEX 삼성전자단일종목레버리지
 ]
@@ -304,7 +305,8 @@ KR_STOCK_GAP_DOWN_THRESHOLD = 6.0   # KR 개별주 갭다운 기준
 # KR ETF 종목 코드 (ETF인지 개별주인지 구분용)
 KR_ETF_CODES = {'122630', '233740', '449200', '426030', '069500', '229200', '114800',
                 '292150', '495230', '0080G0', '0151P0', '0015B0',
-                '456600', '0174B0', '0180V0', '0173Y0', '0193T0', '0193W0'}
+                '456600', '0174B0', '0173Y0', '381180', '487230',
+                '379800', '483320', '483340', '0041D0', '0193T0', '0193W0'}
 
 # US 레버리지 ETF 심볼 목록 (3X ETF는 DCA 매수 조건 완화 적용)
 US_LEVERAGED_ETF_SYMBOLS = {t['symbol'] for t in TARGET_TICKERS_US_3X}
@@ -429,7 +431,7 @@ try:
                 TARGET_TICKERS_KR_1X.append(t)
                 # ETF 카테고리만 KR_ETF_CODES 에 등록 (STOCK 은 제외 → 개별주 리스크 파라미터 적용)
                 if isinstance(t, dict):
-                    if t.get('category') in (None, 'ETF', 'ETF_LEV'):
+                    if t.get('category') in (None, 'ETF', 'ETF_LEV', 'ETF_SAT'):
                         KR_ETF_CODES.add(code)
                 else:
                     # 레거시 문자열 = ETF 로 간주
@@ -1002,7 +1004,7 @@ def job():
         logger.info(f"🇰🇷 Starting KR Trading Session ({STRATEGY_MODE.upper()})")
         
         # Log Static Targets (handle both dict and string)
-        static_log = [t['symbol'] if isinstance(t, dict) else t for t in TARGET_TICKERS_KR]
+        static_log = [_kr_dyn_to_code(t) if isinstance(t, dict) else t for t in TARGET_TICKERS_KR]
         logger.info(f"   - Static Targets: {static_log}")
         
         if current_dynamic_targets:

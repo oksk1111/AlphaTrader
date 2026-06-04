@@ -14,10 +14,12 @@ PORTFOLIO_FILE = "database/portfolio_target.json"
 # === 카테고리별 가중치 ===
 # ETF(코어): 1.0 → 기존 매매 사이즈 그대로 유지 (수익률 영향 없음)
 # ETF_LEV(레버리지 ETF): 1.0 → 기존과 동일 (이미 별도 리스크 관리)
+# ETF_SAT(테마 위성 ETF): 0.35 → 엔비디아/구글/AI 소프트웨어 등 고변동 테마는 저비중
 # STOCK(개별주 새틀라이트): 0.4 → 단일 종목 변동성/이벤트 리스크 흡수 위해 저비중
 CATEGORY_WEIGHTS = {
     "ETF": 1.0,
     "ETF_LEV": 1.0,
+    "ETF_SAT": 0.35,
     "STOCK": 0.4,
 }
 
@@ -37,15 +39,22 @@ ETF_CANDIDATES = {
         "0193T0": ("KODEX SK하이닉스단일종목레버리지", "ETF_LEV"),
         "0193W0": ("KODEX 삼성전자단일종목레버리지", "ETF_LEV"),
     },
-    # 한국 상장 해외 기술 (나스닥/AI/반도체/우주항공)
+    # 한국 상장 해외 기술 (나스닥/AI/반도체)
+    # ISA 제안안 반영: 우주항공 테마는 축소하고, 반도체/전력/광통신/AI 소프트웨어로 재편.
     "KR_LISTED_US_TECH": {
+        "426030": ("TIME 미국나스닥100액티브", "ETF"),
         "0015B0": ("KoAct 미국나스닥성장기업 액티브", "ETF"),
         "456600": ("TIME 글로벌AI인공지능 액티브", "ETF"),
         "0174B0": ("KoAct 글로벌AI메모리반도체 액티브", "ETF"),
-        "0180V0": ("ACE 미국우주테크 액티브", "ETF"),
         "0173Y0": ("KODEX 미국AI광통신네트워크", "ETF"),
+        "487230": ("KODEX 미국AI전력핵심인프라", "ETF"),
+        "381180": ("TIGER 미국필라델피아반도체나스닥", "ETF"),
         "133690": ("TIGER 미국나스닥100", "ETF"),
-        "379800": ("KODEX 미국엔비디아밸류체인", "ETF"),
+        # 기존 379800 라벨은 잘못 매핑되어 있었음. 실제 379800 은 KODEX 미국S&P500.
+        "379800": ("KODEX 미국S&P500", "ETF"),
+        "483320": ("ACE 엔비디아밸류체인액티브", "ETF_SAT"),
+        "483340": ("ACE 구글밸류체인액티브", "ETF_SAT"),
+        "0041D0": ("KODEX 미국AI소프트웨어TOP10", "ETF_SAT"),
     },
     # 한국 우량 개별주 (코어 ETF의 기회손실 보완 - LG/현대/금융/바이오 등)
     # 저비중(STOCK weight) 적용 + 일일 모멘텀 재평가로 자동 편입/삭제
@@ -207,10 +216,10 @@ class PortfolioManager:
         def _kr_entry(item):
             cat = item.get("category", "ETF")
             weight = CATEGORY_WEIGHTS.get(cat, 1.0)
-            # ETF 는 기존 스키마(단순 코드 문자열) 유지 → 다운스트림 호환
-            if cat in ("ETF", "ETF_LEV"):
+            # 코어 ETF/레버리지 ETF 는 기존 스키마(단순 코드 문자열) 유지 → 다운스트림 호환
+            if cat in ("ETF", "ETF_LEV") and weight == 1.0:
                 return item["code"]
-            # STOCK 은 dict 로 저장하여 weight/category 운반
+            # ETF_SAT / STOCK 은 dict 로 저장하여 weight/category 운반
             return {
                 "code": item["code"],
                 "category": cat,
@@ -230,7 +239,7 @@ class PortfolioManager:
 
         # ===== KR 선정 =====
         kr_etfs = [it for it in results["KR"]
-                   if it.get("category", "ETF") in ("ETF", "ETF_LEV")
+               if it.get("category", "ETF") in ("ETF", "ETF_LEV", "ETF_SAT")
                    and it["momentum"] > min_etf_momentum]
         kr_stocks = [it for it in results["KR"]
                      if it.get("category") == "STOCK"
