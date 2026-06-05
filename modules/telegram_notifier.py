@@ -215,10 +215,12 @@ class TelegramNotifier:
         if holdings:
             for h in holdings[:5]:  # 최대 5개만 표시
                 ticker = h.get('ticker', 'N/A')
+                name = h.get('name', '')
                 qty = h.get('quantity', 0)
                 pnl_rate = h.get('pnl_rate', 0)
                 emoji = "📈" if pnl_rate >= 0 else "📉"
-                report += f"├ {ticker}: {qty}주 ({emoji} {pnl_rate:+.2f}%)\n"
+                display = f"{ticker} ({name})" if name else ticker
+                report += f"├ {display}: {qty}주 ({emoji} {pnl_rate:+.2f}%)\n"
             if len(holdings) > 5:
                 report += f"└ ... 외 {len(holdings) - 5}개\n"
         else:
@@ -263,15 +265,16 @@ class TelegramNotifier:
 """
         return self.send_message(alert)
     
-    def send_trade_alert(self, trade_type: str, ticker: str, quantity: int, 
-                         price: float, amount: float) -> bool:
+    def send_trade_alert(self, trade_type: str, ticker: str, quantity: int,
+                         price: float, amount: float, name: str = '') -> bool:
         """거래 알림 발송 (선택적)"""
         emoji = "🟢" if trade_type.upper() == "BUY" else "🔴"
-        
+        display_ticker = f"{ticker} ({name})" if name else ticker
+
         alert = f"""
 {emoji} <b>{trade_type.upper()}</b> 체결
 ━━━━━━━━━━━━━━
-종목: {ticker}
+종목: {display_ticker}
 수량: {quantity}주
 가격: {price:,.0f} 원
 금액: {amount:,.0f} 원
