@@ -17,6 +17,11 @@ from strategies.technical import (
     calculate_atr_pct
 )
 from strategies.volatility_breakout import calculate_target_price
+from strategies.adaptive_volatility import (
+    calculate_target_price_v2, calculate_adaptive_k, check_multi_timeframe_trend,
+    calculate_scaled_entry, calculate_dynamic_stop_loss, calculate_adaptive_trailing,
+    check_momentum_filter
+)
 from modules.account_manager import update_all_accounts
 from modules.market_scanner import scanner  # New scanner module
 from modules.multi_llm import MultiLLMAnalyst
@@ -248,7 +253,20 @@ if risk_config:
     PULLBACK_REBUY_ENABLED = bool(risk_config.get("pullback_rebuy_enabled", PULLBACK_REBUY_ENABLED))
     PULLBACK_REBUY_RATIO = float(risk_config.get("pullback_rebuy_ratio", PULLBACK_REBUY_RATIO))
 
+# Load Adaptive Strategy Settings from config (v2.7)
+adaptive_config = user_config.get("adaptive_strategy", {})
+if adaptive_config:
+    ADAPTIVE_STRATEGY_ENABLED = bool(adaptive_config.get("enabled", ADAPTIVE_STRATEGY_ENABLED))
+    USE_ADAPTIVE_K = bool(adaptive_config.get("use_adaptive_k", USE_ADAPTIVE_K))
+    USE_ATR_RANGE = bool(adaptive_config.get("use_atr_range", USE_ATR_RANGE))
+    USE_SCALED_ENTRY = bool(adaptive_config.get("use_scaled_entry", USE_SCALED_ENTRY))
+    SCALED_ENTRY_STAGES = int(adaptive_config.get("scaled_entry_stages", SCALED_ENTRY_STAGES))
+    MOMENTUM_FILTER_ENABLED = bool(adaptive_config.get("momentum_filter_enabled", MOMENTUM_FILTER_ENABLED))
+    VOLUME_THRESHOLD = float(adaptive_config.get("volume_threshold", VOLUME_THRESHOLD))
+    MULTI_TIMEFRAME_TREND = bool(adaptive_config.get("multi_timeframe_trend", MULTI_TIMEFRAME_TREND))
+
 logger.info(f"Loaded Config: Mode={user_config.get('trading_mode')}, Strategy={STRATEGY_MODE}, Persona={PERSONA}")
+logger.info(f"Adaptive Strategy: enabled={ADAPTIVE_STRATEGY_ENABLED}, adaptive_k={USE_ADAPTIVE_K}, atr_range={USE_ATR_RANGE}")
 
 # 1. Leveraged Targets (Requires >10M KRW Deposit & Education)
 TARGET_TICKERS_US_3X = [
@@ -683,7 +701,17 @@ def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_set
     
     return max(qty, 0)
 
-K_VALUE = 0.4  # 0.5 → 0.4: 타겟가를 낮춰 상승 초기 진입 용이 (레버리지 ETF 최적화)
+K_VALUE = 0.4  # Base K (will be overridden by adaptive strategy if enabled)
+
+# === [NEW v2.7] Adaptive Strategy Settings ===
+ADAPTIVE_STRATEGY_ENABLED = True        # Use adaptive K and ATR-based targets
+USE_ADAPTIVE_K = True                   # Dynamic K based on volatility
+USE_ATR_RANGE = True                    # Use multi-day ATR instead of single day range
+USE_SCALED_ENTRY = True                 # Build position in 3 stages
+SCALED_ENTRY_STAGES = 3                 # Number of entry stages
+MOMENTUM_FILTER_ENABLED = True          # Check momentum before entry
+VOLUME_THRESHOLD = 1.3                  # Volume spike threshold (1.3 = 130%)
+MULTI_TIMEFRAME_TREND = True            # Check multi-timeframe trend
 
 def is_market_stabilizing_now(market, buy_delay_minutes):
     """시장 개장 후 buy_delay_minutes(분) 소요될 때까지 변동성 조율을 위해 신규 진입을 중단하는 non-blocking 체크."""

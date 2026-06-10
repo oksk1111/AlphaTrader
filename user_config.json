@@ -7,48 +7,48 @@
     "leverage_threshold_krw": 10000000,
     "max_retries_per_ticker": 3,
     "signal_thresholds": {
-        "strong": 0.8,
-        "medium": 0.5,
-        "weak": 0.3
+        "strong": 0.7,
+        "medium": 0.45,
+        "weak": 0.25
     },
     "llm_consensus": {
         "crash_veto": true,
-        "min_successful_llms": 2,
-        "required_buy_ratio": 0.6,
-        "unknown_fallback_hold": true,
+        "min_successful_llms": 1,
+        "required_buy_ratio": 0.5,
+        "unknown_fallback_hold": false,
         "tie_breaker": "persona"
     },
     "dca_settings": {
         "enabled": true,
-        "daily_investment_pct": 30,
-        "buy_delay_minutes": 30,
-        "min_investment_usd": 25,
-        "min_investment_krw": 200000,
-        "max_investment_usd": 1500,
-        "max_investment_krw": 1500000,
-        "max_buys_per_session": 5
+        "daily_investment_pct": 35,
+        "buy_delay_minutes": 15,
+        "min_investment_usd": 30,
+        "min_investment_krw": 250000,
+        "max_investment_usd": 2000,
+        "max_investment_krw": 2000000,
+        "max_buys_per_session": 6
     },
     "risk_management": {
-        "stop_loss_pct": -5.0,
-        "trailing_stop_activation_pct": 5.0,
-        "trailing_stop_drop_pct": 3.0,
-        "gap_down_threshold_pct": 5.0,
+        "stop_loss_pct": -6.0,
+        "trailing_stop_activation_pct": 6.0,
+        "trailing_stop_drop_pct": 3.5,
+        "gap_down_threshold_pct": 6.0,
         "consecutive_decline_days": 2,
-        "consecutive_decline_pct": 5.0,
-        "portfolio_drawdown_pct": 7.0,
-        "dca_monitor_interval_sec": 60,
+        "consecutive_decline_pct": 6.0,
+        "portfolio_drawdown_pct": 8.0,
+        "dca_monitor_interval_sec": 45,
         "rebound_buy_enabled": true,
-        "rebound_drop_threshold_pct": 5.0,
-        "rebound_intraday_bounce_pct": 1.0,
-        "rebound_max_buys_per_session": 1,
+        "rebound_drop_threshold_pct": 4.0,
+        "rebound_intraday_bounce_pct": 0.8,
+        "rebound_max_buys_per_session": 2,
         "partial_tp_enabled": true,
-        "partial_tp_ratio": 0.5,
+        "partial_tp_ratio": 0.4,
         "breakeven_enabled": true,
-        "breakeven_trigger_pct_us": 3.0,
-        "breakeven_trigger_pct_kr_stock": 4.0,
-        "breakeven_buffer_pct": 0.2,
+        "breakeven_trigger_pct_us": 4.0,
+        "breakeven_trigger_pct_kr_stock": 5.0,
+        "breakeven_buffer_pct": 0.3,
         "correlation_cap_enabled": true,
-        "correlation_max_per_group": 2,
+        "correlation_max_per_group": 3,
         "correlation_groups": [
             [
                 "TQQQ",
@@ -65,17 +65,27 @@
             ]
         ],
         "losing_streak_enabled": true,
-        "losing_streak_max_stops": 3,
-        "losing_streak_daily_pnl_pct": -3.0,
+        "losing_streak_max_stops": 4,
+        "losing_streak_daily_pnl_pct": -4.0,
         "atr_dynamic_stop_enabled": true,
         "atr_period": 14,
-        "atr_stop_multiplier": 2.0,
+        "atr_stop_multiplier": 2.5,
         "pullback_rebuy_enabled": true,
-        "pullback_rebuy_ratio": 0.3
+        "pullback_rebuy_ratio": 0.35
+    },
+    "adaptive_strategy": {
+        "enabled": true,
+        "use_adaptive_k": true,
+        "use_atr_range": true,
+        "use_scaled_entry": true,
+        "scaled_entry_stages": 3,
+        "momentum_filter_enabled": true,
+        "volume_threshold": 1.3,
+        "multi_timeframe_trend": true
     },
     "telegram": {
         "enabled": true,
         "daily_report_hour": 16,
-        "alert_on_trade": false
+        "alert_on_trade": true
     }
 }
