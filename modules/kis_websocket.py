@@ -38,7 +38,7 @@ class KisWebSocket:
             "secretkey": KIS_APP_SECRET
         }
         try:
-            res = requests.post(url, headers=headers, data=json.dumps(body))
+            res = requests.post(url, headers=headers, data=json.dumps(body), timeout=10)
             res.raise_for_status()
             self.approval_key = res.json()["approval_key"]
             logging.info(f"WebSocket Approval Key Obtained: {self.approval_key[:10]}...")

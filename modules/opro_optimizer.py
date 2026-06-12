@@ -192,7 +192,7 @@ def run_opro_optimization(notifier=None) -> dict:
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel("gemini-2.0-flash")
         prompt = _build_prompt(backtest, current_params, history)
-        response = model.generate_content(prompt)
+        response = model.generate_content(prompt, request_options={"timeout": 20})
         text = response.text.strip()
         # 마크다운 코드블럭 제거
         if text.startswith("```"):

@@ -12,6 +12,9 @@ RestartSec=10
 StandardOutput=append:/home/ubuntu/AlphaTrader/database/service.log
 StandardError=append:/home/ubuntu/AlphaTrader/database/service.log
 
+# Force KST timezone so schedule.at() and naive datetimes align with Korea time
+Environment="TZ=Asia/Seoul"
+
 # Telegram Notification Settings (Replace with your actual values)
 Environment="TELEGRAM_BOT_TOKEN=your_bot_token_here"
 Environment="TELEGRAM_CHAT_ID=your_chat_id_here"

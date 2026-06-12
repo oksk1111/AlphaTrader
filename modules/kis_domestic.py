@@ -52,12 +52,12 @@ class KisDomestic:
         }
         
         try:
-            res = requests.post(self.url + path, headers=headers, data=json.dumps(body))
+            res = requests.post(self.url + path, headers=headers, data=json.dumps(body), timeout=10)
             
             if res.status_code == 403 and "EGW00133" in res.text:
                 print("[KIS-KR] Token rate limit hit. Waiting 60 seconds...")
                 time.sleep(60)
-                res = requests.post(self.url + path, headers=headers, data=json.dumps(body))
+                res = requests.post(self.url + path, headers=headers, data=json.dumps(body), timeout=10)
 
             if res.status_code != 200:
                 print(f"[KIS-KR] Token Refresh Error: {res.status_code} {res.text}")
@@ -98,9 +98,9 @@ class KisDomestic:
         try:
             res = None
             if method == "GET":
-                res = requests.get(self.url + path, headers=headers, params=params)
+                res = requests.get(self.url + path, headers=headers, params=params, timeout=10)
             elif method == "POST":
-                res = requests.post(self.url + path, headers=headers, data=data)
+                res = requests.post(self.url + path, headers=headers, data=data, timeout=10)
             
             if res:
                 return res.json()

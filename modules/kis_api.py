@@ -90,13 +90,13 @@ class KisOverseas:
         }
         
         try:
-            res = requests.post(self.url + path, headers=headers, data=json.dumps(body))
+            res = requests.post(self.url + path, headers=headers, data=json.dumps(body), timeout=10)
             
             # Handle Rate Limit (1 request per minute)
             if res.status_code == 403 and "EGW00133" in res.text:
                 print("[KIS] Token rate limit hit. Waiting 60 seconds...")
                 time.sleep(60) # 1분 대기
-                res = requests.post(self.url + path, headers=headers, data=json.dumps(body))
+                res = requests.post(self.url + path, headers=headers, data=json.dumps(body), timeout=10)
 
             if res.status_code != 200:
                 print(f"[KIS] Token Refresh Error: {res.status_code} {res.text}")
@@ -188,7 +188,7 @@ class KisOverseas:
         }
         
         try:
-            res = requests.get(self.url + path, headers=headers, params=params)
+            res = requests.get(self.url + path, headers=headers, params=params, timeout=10)
             res.raise_for_status()
             data = res.json()
             if data['rt_cd'] != '0':
@@ -219,7 +219,7 @@ class KisOverseas:
         }
         
         try:
-            res = requests.get(self.url + path, headers=headers, params=params)
+            res = requests.get(self.url + path, headers=headers, params=params, timeout=10)
             res.raise_for_status()
             data = res.json()
             if data['rt_cd'] != '0':
@@ -282,7 +282,7 @@ class KisOverseas:
         data["OVRS_ORD_UNPR"] = str(buy_price)
         
         try:
-            res = requests.post(self.url + path, headers=headers, data=json.dumps(data))
+            res = requests.post(self.url + path, headers=headers, data=json.dumps(data), timeout=10)
             res.raise_for_status()
             return res.json()
         except Exception as e:
@@ -324,7 +324,7 @@ class KisOverseas:
         }
         
         try:
-            res = requests.post(self.url + path, headers=headers, data=json.dumps(data))
+            res = requests.post(self.url + path, headers=headers, data=json.dumps(data), timeout=10)
             res.raise_for_status()
             return res.json()
         except Exception as e:
@@ -371,7 +371,7 @@ class KisOverseas:
             }
             
             try:
-                res = requests.get(self.url + path, headers=headers, params=params)
+                res = requests.get(self.url + path, headers=headers, params=params, timeout=10)
                 if res.status_code != 200:
                     print(f"[KIS] Balance check failed Status: {res.status_code}")
                     print(f"[KIS] Balance check Response: {res.text}")
@@ -457,7 +457,7 @@ class KisOverseas:
         }
         
         try:
-            res = requests.get(self.url + path, headers=headers, params=params)
+            res = requests.get(self.url + path, headers=headers, params=params, timeout=10)
             
             if res.status_code != 200:
                 print(f"[KIS] Foreign Balance Error Status: {res.status_code}")

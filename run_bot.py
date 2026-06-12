@@ -30,6 +30,7 @@ from modules import trade_journal
 
 # Timezone
 KST = pytz.timezone('Asia/Seoul')
+US_EASTERN = pytz.timezone('US/Eastern')  # 미국 동부 (서머타임 EDT/EST 자동 반영)
 
 def safe_float(value, default=0.0):
     """빈 문자열이나 None을 안전하게 float로 변환"""
@@ -718,16 +719,12 @@ def is_market_stabilizing_now(market, buy_delay_minutes):
     if buy_delay_minutes <= 0:
         return False, 0.0
 
-    kst = pytz.timezone('Asia/Seoul')
-    now = datetime.datetime.now(kst)
-
     if market == 'US':
-        # US Open time은 오늘 밤 23:30 또는 어젯밤 23:30 KST
-        if now.hour >= 23:
-            open_time = now.replace(hour=23, minute=30, second=0, microsecond=0)
-        else:
-            open_time = (now - datetime.timedelta(days=1)).replace(hour=23, minute=30, second=0, microsecond=0)
+        # 미국장 개장: 09:30 ET (US/Eastern이 서머타임을 자동 반영)
+        now = datetime.datetime.now(US_EASTERN)
+        open_time = now.replace(hour=9, minute=30, second=0, microsecond=0)
     elif market == 'KR':
+        now = datetime.datetime.now(KST)
         open_time = now.replace(hour=9, minute=0, second=0, microsecond=0)
     else:
         return False, 0.0
@@ -735,34 +732,36 @@ def is_market_stabilizing_now(market, buy_delay_minutes):
     target_time = open_time + datetime.timedelta(minutes=buy_delay_minutes)
     if now < open_time:
         return True, (target_time - now).total_seconds()
-    
+
     if now < target_time:
         return True, (target_time - now).total_seconds()
 
     return False, 0.0
 
+def _trading_day_key(now_kst):
+    """트레이딩 데이 키. KST 07:00에 롤오버한다.
+    (미국장이 자정을 넘겨 다음날 새벽까지 이어져도 같은 키를 유지 → 세션 중복 트리거 방지)
+    """
+    return (now_kst - datetime.timedelta(hours=7)).strftime("%Y%m%d")
+
 def get_market_status():
     """
-    Returns 'US', 'KR', or 'CLOSED' based on current KST time.
-    Includes weekday check (markets closed on weekends).
+    Returns 'US', 'KR', or 'CLOSED'.
+    KR은 KST 09:00~15:20, US는 US/Eastern 09:30~16:00 기준으로 판단한다.
+    US/Eastern을 직접 사용하므로 서머타임(EDT/EST)이 자동 반영된다.
     """
-    kst = pytz.timezone('Asia/Seoul')
-    now = datetime.datetime.now(kst)
-    t = int(now.strftime("%H%M"))
-    weekday = now.weekday()  # 0=Monday, 6=Sunday
-    
-    # US Market: 23:30 ~ 06:00 KST
-    # Evening (23:30~23:59): Mon-Fri KST = US Mon-Fri sessions
-    # Morning (00:00~06:00): Tue-Sat KST = US Mon-Fri sessions (continued from prev night)
-    if 2330 <= t <= 2359 and weekday <= 4:  # Mon-Fri evening
-        return 'US'
-    if 0 <= t < 600 and 1 <= weekday <= 5:  # Tue-Sat morning
-        return 'US'
-    
-    # KR Market: 09:00 ~ 15:20, Mon-Fri only
-    if 900 <= t <= 1520 and weekday <= 4:
+    # KR Market: 09:00 ~ 15:20 KST, Mon-Fri
+    now_kst = datetime.datetime.now(KST)
+    t = int(now_kst.strftime("%H%M"))
+    if now_kst.weekday() <= 4 and 900 <= t <= 1520:
         return 'KR'
-        
+
+    # US Market: 09:30 ~ 16:00 ET, Mon-Fri (서머타임 자동 반영)
+    now_et = datetime.datetime.now(US_EASTERN)
+    et_minutes = now_et.hour * 60 + now_et.minute
+    if now_et.weekday() <= 4 and (9 * 60 + 30) <= et_minutes < (16 * 60):
+        return 'US'
+
     return 'CLOSED'
 
 def is_market_open_for(market):
@@ -2507,13 +2506,12 @@ def run_with_recovery():
     kr_triggered_today = False
     us_triggered_today = False
     opro_triggered_today = False  # 장 마감 후 백테스트+OPRO 자동 실행
-    last_date = None
+    last_reset_date = None
     
     # --- Startup Check (runs once at boot) ---
-    kst = pytz.timezone('Asia/Seoul')
-    now_kst = datetime.datetime.now(kst)
+    now_kst = datetime.datetime.now(KST)
     ctx = get_market_status()
-    last_date = now_kst.strftime("%Y%m%d")
+    last_reset_date = _trading_day_key(now_kst)
     
     if ctx != 'CLOSED':
         logger.info(f"⚡ Bot started during {ctx} Trading Hours (KST: {now_kst.strftime('%H:%M:%S')}). Launching job immediately.")
@@ -2536,18 +2534,18 @@ def run_with_recovery():
         try:
             schedule.run_pending()
             
-            kst = pytz.timezone('Asia/Seoul')
-            now = datetime.datetime.now(kst)
+            now = datetime.datetime.now(KST)
             t = int(now.strftime("%H%M"))
-            today_str = now.strftime("%Y%m%d")
             
-            # Reset daily triggers at date change
-            if last_date != today_str:
+            # 트레이딩 데이 리셋 (KST 07:00 롤오버). 미국장이 자정을 넘겨도
+            # 같은 트레이딩 데이로 묶이므로 세션 중복 진입을 막는다.
+            day_key = _trading_day_key(now)
+            if last_reset_date != day_key:
                 kr_triggered_today = False
                 us_triggered_today = False
                 opro_triggered_today = False
-                last_date = today_str
-                logger.info(f"📅 New day: {today_str} (KST). Daily triggers reset.")
+                last_reset_date = day_key
+                logger.info(f"📅 New trading day: {day_key} (KST 07:00 rollover). Daily triggers reset.")
             
             # KR 장 마감 후 16:00 KST — 백테스트 + OPRO 자동 최적화
             if 1600 <= t <= 1605 and not opro_triggered_today:
@@ -2580,8 +2578,12 @@ def run_with_recovery():
                     logger.error(f"[OPRO] 자동 최적화 실패: {_opro_e}", exc_info=True)
                     send_alert(f"⚠️ OPRO 자동 최적화 실패: {_opro_e}", is_error=True)
 
-            # KR Market: Trigger between 09:00~09:05 KST (5-minute window)
-            if 900 <= t <= 905 and not kr_triggered_today:
+            # 시장 상태 기반 트리거 (서머타임/재시작에 강건).
+            # get_market_status()가 US/Eastern을 사용하므로 미국 개장(KST 22:30/23:30)을
+            # 정확히 감지한다. 일일 플래그로 세션당 1회만 실행한다.
+            market_now = get_market_status()
+
+            if market_now == 'KR' and not kr_triggered_today:
                 kr_triggered_today = True
                 logger.info(f"⏰ KR Market trigger at KST {now.strftime('%Y-%m-%d %H:%M:%S')}")
                 try:
@@ -2597,9 +2599,8 @@ def run_with_recovery():
                         time.sleep(300)
                         error_count = 0
                 time.sleep(60)
-                
-            # US Market: Trigger between 23:30~23:35 KST (5-minute window)
-            if 2330 <= t <= 2335 and not us_triggered_today:
+
+            elif market_now == 'US' and not us_triggered_today:
                 us_triggered_today = True
                 logger.info(f"⏰ US Market trigger at KST {now.strftime('%Y-%m-%d %H:%M:%S')}")
                 try:
@@ -2700,8 +2701,8 @@ if __name__ == "__main__":
     schedule.every(1).minutes.do(heartbeat)
     schedule.every(5).minutes.do(run_scanner) # Scan every 5 minutes
     schedule.every().day.at("08:00").do(update_dynamic_portfolio) # Update before KR market opens
-    # For US market testing and stability
-    schedule.every().day.at("23:10").do(update_dynamic_portfolio)
+    # 미국장 개장 전 포트폴리오 갱신 (서머타임 22:30 / 표준시 23:30 개장보다 앞서도록 22:00 KST)
+    schedule.every().day.at("22:00").do(update_dynamic_portfolio)
     
     # Run main loop with automatic recovery (includes startup check)
     run_with_recovery()

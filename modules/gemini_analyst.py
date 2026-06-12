@@ -20,7 +20,7 @@ class GeminiAnalyst:
         if not self.model:
             return False
         try:
-            response = self.model.generate_content("hi")
+            response = self.model.generate_content("hi", request_options={"timeout": 15})
             _ = response.text
             print("[Gemini] Health check PASSED ✓")
             return True
@@ -95,7 +95,7 @@ class GeminiAnalyst:
         """
         
         try:
-            response = self.model.generate_content(prompt)
+            response = self.model.generate_content(prompt, request_options={"timeout": 15})
             text = response.text.strip()
             # Clean up markdown code blocks if present
             if text.startswith("```json"):
