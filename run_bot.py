@@ -750,19 +750,23 @@ def get_market_status():
     KR은 KST 09:00~15:20, US는 US/Eastern 09:30~16:00 기준으로 판단한다.
     US/Eastern을 직접 사용하므로 서머타임(EDT/EST)이 자동 반영된다.
     """
-    # KR Market: 09:00 ~ 15:20 KST, Mon-Fri
-    now_kst = datetime.datetime.now(KST)
-    t = int(now_kst.strftime("%H%M"))
-    if now_kst.weekday() <= 4 and 900 <= t <= 1520:
-        return 'KR'
+    try:
+        # KR Market: 09:00 ~ 15:20 KST, Mon-Fri
+        now_kst = datetime.datetime.now(KST)
+        t = int(now_kst.strftime("%H%M"))
+        if now_kst.weekday() <= 4 and 900 <= t <= 1520:
+            return 'KR'
 
-    # US Market: 09:30 ~ 16:00 ET, Mon-Fri (서머타임 자동 반영)
-    now_et = datetime.datetime.now(US_EASTERN)
-    et_minutes = now_et.hour * 60 + now_et.minute
-    if now_et.weekday() <= 4 and (9 * 60 + 30) <= et_minutes < (16 * 60):
-        return 'US'
+        # US Market: 09:30 ~ 16:00 ET, Mon-Fri (서머타임 자동 반영)
+        now_et = datetime.datetime.now(US_EASTERN)
+        et_minutes = now_et.hour * 60 + now_et.minute
+        if now_et.weekday() <= 4 and (9 * 60 + 30) <= et_minutes < (16 * 60):
+            return 'US'
 
-    return 'CLOSED'
+        return 'CLOSED'
+    except Exception as e:
+        logger.error(f"Error in get_market_status: {e}", exc_info=True)
+        return 'CLOSED'
 
 def is_market_open_for(market):
     """매도 주문이 실제로 체결될 수 있는 시장 시간인지 확인.
@@ -2508,10 +2512,17 @@ def run_with_recovery():
     opro_triggered_today = False  # 장 마감 후 백테스트+OPRO 자동 실행
     last_reset_date = None
     
+    logger.info("=" * 80)
+    logger.info("Starting run_with_recovery() - Bot initialization")
+    logger.info(f"Python version: {sys.version}")
+    logger.info(f"Current working directory: {os.getcwd()}")
+    logger.info("=" * 80)
+    
     # --- Startup Check (runs once at boot) ---
     now_kst = datetime.datetime.now(KST)
     ctx = get_market_status()
     last_reset_date = _trading_day_key(now_kst)
+    logger.info(f"Initial market status: {ctx}, Trading day key: {last_reset_date}")
     
     if ctx != 'CLOSED':
         logger.info(f"⚡ Bot started during {ctx} Trading Hours (KST: {now_kst.strftime('%H:%M:%S')}). Launching job immediately.")
@@ -2582,6 +2593,10 @@ def run_with_recovery():
             # get_market_status()가 US/Eastern을 사용하므로 미국 개장(KST 22:30/23:30)을
             # 정확히 감지한다. 일일 플래그로 세션당 1회만 실행한다.
             market_now = get_market_status()
+            
+            # 주기적으로 시장 상태 로깅 (매 5분)
+            if t % 5 == 0:
+                logger.info(f"[Heartbeat {now.strftime('%H:%M')}] Market={market_now}, KR_trigger={kr_triggered_today}, US_trigger={us_triggered_today}")
 
             if market_now == 'KR' and not kr_triggered_today:
                 kr_triggered_today = True
