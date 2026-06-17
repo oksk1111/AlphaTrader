@@ -305,7 +305,7 @@ KR_ETF_CODES = {'122630', '233740', '449200', '426030', '069500', '229200', '114
                 '456600', '0174B0', '0180V0', '0173Y0', '0193T0', '0193W0'}
 
 # US 레버리지 ETF 심볼 목록 (3X ETF는 DCA 매수 조건 완화 적용)
-US_LEVERAGED_ETF_SYMBOLS = {t['symbol'] for t in TARGET_TICKERS_US_3X}
+US_LEVERAGED_ETF_SYMBOLS = {t['symbol'] for t in TARGET_TICKERS_US_3X if isinstance(t, dict) and t.get('symbol')}
 
 # === US 거래소 매핑 ===
 # 동적 포트폴리오(portfolio_target.json)는 symbol/weight만 저장하고 exchange가 빠질 수 있으므로
@@ -859,11 +859,11 @@ def job():
         logger.info(f"🇰🇷 Starting KR Trading Session ({STRATEGY_MODE.upper()})")
         
         # Log Static Targets (handle both dict and string)
-        static_log = [t['symbol'] if isinstance(t, dict) else t for t in TARGET_TICKERS_KR]
+        static_log = [t['symbol'] if isinstance(t, dict) and t.get('symbol') else t for t in TARGET_TICKERS_KR]
         logger.info(f"   - Static Targets: {static_log}")
         
         if current_dynamic_targets:
-            logger.info(f"   - Dynamic Targets (Scanner): {[t['symbol'] for t in current_dynamic_targets]}")
+            logger.info(f"   - Dynamic Targets (Scanner): {[t['symbol'] if isinstance(t, dict) else t for t in current_dynamic_targets]}")
             
     llm_consensus_cfg = user_config.get("llm_consensus", {})
     ai = MultiLLMAnalyst(consensus_config=llm_consensus_cfg)
@@ -2388,7 +2388,7 @@ if __name__ == "__main__":
                 # found_tickers = spikes + gainers
                 found_tickers = spikes + blue_chips # Combine both strategies
                 
-                current_dynamic_codes = [t['symbol'] for t in DYNAMIC_TARGETS]
+                current_dynamic_codes = [t.get('symbol') or t.get('code') for t in DYNAMIC_TARGETS if isinstance(t, dict)]
                 
                 new_discoveries = []
                 for item in found_tickers:
@@ -2401,7 +2401,7 @@ if __name__ == "__main__":
                 if new_discoveries:
                     msg = f"🚀 [Scanner] Found {len(new_discoveries)} new opportunities:\n" + "\n".join(new_discoveries)
                     send_alert(msg)
-                    logger.info(f"Updated Dynamic Targets: {[t['symbol'] for t in DYNAMIC_TARGETS]}")
+                    logger.info(f"Updated Dynamic Targets: {[t.get('symbol') or t.get('code') for t in DYNAMIC_TARGETS if isinstance(t, dict)]}")
                     
             except Exception as e:
                 logger.error(f"Scanner failed: {e}")
