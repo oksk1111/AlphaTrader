@@ -242,6 +242,8 @@ class TelegramNotifier:
         """봇 장애 알림 발송"""
         now = datetime.now()
         
+        err_section = f"<b>에러 메시지:</b>\n<code>{error_msg[:200]}</code>\n\n" if error_msg else ""
+        
         alert = f"""
 🚨 <b>Alpha Trader 긴급 알림</b>
 ━━━━━━━━━━━━━━━━━━━━
@@ -253,9 +255,7 @@ class TelegramNotifier:
 ├ 상태: 🔴 STOPPED
 └ 즉시 확인이 필요합니다!
 
-{f'<b>에러 메시지:</b>\n<code>{error_msg[:200]}</code>' if error_msg else ''}
-
-<b>조치 방법:</b>
+{err_section}<b>조치 방법:</b>
 1. SSH 접속: ssh user@158.180.81.25
 2. 로그 확인: tail -f database/trading_*.log
 3. 수동 시작: ./auto_restart_bot.sh
