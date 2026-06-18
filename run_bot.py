@@ -863,7 +863,7 @@ def job():
         logger.info(f"   - Static Targets: {static_log}")
         
         if current_dynamic_targets:
-            logger.info(f"   - Dynamic Targets (Scanner): {[t['symbol'] if isinstance(t, dict) else t for t in current_dynamic_targets]}")
+            logger.info(f"   - Dynamic Targets (Scanner): {[t.get('symbol') or t.get('code') if isinstance(t, dict) else t for t in current_dynamic_targets]}")
             
     llm_consensus_cfg = user_config.get("llm_consensus", {})
     ai = MultiLLMAnalyst(consensus_config=llm_consensus_cfg)
