@@ -30,7 +30,7 @@
     },
     "risk_management": {
         "stop_loss_pct": -6.0,
-        "trailing_stop_activation_pct": 6.0,
+        "trailing_stop_activation_pct": 5.0,
         "trailing_stop_drop_pct": 3.5,
         "gap_down_threshold_pct": 6.0,
         "consecutive_decline_days": 2,
@@ -42,13 +42,13 @@
         "rebound_intraday_bounce_pct": 0.8,
         "rebound_max_buys_per_session": 2,
         "partial_tp_enabled": true,
-        "partial_tp_ratio": 0.4,
+        "partial_tp_ratio": 0.33,
         "breakeven_enabled": true,
-        "breakeven_trigger_pct_us": 4.0,
-        "breakeven_trigger_pct_kr_stock": 5.0,
+        "breakeven_trigger_pct_us": 3.0,
+        "breakeven_trigger_pct_kr_stock": 4.0,
         "breakeven_buffer_pct": 0.3,
         "correlation_cap_enabled": true,
-        "correlation_max_per_group": 3,
+        "correlation_max_per_group": 2,
         "correlation_groups": [
             [
                 "TQQQ",
@@ -65,13 +65,34 @@
             ]
         ],
         "losing_streak_enabled": true,
-        "losing_streak_max_stops": 4,
-        "losing_streak_daily_pnl_pct": -4.0,
+        "losing_streak_max_stops": 5,
+        "losing_streak_daily_pnl_pct": -5.0,
         "atr_dynamic_stop_enabled": true,
         "atr_period": 14,
-        "atr_stop_multiplier": 2.5,
+        "atr_stop_multiplier": 2.0,
         "pullback_rebuy_enabled": true,
-        "pullback_rebuy_ratio": 0.35
+        "pullback_rebuy_ratio": 0.35,
+        "leveraged_scaling_enabled": true,
+        "trend_exit_enabled": true,
+        "trend_exit_buffer_pct": 1.0,
+        "trend_exit_min_loss_pct": -1.0,
+        "leveraged_etf_factors": {
+            "TQQQ": 3.0,
+            "SOXL": 3.0,
+            "TECL": 3.0,
+            "FNGU": 3.0,
+            "UPRO": 3.0,
+            "NVDL": 2.0
+        }
+    },
+    "portfolio_selection": {
+        "max_kr_etf": 10,
+        "max_kr_stock": 4,
+        "max_us_1x": 3,
+        "max_us_3x": 3,
+        "max_us_stock": 4,
+        "min_etf_momentum": -5.0,
+        "min_stock_momentum": 5.0
     },
     "adaptive_strategy": {
         "enabled": true,

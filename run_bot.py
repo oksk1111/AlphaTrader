@@ -107,6 +107,27 @@ PULLBACK_REBUY_ENABLED = True
 PULLBACK_REBUY_RATIO = 0.3              # 재진입 수량 비율 (최초 매수 수량의 30%)
 PULLBACK_REBUY_MAX_PER_TICKER = 1       # 종목당 세션 최대 재진입 횟수
 
+# === [NEW v3.0] 레버리지 ETF 비대칭 스케일링 ===
+# 상승(수익실현·활성)은 풀 배율, 하락(손절·방어)은 보수적 배율로 비대칭 적용.
+# 효과: 3x ETF가 +3%에 본전청산되는 조기매도 방지 + 추세를 충분히 추적.
+LEVERAGED_SCALING_ENABLED = True
+# 종목 → 레버리지 배율 (price 가 기초지수 대비 N배 진폭). user_config 로 override 가능.
+LEVERAGED_ETF_FACTOR = {
+    # US 3x
+    'TQQQ': 3.0, 'SOXL': 3.0, 'TECL': 3.0, 'FNGU': 3.0, 'UPRO': 3.0, 'SPXL': 3.0, 'LABU': 3.0,
+    # US 2x
+    'NVDL': 2.0, 'BITX': 2.0, 'CONL': 2.0, 'AMDL': 2.0, 'TSLL': 2.0,
+    # KR 2x (지수/단일종목 레버리지)
+    '122630': 2.0, '233740': 2.0, '0193T0': 2.0, '0193W0': 2.0, '449200': 2.0,
+}
+
+# === [NEW v3.0] 추세붕괴 손절 (Trend-Collapse Exit) ===
+# 보유 종목이 명확히 20MA 를 하회하고 손실 구간이면, %손절선 미도달이라도 즉시 청산.
+# → "하락 여력 분명한데 매도 안됨" (losers 방치) 문제 해결.
+TREND_EXIT_ENABLED = True
+TREND_EXIT_BUFFER_PCT = 1.0            # 20MA 하회 버퍼(1x 기준). 레버리지는 /factor 로 축소 → 더 민감
+TREND_EXIT_MIN_LOSS_PCT = -1.0        # 이 손실% 이하일 때만 작동 (본전 부근 잦은 청산 방지)
+
 # Telegram Notifier for alerts
 telegram = TelegramNotifier()
 
@@ -234,6 +255,18 @@ if risk_config:
     ATR_STOP_MULTIPLIER = float(risk_config.get("atr_stop_multiplier", ATR_STOP_MULTIPLIER))
     PULLBACK_REBUY_ENABLED = bool(risk_config.get("pullback_rebuy_enabled", PULLBACK_REBUY_ENABLED))
     PULLBACK_REBUY_RATIO = float(risk_config.get("pullback_rebuy_ratio", PULLBACK_REBUY_RATIO))
+    # === v3.0 knobs ===
+    LEVERAGED_SCALING_ENABLED = bool(risk_config.get("leveraged_scaling_enabled", LEVERAGED_SCALING_ENABLED))
+    TREND_EXIT_ENABLED = bool(risk_config.get("trend_exit_enabled", TREND_EXIT_ENABLED))
+    TREND_EXIT_BUFFER_PCT = float(risk_config.get("trend_exit_buffer_pct", TREND_EXIT_BUFFER_PCT))
+    TREND_EXIT_MIN_LOSS_PCT = float(risk_config.get("trend_exit_min_loss_pct", TREND_EXIT_MIN_LOSS_PCT))
+    _user_lev_factors = risk_config.get("leveraged_etf_factors")
+    if isinstance(_user_lev_factors, dict) and _user_lev_factors:
+        try:
+            for _k, _v in _user_lev_factors.items():
+                LEVERAGED_ETF_FACTOR[str(_k).upper()] = float(_v)
+        except Exception:
+            pass
 
 logger.info(f"Loaded Config: Mode={user_config.get('trading_mode')}, Strategy={STRATEGY_MODE}, Persona={PERSONA}")
 
@@ -340,7 +373,13 @@ try:
             for t in kr_dyn:
                 if t not in TARGET_TICKERS_KR_1X:
                     TARGET_TICKERS_KR_1X.append(t)
-            KR_ETF_CODES.update(kr_dyn)
+            # ⚠️ kr_dyn 은 문자열(코드) 또는 dict({code,category,weight}) 혼합 가능.
+            #    set.update(dict) 은 'unhashable type: dict' 로 동적 포트폴리오 로드를
+            #    통째로 중단시켰던 버그 → 코드 문자열만 안전 추출해 갱신한다.
+            for t in kr_dyn:
+                _code = (t.get('code') or t.get('symbol')) if isinstance(t, dict) else t
+                if _code:
+                    KR_ETF_CODES.add(str(_code))
 
         # ⚠️ US 동적 포트폴리오 적용은 KR 갱신과 독립이어야 함 (kr_dyn 이 비어 있어도 US 는 갱신)
         def _normalize_us_entry(item):
@@ -419,7 +458,7 @@ def calculate_signal_strength(current_price, target_price, ma20, ohlc_data):
     
     return min(strength, 1.0)
 
-def calculate_order_quantity(available_cash, current_price, signal_strength=0.5, num_targets=1):
+def calculate_order_quantity(available_cash, current_price, signal_strength=0.5, num_targets=1, weight=1.0):
     """
     신호 강도에 따른 동적 매수 수량 계산
     
@@ -428,10 +467,19 @@ def calculate_order_quantity(available_cash, current_price, signal_strength=0.5,
     - 보통 신호(0.5~0.8): 가용 자금의 20%까지 투자
     - 약한 신호(0.3~0.5): 가용 자금의 10%까지 투자
     - 매우 약한 신호(<0.3): 최소 수량만 투자
+    - weight: 동적 포트폴리오 카테고리 비중(0~1). 코어 ETF=1.0, 새틀라이트/개별주=0.3~0.5.
+              None/0/음수/비숫자는 1.0 으로 폴백.
     """
     if not available_cash or not current_price or current_price <= 0:
         return 1
-    
+
+    try:
+        weight = float(weight)
+        if weight <= 0:
+            weight = 1.0
+    except (TypeError, ValueError):
+        weight = 1.0
+
     # 분산 투자를 위해 종목 수로 나눔
     per_ticker_cash = available_cash / max(num_targets, 1)
     
@@ -449,23 +497,35 @@ def calculate_order_quantity(available_cash, current_price, signal_strength=0.5,
         position_pct = 0.2  # 매우 약한 신호: 20%
         logger.info(f"⚠️ 매우 약한 신호 (강도: {signal_strength:.2f}) → 최소 포지션 20%")
     
-    max_investment = per_ticker_cash * position_pct
+    # 비중(weight)을 포지션 비율에 결합. 부동소수점 일관성을 위해 비율끼리 먼저 곱한다.
+    effective_pct = position_pct * weight
+    max_investment = per_ticker_cash * effective_pct
     
-    # 1주당 가격이 할당 금액보다 비쌀 경우, 가용 자금이 충분하다면 우선 1주는 매수할 수 있도록 max_investment 보정
-    if max_investment < current_price and available_cash >= current_price:
+    # 1주 floor 보정: 코어(weight≥1.0)에서만 적용. 저비중 새틀라이트(weight<1)는
+    # 0주 허용 → 소액 종목 과대 매수 방지.
+    if weight >= 1.0 and max_investment < current_price and available_cash >= current_price:
         max_investment = current_price
         
     qty = int(max_investment / current_price)
     
     return max(qty, 1)  # 최소 1주
 
-def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_settings=None, market='US'):
+def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_settings=None, market='US', weight=1.0):
     """
     DCA 전략용 매수 수량 계산
     - 매일 일정 비율/금액을 분할 매수
+    - weight: 동적 포트폴리오 카테고리 비중(0~1). 코어 ETF=1.0, 새틀라이트/개별주<1.0.
+              None/0/음수/비숫자는 1.0 으로 폴백.
     """
     if not available_cash or not current_price or current_price <= 0:
         return 1
+
+    try:
+        weight = float(weight)
+        if weight <= 0:
+            weight = 1.0
+    except (TypeError, ValueError):
+        weight = 1.0
     
     if dca_settings is None:
         dca_settings = DCA_SETTINGS
@@ -482,19 +542,22 @@ def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_set
         max_investment = dca_settings.get("max_investment_krw", max_investment * exchange_rate)
         currency_symbol = "₩"
     
-    # 종목별 투자 금액 계산
+    # 종목별 투자 금액 계산 (비중 weight 반영)
     per_ticker_cash = available_cash / max(num_targets, 1)
+    per_ticker_limit = per_ticker_cash * weight
     
-    # daily_pct를 목표별 할당금액(per_ticker_cash)이 아닌 가용 자금 전체(available_cash) 기준으로 계산하되,
-    # 한 종목에 너무 많은 자금이 몰리지 않도록 per_ticker_cash를 한도로 둠
-    target_investment_amount = available_cash * daily_pct
-    investment_amount = min(target_investment_amount, per_ticker_cash)
+    # daily_pct를 가용 자금 전체(available_cash) 기준으로 계산하되, 비중(weight)을 곱해
+    # 새틀라이트/개별주는 소액만 분할 매수. 한 종목 집중 방지를 위해 per_ticker_limit 한도 적용.
+    target_investment_amount = available_cash * daily_pct * weight
+    investment_amount = min(target_investment_amount, per_ticker_limit)
     
-    # 최소/최대 제한 적용
-    investment_amount = max(min_investment, min(max_investment, investment_amount))
+    # 최소/최대 제한도 비중 반영
+    effective_max = max_investment * weight
+    effective_min = min(min_investment, effective_max)
+    investment_amount = max(effective_min, min(effective_max, investment_amount))
 
-    # 주문 가능 금액이 1주 가격보다 작으나 가용 자금(available_cash)이 충분하다면 최소 1주는 살 수 있도록 조정
-    if investment_amount < current_price and available_cash >= current_price:
+    # 1주 floor 보정: 코어(weight≥1.0)에서만. 저비중 새틀라이트는 0주 허용.
+    if weight >= 1.0 and investment_amount < current_price and available_cash >= current_price:
         investment_amount = current_price
 
     if investment_amount < current_price:
@@ -671,11 +734,12 @@ def get_breakeven_trigger_pct(market, ticker):
     return float(BREAKEVEN_TRIGGER_PCT_US)
 
 
-def effective_stop_loss_pct(base_pct, ohlc):
+def effective_stop_loss_pct(base_pct, ohlc, leverage_factor=1.0):
     """ATR 동적 손절폭 산정.
 
     base_pct: 기존 손절 % (음수, 예: -5.0)
-    반환: 더 보수적(=절대값 큰) 손절폭, 단 ATR_STOP_MAX_PCT 로 하한 보호.
+    leverage_factor: 레버리지 배율(>1.0) 이면 ATR 상한(cap)을 보수적 배율로 확장.
+    반환: 더 보수적(=절대값 큰) 손절폭, 단 (배율 반영된) ATR_STOP_MAX_PCT 로 하한 보호.
     """
     if not ATR_DYNAMIC_STOP_ENABLED or not ohlc:
         return base_pct
@@ -685,7 +749,42 @@ def effective_stop_loss_pct(base_pct, ohlc):
     atr_stop = -ATR_STOP_MULTIPLIER * atr_pct
     # 더 큰 절대값을 채택 (= 더 느슨한 손절) → 노이즈 컷 회피
     candidate = min(base_pct, atr_stop)
-    return max(candidate, ATR_STOP_MAX_PCT)
+    cap = ATR_STOP_MAX_PCT
+    if leverage_factor and leverage_factor > 1.0:
+        # 레버리지는 기초지수 대비 N배 진폭 → cap 도 보수적 배율 (1+N)/2 로 확장
+        cap = ATR_STOP_MAX_PCT * ((1.0 + float(leverage_factor)) / 2.0)
+    return max(candidate, cap)
+
+
+# === [v3.0] 레버리지 ETF 비대칭 청산 스케일링 헬퍼 ===
+# (LEVERAGED_ETF_FACTOR 매핑은 상단 상수 블록에 정의 — user_config 로 override 가능)
+# 상승(수익실현·활성)은 풀 배율 N → let winners run,
+# 하락(손절·방어)은 보수적 배율 (1+N)/2 → 변동성 decay 손실 조기 차단.
+
+
+def get_leverage_factor(ticker):
+    """종목의 레버리지 배율 반환 (매핑에 없으면 1.0)."""
+    if not ticker:
+        return 1.0
+    key = str(ticker).upper()
+    return float(LEVERAGED_ETF_FACTOR.get(key, LEVERAGED_ETF_FACTOR.get(str(ticker), 1.0)))
+
+
+def scale_profit_threshold(base_pct, ticker):
+    """수익실현/활성 임계값 → 풀 배율 적용 (레버리지 ETF가 상승추세를 충분히 타도록)."""
+    if not LEVERAGED_SCALING_ENABLED:
+        return base_pct
+    return base_pct * get_leverage_factor(ticker)
+
+
+def scale_loss_threshold(base_pct, ticker):
+    """손절/방어 임계값 → 보수적 배율 (1+N)/2 적용 (decay 손실 조기 차단)."""
+    if not LEVERAGED_SCALING_ENABLED:
+        return base_pct
+    f = get_leverage_factor(ticker)
+    if f <= 1.0:
+        return base_pct
+    return base_pct * ((1.0 + f) / 2.0)
 
 
 def safe_sell(kis_client, market, ticker, qty_hint, exchange=None,
@@ -1044,7 +1143,8 @@ def job():
         else:
             logger.info(f"[{ticker}] ⚡ 반등 매수 - AI veto 우회")
 
-        qty = calculate_dca_quantity(available_cash, current_price, num_targets, DCA_SETTINGS, market)
+        qty = calculate_dca_quantity(available_cash, current_price, num_targets, DCA_SETTINGS, market,
+                                     weight=ticker_weights.get(ticker, 1.0))
         if dca_reduce_qty:
             qty = max(1, qty // 2)
             logger.info(f"[{ticker}] 📉 5MA 하회로 매수량 축소: {qty}주")
@@ -1238,6 +1338,10 @@ def job():
     # 활성 타겟 수 (분산 투자 계산용)
     num_active_targets = len(tickers)
 
+    # [v3.0] 종목별 동적 포트폴리오 비중(weight) 맵 — 매수 수량 계산에 반영.
+    #   코어/레버리지 ETF=1.0(풀 사이즈), 새틀라이트 테마/개별주<1.0(저비중).
+    ticker_weights = {}
+
     # 1. Initialize Targets for each ticker
     for t_obj in tickers:
         if isinstance(t_obj, dict):
@@ -1252,6 +1356,12 @@ def job():
         if not ticker:
             logger.warning(f"Skipping ticker entry with no symbol: {t_obj}")
             continue
+
+        # 비중 추출 (dict 항목에만 weight 존재; 없으면 1.0)
+        try:
+            ticker_weights[ticker] = float(t_obj.get('weight', 1.0)) if isinstance(t_obj, dict) else 1.0
+        except (TypeError, ValueError):
+            ticker_weights[ticker] = 1.0
 
         logger.info(f"Analyzing {ticker}...")
         
@@ -1467,7 +1577,11 @@ def job():
                     'buys': holding_qty,
                     'exchange': exchange,
                     'buy_price': holding_avg_price if holding_avg_price > 0 else current_price,
-                    'highest_price': current_price
+                    'highest_price': current_price,
+                    # [v3.0] 추세붕괴 손절이 동작하려면 ma20/ohlc 가 모니터 데이터에 있어야 함
+                    'ma20': ma20,
+                    'ma5': ma5,
+                    'ohlc': ohlc,
                 }
                 continue
 
@@ -1766,21 +1880,32 @@ def job():
                     pos_trailing_act = KR_STOCK_TRAILING_ACTIVATION if is_kr_stock_pos else TRAILING_STOP_ACTIVATION
                     pos_trailing_drop = KR_STOCK_TRAILING_DROP if is_kr_stock_pos else TRAILING_STOP_DROP
 
-                    # [v2.5] ATR 동적 손절폭 적용 (보수적 = 절대값 큰 쪽 채택)
+                    # [v3.0] 레버리지 ETF 비대칭 스케일링
+                    #   - 상승(trailing 활성): 풀 배율 → winners 가 추세를 충분히 타도록
+                    #   - 하락(손절/trailing drop): 보수적 배율 (1+N)/2 → decay 손실 조기 차단
+                    lev_factor = get_leverage_factor(ticker)
+                    if lev_factor > 1.0:
+                        pos_trailing_act = scale_profit_threshold(pos_trailing_act, ticker)
+                        pos_stop_loss = scale_loss_threshold(pos_stop_loss, ticker)
+                        pos_trailing_drop = scale_loss_threshold(pos_trailing_drop, ticker)
+
+                    # [v2.5] ATR 동적 손절폭 적용 (보수적 = 절대값 큰 쪽 채택, 레버리지는 cap 확장)
                     try:
-                        pos_stop_loss = effective_stop_loss_pct(pos_stop_loss, data.get('ohlc'))
+                        pos_stop_loss = effective_stop_loss_pct(pos_stop_loss, data.get('ohlc'), lev_factor)
                     except Exception:
                         pass
 
-                    # [v2.5] Breakeven Stop 활성화 판정
+                    # [v2.5+v3.0] Breakeven Stop 활성화 판정 (레버리지는 풀 배율로 트리거를 늦춤)
                     be_trigger = get_breakeven_trigger_pct(market, ticker)
+                    if be_trigger is not None and lev_factor > 1.0:
+                        be_trigger = scale_profit_threshold(be_trigger, ticker)
                     if BREAKEVEN_ENABLED and be_trigger is not None and not data.get('breakeven_armed'):
                         # 고점 기준이 아닌 현재 pnl 기준으로 한 번이라도 +trigger% 를 찍었는지 본다
                         if pnl_pct >= be_trigger or ((highest_price - buy_price) / buy_price * 100) >= be_trigger:
                             data['breakeven_armed'] = True
                             data['breakeven_price'] = buy_price * (1.0 + BREAKEVEN_BUFFER_PCT / 100.0)
                             logger.info(
-                                f"[{ticker}] 🛡️ Breakeven 활성화 (peak +{be_trigger}% 도달) → "
+                                f"[{ticker}] 🛡️ Breakeven 활성화 (peak +{be_trigger:.1f}% 도달) → "
                                 f"floor={data['breakeven_price']:.4f}"
                             )
 
@@ -1841,7 +1966,44 @@ def job():
                             data['status'] = 'stop_loss_failed'
                             data['stop_loss_fail_count'] = 1
                         continue
-                        
+
+                    # 1-B. [v3.0] 추세붕괴 손절 (Trend-Collapse Exit)
+                    # 보유 종목이 명확히 20MA 하회 + 손실 구간이면 %손절선 미도달이라도 즉시 청산.
+                    # → "하락 여력 분명한데 매도 안됨" (losers 방치) 문제 해결.
+                    # 이미 본전 아밍(수익 구간 경험)된 포지션은 breakeven/trailing 에 위임.
+                    ma20_ref = data.get('ma20')
+                    if (TREND_EXIT_ENABLED and ma20_ref and ma20_ref > 0
+                            and not data.get('breakeven_armed')
+                            and pnl_pct <= TREND_EXIT_MIN_LOSS_PCT):
+                        # 레버리지 배율이 클수록 버퍼를 좁혀 더 빨리 손절 (decay 대응)
+                        trend_buf = TREND_EXIT_BUFFER_PCT / max(1.0, lev_factor)
+                        if curr < ma20_ref * (1.0 - trend_buf / 100.0):
+                            logger.warning(
+                                f"[{ticker}] 📉 Trend-Collapse Exit! curr={curr:.4f} < "
+                                f"MA20 {ma20_ref:.4f} (buf {trend_buf:.2f}%), pnl={pnl_pct:.2f}%. {qty}주 매도."
+                            )
+                            send_alert(
+                                f"📉 [{ticker}] 추세붕괴 손절! 20MA 하회 + 손실 {pnl_pct:.2f}%. {qty}주 매도."
+                            )
+                            _te = safe_sell(kis, market, ticker, qty, data.get('exchange'),
+                                            reason='추세붕괴손절', monitor_data=data)
+                            if _te['phase'] == 'deferred':
+                                continue
+                            if _te['phase'] == 'already_flat':
+                                data['status'] = 'sold_sl'
+                                continue
+                            if _te['success']:
+                                data['status'] = 'sold_sl'
+                                try:
+                                    _record_loss_event(pnl_pct, 'stop_loss')
+                                except Exception:
+                                    pass
+                            else:
+                                logger.error(f"[{ticker}] ❌ Trend-collapse sell FAILED: {_te['error']}")
+                                data['status'] = 'stop_loss_failed'
+                                data['stop_loss_fail_count'] = 1
+                            continue
+
                     # 2. Trailing Stop (시장별 차별화)
                     peak_pnl_pct = ((highest_price - buy_price) / buy_price) * 100
 
@@ -2006,7 +2168,8 @@ def job():
                         logger.warning(f"[{ticker}] Re-entry blocked: account restriction")
                         continue
 
-                    qty = calculate_order_quantity(available_cash, current_price, 0.6, num_active_targets)
+                    qty = calculate_order_quantity(available_cash, current_price, 0.6, num_active_targets,
+                                                   weight=ticker_weights.get(ticker, 1.0))
                     if reduce_qty:
                         qty = max(1, qty // 2)
                         logger.info(f"[{ticker}] 🔄 Re-entry: MA20 복귀, MA5 미복귀 → 수량 50% 축소 {qty}주")
@@ -2135,12 +2298,13 @@ def job():
                     )
                     logger.info(f"[{ticker}] Signal Strength: {signal_strength:.2f}")
                     
-                    # 신호 강도에 따른 동적 수량 계산
+                    # 신호 강도에 따른 동적 수량 계산 (동적 포트폴리오 비중 반영)
                     qty = calculate_order_quantity(
                         available_cash, 
                         current_price, 
                         signal_strength,
-                        num_active_targets
+                        num_active_targets,
+                        weight=ticker_weights.get(ticker, 1.0)
                     )
                     logger.info(f"[{ticker}] AI Approved. Buying {qty} shares (Signal: {signal_strength:.2f})...")
                     
@@ -2411,7 +2575,16 @@ if __name__ == "__main__":
         try:
             from modules.portfolio_manager import PortfolioManager
             pm = PortfolioManager()
-            pm.generate_and_save_portfolio(max_kr=10)
+            sel = (user_config.get("portfolio_selection") or {})
+            pm.generate_and_save_portfolio(
+                max_kr_etf=sel.get("max_kr_etf", 10),
+                max_kr_stock=sel.get("max_kr_stock", 4),
+                max_us_1x=sel.get("max_us_1x", 3),
+                max_us_3x=sel.get("max_us_3x", 3),
+                max_us_stock=sel.get("max_us_stock", 4),
+                min_etf_momentum=sel.get("min_etf_momentum", -5.0),
+                min_stock_momentum=sel.get("min_stock_momentum", 5.0),
+            )
         except Exception as e:
             logger.error(f"Failed to update dynamic portfolio: {e}")
 
@@ -2420,6 +2593,12 @@ if __name__ == "__main__":
     schedule.every().day.at("08:00").do(update_dynamic_portfolio) # Update before KR market opens
     # For US market testing and stability
     schedule.every().day.at("23:10").do(update_dynamic_portfolio)
-    
+
+    # 부팅 시 1회 즉시 갱신 (stale 포트폴리오 방지 - 과거 회전 버그로 수 주간 고정됐던 이력)
+    try:
+        update_dynamic_portfolio()
+    except Exception as _e:
+        logger.error(f"Startup portfolio refresh failed: {_e}")
+
     # Run main loop with automatic recovery (includes startup check)
     run_with_recovery()

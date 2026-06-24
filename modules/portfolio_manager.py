@@ -7,6 +7,12 @@ from typing import List, Dict
 from modules.kis_domestic import KisDomestic
 from modules.kis_api import KisOverseas
 
+try:
+    # 위험조정 점수 산정에 ATR% 사용 (없으면 모멘텀만으로 폴백)
+    from strategies.technical import calculate_atr_pct
+except Exception:  # pragma: no cover - 방어적 임포트
+    calculate_atr_pct = None
+
 logger = logging.getLogger(__name__)
 
 PORTFOLIO_FILE = "database/portfolio_target.json"
@@ -147,6 +153,76 @@ class PortfolioManager:
             logger.error(f"Momemtum Calc Error: {e}")
             return -999.0
 
+    def get_composite_score(self, ohlc_data: List[Dict]) -> Dict:
+        """[v3.0] 추세추종 복합 점수.
+
+        단순 20일 수익률 대신 **멀티 lookback 위험조정 모멘텀 + 추세 확인**을 사용해
+        '강하고 매끄럽게 상승하는 싸이클 선도 종목'을 상위로 끌어올린다.
+
+        - blended = 0.2·R5 + 0.5·R20 + 0.3·R60  (중기 추세 강조)
+        - risk_adj = blended / ATR%            (변동성 대비 효율 = 매끄러운 상승 우대)
+        - 추세 보너스: 가격 > MA20(+0.3), MA20 ≥ MA60(+0.2)
+        - 추세 이탈(가격 < MA20): 강등(×0.5) → 약세 종목 자동 후순위
+
+        Returns: {score, momentum(R20), blended, atr_pct, trend_ok}
+        """
+        fallback = {"score": -999.0, "momentum": -999.0, "blended": -999.0,
+                    "atr_pct": 0.0, "trend_ok": False}
+        if not ohlc_data or len(ohlc_data) < 6:
+            return fallback
+        try:
+            closes = [float(x.get('clos', x.get('stck_clpr', 0)) or 0) for x in ohlc_data]
+            closes = [c for c in closes if c > 0]
+            if len(closes) < 6:
+                return fallback
+            cur = closes[0]  # index 0 = 최신
+
+            def _ret(n):
+                if len(closes) > n and closes[n] > 0:
+                    return (cur - closes[n]) / closes[n] * 100.0
+                return None
+
+            r5, r20, r60 = _ret(5), _ret(20), _ret(60)
+            parts = [(0.2, r5), (0.5, r20), (0.3, r60)]
+            wsum = sum(w for w, v in parts if v is not None)
+            if wsum <= 0:
+                return fallback
+            blended = sum(w * v for w, v in parts if v is not None) / wsum
+
+            ma20 = sum(closes[:20]) / min(len(closes), 20)
+            ma60 = sum(closes[:60]) / min(len(closes), 60)
+            trend_ok = cur > ma20
+            trend_strong = cur > ma20 >= ma60
+
+            atr_pct = 0.0
+            if calculate_atr_pct is not None:
+                try:
+                    atr_pct = calculate_atr_pct(ohlc_data, period=14) or 0.0
+                except Exception:
+                    atr_pct = 0.0
+            denom = max(atr_pct, 1.0)  # 0 division 방지 + 최소 변동성 가정
+            risk_adj = blended / denom
+
+            mult = 1.0
+            if trend_ok:
+                mult += 0.3
+            if trend_strong:
+                mult += 0.2
+            if not trend_ok:
+                mult = 0.5  # 추세 이탈 종목 강등
+
+            score = risk_adj * mult
+            return {
+                "score": round(score, 4),
+                "momentum": round(r20 if r20 is not None else blended, 2),
+                "blended": round(blended, 2),
+                "atr_pct": round(atr_pct, 2),
+                "trend_ok": bool(trend_ok),
+            }
+        except Exception as e:
+            logger.error(f"Composite score error: {e}")
+            return fallback
+
     def evaluate_candidates(self) -> Dict:
         """후보군의 종목들을 평가하여 모멘텀 스코어를 산출 (카테고리 정보 포함)"""
         logger.info("📊 Evaluating ETF + Stock candidates for Dynamic Portfolio...")
@@ -166,10 +242,12 @@ class PortfolioManager:
                 continue
             if not ohlc:
                 continue
-            score = self.get_momemtum_score(ohlc)
+            comp = self.get_composite_score(ohlc)
             evaluation_results["KR"].append({
                 "code": code, "name": name,
-                "momentum": score, "category": category,
+                "momentum": comp["momentum"], "score": comp["score"],
+                "trend_ok": comp["trend_ok"], "atr_pct": comp["atr_pct"],
+                "category": category,
             })
 
         # 2. 미국 후보 (ETF + 우량주)
@@ -186,18 +264,20 @@ class PortfolioManager:
                 continue
             if not ohlc:
                 continue
-            score = self.get_momemtum_score(ohlc)
+            comp = self.get_composite_score(ohlc)
             # type 필드는 기존 대시보드/리포트 호환을 위해 유지 (3X / 1X)
             target_type = "3X" if "3X" in name else "1X"
             evaluation_results["US"].append({
                 "symbol": symbol, "name": name,
-                "momentum": score, "type": target_type,
+                "momentum": comp["momentum"], "score": comp["score"],
+                "trend_ok": comp["trend_ok"], "atr_pct": comp["atr_pct"],
+                "type": target_type,
                 "category": category, "exchange": exchange,
             })
 
-        # Sort by momentum
-        evaluation_results["KR"].sort(key=lambda x: x['momentum'], reverse=True)
-        evaluation_results["US"].sort(key=lambda x: x['momentum'], reverse=True)
+        # 위험조정 복합 점수(score) 기준 정렬 → 싸이클 선도 종목이 상위로
+        evaluation_results["KR"].sort(key=lambda x: x['score'], reverse=True)
+        evaluation_results["US"].sort(key=lambda x: x['score'], reverse=True)
 
         return evaluation_results
 
@@ -210,14 +290,19 @@ class PortfolioManager:
         max_us_stock: int = 4,
         min_etf_momentum: float = -5.0,
         min_stock_momentum: float = 5.0,
+        max_kr: int = None,
     ):
         """평가 결과를 기반으로 카테고리별 상위 종목을 선정하여 JSON에 저장.
 
+        - 정렬: 위험조정 복합 점수(score) → 싸이클 선도 종목 우선.
         - ETF: 모멘텀이 ``min_etf_momentum`` 이상이면 선정 (방어적 임계).
-        - STOCK(개별주 새틀라이트): 모멘텀이 ``min_stock_momentum`` 이상일 때만 편입.
-          → 약세 종목 자동 제외 = 일일 재평가로 동적 삭제.
+        - 레버리지(3X) ETF / 개별주: **추세 확인(trend_ok=가격>20MA)** 통과 시에만 편입.
+          → 하락추세 레버리지 ETF의 변동성 decay 손실 / 약세 개별주 자동 제외.
         - 가중치: ETF=1.0(기존 사이즈 유지), STOCK=0.4(저비중).
+        - ``max_kr``: 구버전 호출 호환용 alias (max_kr_etf 로 매핑).
         """
+        if max_kr is not None:
+            max_kr_etf = max_kr
         results = self.evaluate_candidates()
 
         def _kr_entry(item):
@@ -250,7 +335,8 @@ class PortfolioManager:
                    and it["momentum"] > min_etf_momentum]
         kr_stocks = [it for it in results["KR"]
                      if it.get("category") == "STOCK"
-                     and it["momentum"] >= min_stock_momentum]
+                     and it["momentum"] >= min_stock_momentum
+                     and it.get("trend_ok", True)]
         kr_selected = (
             [_kr_entry(it) for it in kr_etfs[:max_kr_etf]]
             + [_kr_entry(it) for it in kr_stocks[:max_kr_stock]]
@@ -259,11 +345,14 @@ class PortfolioManager:
         # ===== US 선정 =====
         us_etf_1x = [it for it in results["US"]
                      if it.get("category", "ETF") == "ETF" and it.get("type") == "1X"]
+        # 레버리지(3X) ETF 는 추세 확인 통과(가격>20MA) 시에만 → 하락추세 decay 손실 차단
         us_etf_3x = [it for it in results["US"]
-                     if it.get("category") == "ETF_LEV" or it.get("type") == "3X"]
+                     if (it.get("category") == "ETF_LEV" or it.get("type") == "3X")
+                     and it.get("trend_ok", True)]
         us_stocks = [it for it in results["US"]
                      if it.get("category") == "STOCK"
-                     and it["momentum"] >= min_stock_momentum]
+                     and it["momentum"] >= min_stock_momentum
+                     and it.get("trend_ok", True)]
 
         us_1x_selected = [_us_entry(it) for it in us_etf_1x[:max_us_1x]]
         us_3x_selected = [_us_entry(it) for it in us_etf_3x[:max_us_3x]]
