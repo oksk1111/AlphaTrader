@@ -6,7 +6,49 @@ on:
   workflow_dispatch:
 
 jobs:
+  # ==========================================================================
+  # [v6.0] 배포 전 전략 검증 게이트
+  #
+  # 이 잡이 없어서 "돌아는 가는데 아무것도 사지 않는" 전략이 몇 달간 프로덕션에
+  # 머물렀다. 문법도 맞고 프로세스도 살아 있고 예외도 안 났기 때문에 어떤 자동
+  # 검사도 이를 잡지 못했다. 이제 매수가 실제로 발생하는지를 배포 조건으로 만든다.
+  # ==========================================================================
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+
+      - name: Syntax check
+        run: python -c "import ast, io; ast.parse(io.open('run_bot.py', encoding='utf-8').read())"
+
+      - name: Unit & integration tests
+        # 외부 KIS API 를 실제로 호출하는 두 테스트는 CI 에 자격증명이 없으므로 제외.
+        run: |
+          pytest tests/ -q             --ignore=tests/test_find_etfs.py             --ignore=tests/test_portfolio_manager.py
+
+      - name: v6.0 회귀 테스트 (5대 사고 원인)
+        run: pytest tests/test_v60_strategy.py tests/test_v60_integration.py -q
+
+      - name: 전략 검증 루프 (국면별 노출도 단조성)
+        # 종료코드 0 = 합격. 상승장에서 자본이 놀거나(v5.x 회귀), 폭락장에서
+        # 과다 노출이면(v4.0 회귀) 실패하여 배포가 중단된다.
+        run: |
+          python scripts/verify_strategy_loop.py --sessions 80 --seed 42
+          python scripts/verify_strategy_loop.py --sessions 80 --seed 7
+
   deploy:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
