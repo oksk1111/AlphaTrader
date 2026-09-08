@@ -6,16 +6,21 @@
 [![Telegram](https://img.shields.io/badge/notify-Telegram-2CA5E0)](#)
 
 미국/국내 주식 자동매매 시스템입니다.
-**Guarded DCA(분할매수)** 전략으로 시장 오픈 시 자주 분할매수를 시도하되, 추세·뉴스·섹터 게이트를
-모두 통과한 경우에만 실제로 매수를 실행합니다(v5.0). 엄격한 리스크 관리(손절/트레일링)로 손실을 제한하고,
-한국장/미국장에 서로 다른 AI 판단 성향(persona)과 추세 확인 강도를 적용합니다.
-FastAPI 대시보드로 운영 상태를 모니터링합니다.
+**Scored DCA(점수 기반 분할매수)** 전략으로, 추세·뉴스·섹터·낙폭 신호를 0~1 **점수**로 환산해
+**매수 여부가 아니라 매수 크기**를 결정합니다. 판단은 하루 한 번이 아니라 장중 5분마다 반복되며,
+완전 차단은 자동 해제 조건을 가진 소수의 veto에만 허용합니다.
+한국장/미국장에 서로 다른 AI 판단 성향(persona)을 적용하고, FastAPI 대시보드로 운영 상태를 모니터링합니다.
 
-> ⚠️ **v5.0 전면 개편 (2026-07-28)**: v4.0의 "묻지마 매수"(AI/추세 필터 전면 비활성화)가
-> 반도체 섹터 뉴스를 전혀 반영하지 못해 손실을 키운 사고를 계기로, 게이트를 전부 복원하고
-> 종목별 **섹터 특화 뉴스 veto**를 신규 도입했습니다. 자세한 배경은 `AGENTS.md`와
-> `docs/주식 자동 매매 기획.md`의 v5.0 섹션을 참고하세요. 투자 용어가 낯설다면
-> `docs/baseknowledge.md`부터 읽어보세요.
+> 🔴 **v6.0 전면 개편 (2026-09-08)**: 한국장·미국장 모두 **몇 달간 거래가 0건**이던 사고를
+> 근본 수정했습니다. 원인은 5가지가 겹쳐 있었습니다 — ① USD 예수금 0을 정상으로 오인,
+> ② 매수 판단이 세션당 종목별 1회뿐(장중 재평가 경로 부재), ③ `가격 > MA20` 추세 게이트가
+> DCA의 정의와 모순, ④ 드로다운 서킷브레이커가 해제 조건 없는 **영구 래치**,
+> ⑤ 미국 서머타임 미반영. 무엇보다 **어느 단계에서도 예외가 나지 않아 몇 달간 발견되지
+> 않았습니다.** v6.0은 이진 게이트를 점수 체계로 대체하고, 연속 무매수를 감지하는
+> 자가진단 루프를 추가했습니다.
+>
+> 배경과 근거는 `AGENTS.md`의 v6.0 섹션과 `docs/주식 자동 매매 기획.md`를 참고하세요.
+> 투자 용어가 낯설다면 `docs/baseknowledge.md`부터 읽어보세요.
 
 빠른 이동: [Key Features](#-key-features) · [Quick Start](#-quick-start) · [Configuration](#-configuration) · [Backtest Automation](#-backtest-automation) · [Dashboard](#️-dashboard)
 
@@ -24,18 +29,22 @@ FastAPI 대시보드로 운영 상태를 모니터링합니다.
 | 모듈 | 기능 | 설명 |
 |------|------|------|
 | Trading Engine | 실시간 웹소켓 + 자동매매 | 장 상태 감지 및 미국 시장 실시간 웹소켓(WebSocket) 스트리밍 가격 수신을 통한 초저지연 실시간 시세 감시 및 고성능 변동성 돌파 구현 |
-| Strategy | 다중 전략 | `aggressive_dca`(기본, v5.0부터 게이트 적용), `day`, `swing`, `dca` 전략과 `safe/risky` 모드 지원 |
-| **Guarded DCA** | **게이트 통과 시 분할매수** | 시장 오픈 시 자주 매수를 시도하되, 추세/AI뉴스/섹터뉴스/상관/손실누적 게이트를 모두 통과해야 실제 매수 (v5.0, 구 "무조건 매수" v4.0에서 개편) |
+| Strategy | 다중 전략 | `aggressive_dca`(기본, v6.0부터 점수 기반), `day`, `swing`, `dca` 전략과 `safe/risky` 모드 지원 |
+| **Scored DCA** | **점수가 매수 크기를 정한다** | 추세/구조/눌림/갭/뉴스/노출을 0~1 점수로 합성해 수량에 곱함. 점수 미달은 차단이 아니라 `defer`(다음 주기 재평가) (v6.0, `modules/decision_engine.py`) |
+| **장중 연속 재평가** | **하루 1회 판정 폐기** | 개장 루프와 장중 루프가 동일한 판단 함수를 5분 주기로 호출. 개장 때 조건이 나빴어도 장중에 좋아지면 같은 세션에 매수 (v6.0) |
+| **DST 정확 시장 시계** | **서머타임/휴장일 반영** | `zoneinfo` 기반 거래소 현지시각. 하드코딩 KST 시간표 폐기 — 서머타임 기간 개장 첫 1시간 상실 및 폐장 후 오발주 해결 (v6.0, `modules/market_clock.py`) |
+| **낙폭 사다리** | **영구 래치 → 자동 해제** | 고점 대비 진짜 낙폭 기준 사이즈 축소(100→60→30→0%). cool-off 3영업일 또는 낙폭 절반 회복 시 자동 해제 (v6.0, `modules/risk_state.py`) |
+| **전략 자가진단** | **조용한 정지 감지** | 연속 무매수 세션 추적 → 3세션 경고 / 7세션 긴급. 지배적 차단 사유와 조치 힌트를 함께 통보 (v6.0, `modules/health_monitor.py`) |
 | **Sector News Veto** | **섹터 특화 뉴스 차단** | 종목이 속한 섹터(반도체/나스닥테크/2차전지 등) 전용 뉴스를 별도 조회해, 시장 전체는 멀쩡해도 특정 섹터만 붕괴 중이면 해당 섹터 매수만 차단 (v5.0 신규, `modules/sector_news.py`) |
 | Market-Specific AI Persona | 시장별 AI 성향 | US=`neutral`, KR=`conservative` 기본 적용 — 국내 개별 이슈 변동성이 더 크다는 전제로 KR을 더 보수적으로 (v5.0) |
-| Risk Control | 리스크 관리 | 손절, 트레일링 스탑, 갭다운/연속하락/포트폴리오 드로다운 방어(v5.0부터 실제 매수 차단), **시장가→지정가 fallback 매도** |
+| Risk Control | 리스크 관리 | 손절(**-7%**, v6.0 조정), 트레일링 스탑, 갭다운/연속하락 방어, 낙폭 사다리, **시장가→지정가 fallback 매도** |
 | Rebound Trigger | 변동성 반등 매수 | 큰 하락 후 당일 반등 시 50% 수량으로 역방향 진입 (v2.3) |
 | Partial Take-Profit | 1차 부분 익절 | Trailing 활성가 도달 시 50% 청산 + 잔량 trailing (v2.4) |
 | Breakeven Stop | 본전 스탑 | 고점 +3%/+4% 도달 후 손절선을 매수가 +0.2% 위로 끌어올림 (v2.5) |
 | Correlation Cap | 상관 그룹 한도 | 동일 섹터 그룹 동시 보유 최대 2종목 (v2.5 도입, v4.0 비활성화 → v5.0 재활성화) |
 | Losing Streak Throttle | 일일 손실 회로차단 | 손절 누적 시 신규 매수 일시 중단 (v2.5 도입, v4.0 비활성화 → v5.0 재활성화) |
 | ATR Dynamic Stop | 변동성 적응 손절 | 14일 ATR 기반으로 종목별 손절폭 동적 보강 (v2.5) |
-| Session Buy Watchdog | 매수 0건 경보 | 세션 종료 시 매수가 한 건도 없으면 후보 종목/차단 사유와 함께 Telegram 경고 (v5.0 신규 — "미국장 거래 정지" 재발 방지) |
+| Strategy Verification Loop | 배포 전 전략 검증 | 5개 시장 국면 × N세션 시뮬레이션으로 "돌아는 가는데 아무것도 안 사는" 상태를 CI에서 차단 (v6.0, `scripts/verify_strategy_loop.py`) |
 | AI Assist | 시장 보조 분석 | 뉴스 기반 위험도 판단 및 매수 제한(페르소나 반영), v5.0부터 기본 활성화 |
 | Dynamic Portfolio | 동적 포트폴리오 | 고품질 ETF 풀 중 모멘텀/안정성이 우수한 종목을 시스템이 주기적으로 자동 필터링 및 교체(삭제) |
 | AI Consensus Policy | 설정 기반 합의 | 쿼럼/매수비율/CRASH veto/동률처리를 설정으로 제어 |
@@ -117,27 +126,53 @@ python web/app.py
 
 핵심 파라미터:
 
-- `strategy`: `day` | `swing` | `dca`
+- `strategy`: `aggressive_dca`(기본) | `day` | `swing` | `dca`
 - `trading_mode`: `safe` | `risky`
 - `persona`: `aggressive` | `neutral` | `conservative`
-- `risk_management`: 손절/트레일링/드로다운 임계값 및 **반등 매수** 옵션
-  - `stop_loss_pct` (기본 **-4.0%**), `trailing_stop_activation_pct` (**4.0%**), `trailing_stop_drop_pct` (**2.5%**)
-  - `gap_down_threshold_pct` (**5.0%**), `consecutive_decline_pct` (**5.0%**), `portfolio_drawdown_pct` (**7.0%**, v5.0부터 **실제로 신규 매수를 차단**)
-  - `rebound_buy_enabled`, `rebound_drop_threshold_pct` (**3.0%**), `rebound_intraday_bounce_pct` (**1.0%**), `rebound_max_buys_per_session` (**3**)
-  - v2.4: `partial_tp_enabled` (**true**), `partial_tp_ratio` (**0.5**)
-  - **v2.5 (v4.0에서 비활성화 → v5.0에서 재활성화)**:
-    - `breakeven_enabled` (**true**), `breakeven_trigger_pct_us` (**2.5**), `breakeven_trigger_pct_kr_stock` (**3.0**), `breakeven_buffer_pct` (**0.2**)
-    - `correlation_cap_enabled` (**true**), `correlation_max_per_group` (**2**), `correlation_groups` (TQQQ/TECL/.., 005930/000660 기본)
-    - `losing_streak_enabled` (**true**), `losing_streak_max_stops` (**3**), `losing_streak_daily_pnl_pct` (**-3.0**)
-    - `atr_dynamic_stop_enabled` (**true**), `atr_period` (**14**), `atr_stop_multiplier` (**1.8**)
+
+**`aggressive_dca` (v6.0 — 점수 기반)**
+
+| 키 | 기본값 | 의미 |
+|----|--------|------|
+| `min_buy_score` | **0.35** | 이 점수 미만은 `defer`(다음 주기 재평가). 낮추면 자주 매수, 높이면 까다롭게 |
+| `max_position_pct` | **25.0** | 종목당 총자산 대비 최대 노출(%). 물타기 폭주를 '금지'가 아니라 '한도'로 통제 |
+| `reeval_interval_sec` | **300** | 장중 재평가 주기(초) |
+| `sentiment_ttl_sec` | **900** | AI 감성 세션 캐시 수명(초). 종목마다 LLM을 호출하지 않기 위함 |
+| `panic_gap_down_threshold_pct` | **8.0** | 이 이상 갭다운이면 하드 veto (익일 자동 해제) |
+| `sector_news_veto_enabled` | **true** | 섹터 특화 뉴스 CRASH 시 해당 섹터만 차단 |
+
+> ⚠️ v5.x의 `skip_ai_check` / `skip_trend_filter` / `skip_correlation_check` /
+> `portfolio_drawdown_halt_pct` / `instant_buy_on_open` 는 **제거**되었습니다.
+> 이진 게이트 자체가 폐기되어 의미가 없습니다.
+
+**`risk_management`**
+
+- `stop_loss_pct` (**-7.0%**, v6.0에서 -4.0%→-7.0% 조정 — 근거는 아래 검증 루프)
+- `trailing_stop_activation_pct` (**5.0%**), `trailing_stop_drop_pct` (**3.5%**)
+- `gap_down_threshold_pct` (**5.0%**), `consecutive_decline_pct` (**5.0%**)
+- `rebound_buy_enabled`, `rebound_drop_threshold_pct` (**3.0%**), `rebound_intraday_bounce_pct` (**1.0%**)
+- `partial_tp_enabled` (**true**), `partial_tp_ratio` (**0.5**)
+- `breakeven_enabled` (**true**), `breakeven_trigger_pct_us` (**2.5**), `breakeven_buffer_pct` (**0.2**)
+- `correlation_cap_enabled` (**true**), `correlation_max_per_group` (**2**)
+- `losing_streak_enabled` (**true**), `losing_streak_max_stops` (**3**), `losing_streak_daily_pnl_pct` (**-3.0**)
+- `atr_dynamic_stop_enabled` (**true**), `atr_period` (**14**), `atr_stop_multiplier` (**1.8**)
+
+> `portfolio_drawdown_pct` 는 **제거**되었습니다. 이 값은 '고점 대비 낙폭'이 아니라
+> '원가 대비 평가손실'을 재던 것이라, 계좌가 원가 대비 7% 물리면 해제 조건 없이
+> 신규 매수가 영구 차단되는 래치였습니다. `modules/risk_state.py` 의 낙폭 사다리로 대체.
+
+**낙폭 사다리** (`modules/risk_state.py`, 설정 불필요)
+
+| 고점 대비 낙폭 | 신규 매수 사이즈 | 해제 |
+|----------------|------------------|------|
+| 0~7% | 100% | — |
+| 7~12% | 60% | 낙폭 회복 시 자동 |
+| 12~18% | 30% | 낙폭 회복 시 자동 |
+| 18%+ | 0% | cool-off 3영업일 **또는** 낙폭 절반 회복 |
+
 - `dca_settings`: 일간 투자비중/매수상한/세션 매수 횟수
   - `daily_investment_pct` (기본 **30%**), `max_investment_usd` (**$2,000**), `max_buys_per_session` (**10**)
-- `aggressive_dca` (**v5.0 개편**): 게이트 on/off 스위치. 기본값은 전부 게이트 ON.
-  - `skip_ai_check` (**false**), `skip_trend_filter` (**false**), `skip_correlation_check` (**false**)
-  - `sector_news_veto_enabled` (**true**, v5.0 신규) — 섹터 특화 뉴스 크래시 감지 시 해당 섹터만 매수 차단
-  - `averaging_down_trigger_pct` (**-3.0%**), `averaging_down_max_per_session` (**2**)
-  - `portfolio_drawdown_halt_pct` (**7.0%**), `panic_gap_down_threshold_pct` (**8.0%**)
-- `market_settings` (v5.0): 시장별 override. 기본값 `us.persona=neutral`, `kr.persona=conservative`.
+- `market_settings`: 시장별 override. 기본값 `us.persona=neutral`, `kr.persona=conservative`.
 
 LLM 합의 정책 파라미터:
 
@@ -172,6 +207,22 @@ LLM 합의 정책 파라미터:
 | 일일 리포트 발송 | 매일 16시 1회 | KST |
 | 주간 백테스트 리포트 | 일요일 07시 1회 | KST |
 
+**세션 트리거 (v6.0)**
+
+| 시장 | 개장 (거래소 현지) | KST 환산 |
+|------|--------------------|----------|
+| 🇰🇷 KR | 09:00~15:20 KST | 09:00~15:20 |
+| 🇺🇸 US 서머타임 (3월 둘째 일요일~11월 첫째 일요일) | 09:30~16:00 EDT | **22:30~05:00** |
+| 🇺🇸 US 표준시 | 09:30~16:00 EST | **23:30~06:00** |
+
+> v5.x는 미국장을 KST 23:30~06:00으로 하드코딩해, 1년의 약 2/3인 서머타임 기간에
+> 개장 첫 1시간을 놓치고 폐장 후 1시간 동안 닫힌 시장에 매도 주문을 냈습니다.
+> v6.0은 `zoneinfo`로 거래소 현지시각을 계산하며 휴장일/조기폐장도 반영합니다.
+>
+> 또한 v5.x의 **5분짜리 트리거 창**(KR 09:00~09:05, US 23:30~23:35)을 폐기했습니다.
+> 그 5분 안에 프로세스가 살아있지 못하면(배포·재부팅·네트워크 순단) 그날 거래가
+> 통째로 사라졌습니다. 이제 **장이 열려 있고 해당 세션을 아직 안 돌렸으면 진입**합니다.
+
 관련 파일:
 
 - `auto_restart_bot.sh`
@@ -199,15 +250,39 @@ python modules/backtest_runner.py
 - `database/backtest_reports/backtest_YYYYMMDD_HHMMSS.md`
 - `database/backtest_latest.json`
 
-### 🧪 Unit Tests
-
-매도 안전 로직(`safe_sell`)과 호가단위 헬퍼 단위 테스트:
+### 🧪 Tests & Strategy Verification
 
 ```bash
-python -m unittest tests.test_safe_sell -v
+# 전체 테스트 (외부 API는 mocking — 토큰 없이 실행 가능)
+pytest tests/ -q
+
+# v6.0 회귀 테스트 — 5대 사고 원인에 1:1 대응
+pytest tests/test_v60_strategy.py -v      # DST / 점수 판단 / 낙폭 사다리 / 자가진단
+pytest tests/test_v60_integration.py -v   # job() 배선 (장중 재평가 경로 존재 여부 등)
+
+# 전략 검증 루프 — "돌아는 가는데 아무것도 안 사는" 상태를 배포 전에 차단
+python scripts/verify_strategy_loop.py                  # 종료코드 0 = 합격
+python scripts/verify_strategy_loop.py --sessions 120 --seed 7
 ```
 
-외부 KIS API를 mocking 하므로 토큰 없이 실행됩니다.
+`verify_strategy_loop.py` 는 5개 시장 국면(강한 상승/완만한 상승/횡보/조정/폭락)을
+합성 가격으로 만들고 장중 재평가·손절·트레일링까지 시뮬레이션한 뒤, **국면이 나빠질수록
+노출도와 사이즈가 단조 감소하는지**를 검증합니다. 상승장에서 자본이 놀면(v5.x 회귀)
+실패하고, 폭락장에서 과다 노출이면(v4.0 회귀) 실패합니다.
+
+기준선 (80세션, seed 42):
+
+| 국면 | 평균 노출도 | 평균 사이즈 | 전략 | Buy&Hold |
+|------|-------------|-------------|------|----------|
+| 강한 상승장 | 23% | 57% | +5.2% | +38.0% |
+| 완만한 상승 | 22% | 49% | -0.1% | +15.7% |
+| 횡보장 | 22% | 45% | -1.8% | +5.5% |
+| 조정장 | 19% | 40% | -9.7% | -12.3% |
+| 폭락장 | 12% | 37% | **-17.1%** | **-44.4%** |
+
+> 노출도가 20%대인 것은 단일 종목 시뮬레이션에 `max_position_pct=25%` 상한이 걸려
+> 있기 때문입니다(실제 운용은 5~17종목). 합성 GBM 데이터라 갭·실적·팻테일이 없으므로
+> **절대 수익률이 아니라 국면 간 상대 관계**를 보세요.
 
 ## 🖥️ Dashboard
 
@@ -229,10 +304,19 @@ python -m unittest tests.test_safe_sell -v
 ## 📁 Project Structure
 
 ```text
-modules/      브로커 API, 전략 보조, 알림, 분석 모듈
+modules/
+  market_clock.py      DST/휴장일 정확 시장 시계 (v6.0)
+  decision_engine.py   점수 기반 매수 판단 (v6.0)
+  risk_state.py        고점 대비 낙폭 사다리 + 자동 해제 (v6.0)
+  health_monitor.py    연속 무매수 자가진단 (v6.0)
+  kis_api.py / kis_domestic.py / kis_websocket.py   브로커 API
+  multi_llm.py / sector_news.py / *_analyst.py      AI 분석
+  portfolio_manager.py / backtest_runner.py / opro_optimizer.py
 strategies/   기술적 분석/변동성 돌파 전략
+scripts/
+  verify_strategy_loop.py   전략 검증 루프 (v6.0)
 web/          FastAPI 대시보드
-database/     캐시/로그/스냅샷/전략 히스토리
+database/     캐시/로그/스냅샷/리스크 상태/전략 건강 기록
 deployment/   서비스/배포 스크립트
 docs/         운영/설정/기획 문서
 ```
@@ -254,6 +338,31 @@ docs/         운영/설정/기획 문서
 - 알림 채널/필터 세분화
 
 ## 🛠️ 핫픽스 노트
+
+- **2026-09-08 — v6.0 전면 개편: 몇 달간의 거래 정지 근본 수정**
+  - **증상**: 한국장·미국장 모두 몇 달간 매수 체결 0건. 봇은 매일 정상 부팅하고
+    하트비트를 찍었으며 어떤 단계에서도 예외가 발생하지 않았음.
+  - **원인 5가지 (전부 서로를 가려주고 있었음)**:
+    1. `get_foreign_balance()` 가 USD 통화 라인이 없을 때 `{'deposit': 0}` 을 반환.
+       v5.0이 넣은 방어코드는 `'deposit' in foreign_bal` 로 판정 → 키가 **존재**하므로
+       정상 분기를 타서 `available_cash=0` 확정. 이 상황을 잡으려던 알림이 정확히
+       이 경로를 비껴감. 통합증거금(원화주문) 계좌는 **정상적으로** USD 예수금이 0.
+    2. `aggressive_dca` 의 매수 판단이 **세션당 종목별 1회**, 개장 직후에만 실행.
+       장중 재평가 경로가 코드에 아예 없었음(`dca` 모드에만 존재).
+    3. 추세 게이트 `현재가 > MA20`(KR은 `AND > MA5`)이 DCA의 정의와 모순 —
+       하락 구간에 사는 것이 DCA인데 하락 구간 매수를 전부 금지.
+    4. 드로다운 서킷브레이커가 '고점 대비 낙폭'이 아니라 '원가 대비 평가손실'을
+       재고 있었고 **해제 조건이 없었음**. 자기강화적(안 사니 원가 불변 → 계속 차단).
+    5. 미국장 시간을 KST 23:30~06:00으로 하드코딩(EST 기준) → 서머타임 기간
+       개장 첫 1시간 상실 + 폐장 후 1시간 오발주. 휴장일 개념 없음.
+  - **조치**: 이진 게이트를 점수 체계로 대체(`decision_engine`), 장중 5분 주기
+    연속 재평가, `zoneinfo` 기반 시장 시계(`market_clock`), 고점 대비 낙폭 사다리
+    + 자동 해제(`risk_state`), 연속 무매수 자가진단(`health_monitor`),
+    전략 검증 루프(`scripts/verify_strategy_loop.py`).
+  - **부수 수정**: `load_config()` 인코딩 미지정(플랫폼 기본 의존 → UTF-8 고정),
+    `num_active_targets` 가 항상 0이라 한 종목에 현금 전액을 배정하던 사이징 버그,
+    KST 자정에 진행 중인 US 세션 플래그가 리셋되던 문제.
+  - **검증**: 테스트 110개 통과 + 5국면 검증 루프 통과.
 
 - **2026-07-28 — v5.0 전면 개편: 뉴스 게이트 복원 + 섹터 특화 veto 신규 도입**
   - **문제**: v4.0(`aggressive_dca`)이 `skip_ai_check`/`skip_trend_filter`를 전부 켜서

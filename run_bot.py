@@ -13,7 +13,7 @@ from modules.logger import logger
 from modules.telegram_notifier import TelegramNotifier
 from strategies.technical import (
     calculate_ma, calculate_short_ma, check_trend, check_volume_spike,
-    check_gap_down, check_consecutive_decline, check_portfolio_drawdown,
+    check_gap_down, check_consecutive_decline,
     calculate_atr_pct
 )
 from strategies.volatility_breakout import calculate_target_price
@@ -27,6 +27,13 @@ from modules.multi_llm import MultiLLMAnalyst
 from modules.auto_strategy import AutoStrategyOptimizer
 from modules.sector_news import get_sector, get_sector_meta
 from modules import trade_journal
+# === v6.0 신규 코어 모듈 ===
+from modules import market_clock
+from modules import risk_state
+from modules import health_monitor
+from modules.decision_engine import (
+    TickerContext, PortfolioContext, evaluate_buy, MIN_BUY_SCORE
+)
 
 def safe_float(value, default=0.0):
     """빈 문자열이나 None을 안전하게 float로 변환"""
@@ -152,14 +159,31 @@ def send_alert(message: str, is_error: bool = False):
         logger.info(message)
 
 def load_config():
+    """[v6.0] 인코딩을 명시한다.
+
+    기존에는 open(CONFIG_FILE, "r") 로 플랫폼 기본 인코딩에 의존했다. 리눅스 서버
+    (UTF-8)에서는 우연히 동작했지만, 설정 파일에 한글 주석/값이 하나라도 들어가는
+    순간 Windows(cp949) 등에서는 UnicodeDecodeError 로 **설정 로드 자체가 실패**한다.
+    설정을 못 읽으면 전략/티커/리스크 값이 전부 기본값으로 떨어지므로 조용한 오작동의
+    씨앗이다. 읽기·쓰기 모두 UTF-8 로 고정한다.
+    """
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            # 설정 로드 실패를 조용히 삼키면 봇이 엉뚱한 기본값으로 매매한다. 반드시 알린다.
+            logger.critical(f"설정 파일 로드 실패 ({CONFIG_FILE}): {e}", exc_info=True)
+            try:
+                send_alert(f"🚨 설정 파일을 읽지 못했습니다 ({e}). 기본값으로 동작합니다 — 즉시 확인 필요.",
+                           is_error=True)
+            except Exception:
+                pass
     return {"trading_mode": "safe", "strategy": "day", "persona": "aggressive"}
 
 def save_config(config):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=4)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=4, ensure_ascii=False)
 
 def get_effective_market_config(config, market=None):
     """시장별 override를 반영한 유효 설정 반환"""
@@ -607,44 +631,51 @@ def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_set
     
     return max(qty, 0)
 
+# 원↔달러 환산율. 통합증거금 환산·총자산 원화환산에 공용으로 쓴다.
+# (v5.x 는 1350/1450 을 코드 곳곳에 흩뿌려 두어 값이 서로 어긋났다.)
+USD_KRW_RATE = float(os.getenv('USD_KRW_RATE', '1400'))
+
+# === [v6.0] 점수 기반 판단 파라미터 ===
+# MIN_BUY_SCORE_EFF: 이 점수 미만은 매수하지 않고 'defer'(다음 주기 재평가).
+#   낮출수록 자주 사고, 높일수록 까다로워진다. 0.35 는 "평범한 시장에서 소액은 산다"
+#   수준. v5.x 처럼 조건 하나라도 걸리면 0건이 되는 구조가 아니므로 안전하다.
+MIN_BUY_SCORE_EFF = float(AGGRESSIVE_DCA_SETTINGS.get("min_buy_score", 0.35))
+# 종목당 최대 노출 비중(총자산 대비 %). 물타기 폭주를 '금지'가 아니라 '한도'로 막는다.
+MAX_POSITION_PCT = float(AGGRESSIVE_DCA_SETTINGS.get("max_position_pct", 25.0))
+# 장중 재평가 주기(초). 이 주기마다 모든 후보 종목을 다시 판단한다.
+REEVAL_INTERVAL_SEC = int(AGGRESSIVE_DCA_SETTINGS.get("reeval_interval_sec", 300))
+# AI 감성 세션 캐시 수명(초).
+SENTIMENT_TTL_SEC = int(AGGRESSIVE_DCA_SETTINGS.get("sentiment_ttl_sec", 900))
+
 K_VALUE = 0.4  # 0.5 → 0.4: 타겟가를 낮춰 상승 초기 진입 용이 (레버리지 ETF 최적화)
 
 def get_market_status():
+    """현재 열려 있는 시장. 'US' | 'KR' | 'CLOSED'.
+
+    [v6.0] 하드코딩된 시간표를 폐기하고 modules/market_clock 로 위임한다.
+    v5.1 까지는 미국장을 KST 23:30~06:00 으로 고정했는데, 이는 미국 표준시(EST)
+    기준이라 서머타임(EDT, 3월 둘째 일요일~11월 첫째 일요일 = 1년의 약 2/3) 동안
+    실제 정규장(KST 22:30~05:00)과 1시간 어긋났다. 그 결과 매일 개장 첫 1시간을
+    통째로 놓치고, 폐장 후 1시간 동안 닫힌 시장에 주문을 던졌다. 휴장일도 무시했다.
     """
-    Returns 'US', 'KR', or 'CLOSED' based on current KST time.
-    Includes weekday check (markets closed on weekends).
-    """
-    kst = pytz.timezone('Asia/Seoul')
-    now = datetime.datetime.now(kst)
-    t = int(now.strftime("%H%M"))
-    weekday = now.weekday()  # 0=Monday, 6=Sunday
-    
-    # US Market: 23:30 ~ 06:00 KST
-    # Evening (23:30~23:59): Mon-Fri KST = US Mon-Fri sessions
-    # Morning (00:00~06:00): Tue-Sat KST = US Mon-Fri sessions (continued from prev night)
-    if 2330 <= t <= 2359 and weekday <= 4:  # Mon-Fri evening
-        return 'US'
-    if 0 <= t < 600 and 1 <= weekday <= 5:  # Tue-Sat morning
-        return 'US'
-    
-    # KR Market: 09:00 ~ 15:20, Mon-Fri only
-    if 900 <= t <= 1520 and weekday <= 4:
-        return 'KR'
-        
-    return 'CLOSED'
+    return market_clock.get_market_status()
+
 
 def is_market_open_for(market):
-    """매도 주문이 실제로 체결될 수 있는 시장 시간인지 확인.
-    한국 정규장은 09:00~15:30, 동시호가/장 외 시간에는 시장가 거부.
+    """해당 시장에 시장가 주문이 실제로 체결될 수 있는 시간인지 확인.
+
+    [v6.0] 거래소 현지시각 + 휴장일/조기폐장 반영 (market_clock).
     """
-    try:
-        status = get_market_status()
-        if status == 'CLOSED':
-            return False
-        return status == market
-    except Exception:
-        # 안전하게 False 반환 (시간 정보 실패 시 매도 시도 안 함)
-        return False
+    return market_clock.is_market_open_for(market)
+
+
+def current_session(market=None):
+    """현재 세션 정보(SessionInfo). market 생략 시 열려 있는 시장 기준."""
+    if market is None:
+        market = market_clock.get_market_status()
+    if market == 'CLOSED':
+        return market_clock.session_info('US')
+    return market_clock.session_info(market)
 
 
 def _lookup_price(kis_client, ticker, market, exchange):
@@ -1034,6 +1065,16 @@ def job():
     # "미국장이 몇 주째 거래가 안 된다"처럼 매수가 조용히 전부 막히는 사고를
     # (알림 없이) 방치하지 않기 위한 최소한의 자가 점검 장치.
     session_buy_count = 0
+    # [v6.0] 자가진단(health_monitor)용 카운터 및 세션 리스크 상태.
+    # 평가 횟수는 "봇이 실제로 판단을 하고 있는가"를 보는 핵심 지표다 — 매수 0건이
+    # 정상적인 판단의 결과인지, 아니면 루프가 아예 돌지 않은 것인지 구분해 준다.
+    session_evaluations = 0
+    session_sell_count = 0
+    session_started_at = datetime.datetime.now().astimezone().isoformat(timespec='seconds')
+    risk_snap = None
+    risk_size_multiplier = 1.0
+    portfolio_drawdown_halt = False
+    _sentiment_cache = {}
 
     # [v5.1] 당일 손절/청산 종목 재매수 금지 가드용 — monitoring_targets는 프로세스
     # 재시작 시 메모리에서 통째로 사라지므로(sold_sl 등 상태 소실), 디스크에 남는
@@ -1301,6 +1342,222 @@ def job():
         record_skip_reason(ticker, f"주문 실패: {res.get('msg1', 'unknown') if res else 'unknown'}")
         return False
     
+    # ====================================================================
+    # [v6.0] 점수 기반 매수 실행기 — 개장 루프와 장중 감시 루프가 **같은 함수**를
+    # 공유한다. v5.x 의 치명적 구조 결함이 "개장 때 쓰는 게이트"와 "장중에 쓰는
+    # 재평가"가 서로 다른 코드였고, aggressive_dca 는 후자가 아예 없었다는 점이다.
+    # 하나로 합쳐야 "장중에 조건이 좋아지면 산다"가 실제로 성립한다.
+    # ====================================================================
+    def build_ticker_context(ticker, current_price, ohlc, ma20, ma5):
+        closes = []
+        try:
+            closes = [safe_float(x['clos']) for x in ohlc]
+            closes.reverse()
+        except Exception:
+            closes = []
+
+        ma10 = calculate_ma(closes, 10) if len(closes) >= 10 else None
+        ma60 = calculate_ma(closes, 60) if len(closes) >= 60 else None
+
+        prev_close = safe_float(ohlc[1].get('clos')) if len(ohlc) > 1 else 0.0
+        gap_pct = ((current_price - prev_close) / prev_close * 100.0) if prev_close > 0 else 0.0
+
+        day_low = day_high = 0.0
+        try:
+            day_low = safe_float(ohlc[0].get('low'))
+            day_high = safe_float(ohlc[0].get('high'))
+        except Exception:
+            pass
+        # 장중 현재가가 일봉 저가보다 낮으면(일봉 미갱신) 현재가를 저가로 본다
+        if day_low <= 0 or current_price < day_low:
+            day_low = current_price
+
+        _, cum_drop = check_consecutive_decline(ohlc, CONSECUTIVE_DECLINE_DAYS, CONSECUTIVE_DECLINE_PCT)
+
+        atr_pct = None
+        try:
+            atr_pct = calculate_atr_pct(ohlc, period=ATR_PERIOD)
+        except Exception:
+            pass
+
+        existing = monitoring_targets.get(ticker, {}) or {}
+        held_qty = int(existing.get('buys', 0) or 0)
+        avg_price = safe_float(existing.get('buy_price', 0))
+        position_value = held_qty * current_price
+
+        # 종목별 노출 상한: 총 운용자산의 MAX_POSITION_PCT%
+        equity = available_cash + sum(
+            int(d.get('buys', 0) or 0) * safe_float(d.get('target', 0))
+            for d in monitoring_targets.values()
+        )
+        max_position_value = equity * (MAX_POSITION_PCT / 100.0) if equity > 0 else 0.0
+
+        is_lev = (market == 'US' and ticker in US_LEVERAGED_ETF_SYMBOLS) or (
+            str(ticker).upper() in LEVERAGED_ETF_FACTOR)
+
+        capped, _grp = is_correlation_capped(ticker, monitoring_targets)
+
+        return TickerContext(
+            ticker=str(ticker), market=market, price=current_price,
+            ma5=ma5, ma10=ma10, ma20=ma20, ma60=ma60, atr_pct=atr_pct,
+            prev_close=prev_close, day_low=day_low, day_high=day_high,
+            gap_pct=gap_pct, consec_decline_pct=cum_drop or 0.0,
+            is_leveraged=bool(is_lev),
+            holding_qty=held_qty, holding_avg_price=avg_price,
+            position_value=position_value, max_position_value=max_position_value,
+            buys_this_session=int(existing.get('dca_buys_this_session', 0) or 0),
+            max_buys_per_session=DCA_MAX_BUYS_PER_SESSION,
+            stopped_out_today=(str(ticker) in STOPPED_OUT_TODAY),
+            market_sentiment=get_market_sentiment_cached(),
+            sector_sentiment=get_sector_sentiment_cached(ticker),
+            correlation_capped=bool(capped),
+        )
+
+    def evaluate_and_buy(ticker, exchange, current_price, ohlc, ma20, ma5, tag='loop'):
+        """한 종목을 평가하고, 매수 결정이 나면 주문까지 실행한다.
+
+        반환: BuyDecision. 호출부는 monitoring_targets 상태를 직접 건드리지 않는다.
+        """
+        nonlocal session_buy_count, available_cash, session_evaluations
+
+        session_evaluations += 1
+        sess = current_session(market)
+
+        pctx = PortfolioContext(
+            available_cash=available_cash,
+            risk_size_multiplier=risk_size_multiplier,
+            risk_halted=bool(portfolio_drawdown_halt),
+            risk_reason=(risk_snap.reason if risk_snap else ''),
+            losing_streak_paused=is_losing_streak_pause(),
+            minutes_to_close=sess.minutes_to_close,
+            minutes_since_open=sess.minutes_since_open,
+        )
+        tctx = build_ticker_context(ticker, current_price, ohlc, ma20, ma5)
+        decision = evaluate_buy(tctx, pctx, min_score=MIN_BUY_SCORE_EFF)
+
+        existing = monitoring_targets.get(ticker, {}) or {}
+        base = {
+            'target': current_price, 'exchange': exchange,
+            'ma20': ma20, 'ma5': ma5, 'ohlc': ohlc,
+            'buys': existing.get('buys', 0),
+            'buy_price': existing.get('buy_price', 0),
+            'highest_price': max(current_price, safe_float(existing.get('highest_price', current_price))),
+            'dca_buys_this_session': existing.get('dca_buys_this_session', 0),
+            'last_eval_at': datetime.datetime.now(),
+            'last_decision': decision.summary(),
+            'score': decision.score,
+        }
+
+        if decision.action != 'buy':
+            note = decision.veto_reason or (decision.reasons[-1] if decision.reasons else '점수 미달')
+            record_skip_reason(ticker, note)
+            logger.info(f"[{ticker}] ({tag}) {decision.summary()}")
+            # v5.x 의 'blocked'(그날 끝) 대신 'candidate' — 감시 루프가 계속 재평가한다.
+            base['status'] = 'bought' if int(base['buys'] or 0) > 0 else 'candidate'
+            base['block_reason'] = note
+            monitoring_targets[ticker] = base
+            return decision
+
+        qty = calculate_dca_quantity(
+            available_cash, current_price, num_active_targets, DCA_SETTINGS, market,
+            weight=ticker_weights.get(ticker, 1.0),
+        )
+        qty = int(qty * decision.size_multiplier)
+        if qty <= 0 and available_cash >= current_price and decision.score >= 0.6:
+            qty = 1  # 점수가 충분히 높으면 최소 1주는 담는다 (DCA 지속성)
+        if qty <= 0:
+            record_skip_reason(ticker, f"수량 0 (사이즈 {decision.size_multiplier:.0%})")
+            base['status'] = 'bought' if int(base['buys'] or 0) > 0 else 'candidate'
+            monitoring_targets[ticker] = base
+            return decision
+
+        currency = "$" if market == 'US' else "₩"
+        logger.info(
+            f"[{ticker}] 🎯 ({tag}) 매수 실행: {qty}주 @ {currency}{current_price:,.2f} | {decision.summary()}"
+        )
+        if market == 'US':
+            res = kis.buy_market_order(ticker, qty, exchange)
+        else:
+            res = kis.buy_market_order(ticker, qty)
+
+        if res and res.get('rt_cd') == '0':
+            session_buy_count += 1
+            prev_qty = int(existing.get('buys', 0) or 0)
+            prev_avg = safe_float(existing.get('buy_price', 0))
+            total_qty = prev_qty + qty
+            blended = (((prev_avg * prev_qty) + (current_price * qty)) / total_qty
+                       if prev_qty > 0 and prev_avg > 0 else current_price)
+            base.update({
+                'status': 'bought', 'buys': total_qty, 'buy_price': blended,
+                'entry_time': existing.get('entry_time') or datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'dca_buys_this_session': int(existing.get('dca_buys_this_session', 0) or 0) + 1,
+                'last_dca_attempt_at': datetime.datetime.now(),
+                'dca_reentry_interval_min': existing.get('dca_reentry_interval_min', DCA_REENTRY_INTERVAL_MIN),
+            })
+            monitoring_targets[ticker] = base
+            available_cash -= (qty * current_price)
+            logger.info(f"[{ticker}] ✅ 매수 성공 {qty}주 (누적 {total_qty}주, 평단 {blended:,.2f})")
+            send_alert(
+                f"🎯 [{market}/{ticker}] 매수 {qty}주 @ {currency}{current_price:,.2f}\n"
+                f"점수 {decision.score:.2f} · 사이즈 {decision.size_multiplier:.0%}\n"
+                f"근거: {', '.join(decision.reasons[:3]) or 'N/A'}"
+            )
+        else:
+            err_msg = res.get('msg1', 'unknown') if res else 'no response'
+            logger.error(f"[{ticker}] ❌ 매수 실패: {err_msg}")
+            record_skip_reason(ticker, f"주문 실패: {err_msg}")
+            if res and res.get('msg_cd') in ['APBK1680', 'APBK1681']:
+                FAILED_TICKERS.add(ticker)
+            base['status'] = 'bought' if int(base['buys'] or 0) > 0 else 'candidate'
+            base['last_dca_attempt_at'] = datetime.datetime.now()
+            monitoring_targets[ticker] = base
+
+        return decision
+
+    # --- AI 감성 세션 캐시 -------------------------------------------------
+    # v5.x 는 종목마다 ai.fetch_news() + check_market_sentiment() 를 호출했다.
+    # 종목 17개면 개장 직후 LLM 왕복이 17회 — 느리고, 비싸고, 무엇보다 종목마다
+    # 다른 답이 나와 판단이 비결정적이었다. 세션 단위로 한 번만 조회해 공유한다.
+    def get_market_sentiment_cached():
+        now = time.time()
+        if _sentiment_cache.get('market') and now - _sentiment_cache.get('market_at', 0) < SENTIMENT_TTL_SEC:
+            return _sentiment_cache['market']
+        try:
+            news = ai.fetch_news()
+            sent = ai.check_market_sentiment(news, persona=PERSONA)
+        except Exception as e:
+            logger.error(f"시장 감성 조회 실패 (중립으로 진행): {e}")
+            sent = None
+        _sentiment_cache['market'] = sent
+        _sentiment_cache['market_at'] = now
+        if sent:
+            logger.info(f"[{market}] 시장 감성: {sent.get('market_condition')} / risk={sent.get('risk_level')}")
+        return sent
+
+    def get_sector_sentiment_cached(ticker):
+        if not AGG_DCA_SECTOR_VETO:
+            return None
+        sector = get_sector(ticker)
+        if not sector:
+            return None
+        now = time.time()
+        hit = _sentiment_cache.get(f'sector:{sector}')
+        if hit and now - hit.get('at', 0) < SENTIMENT_TTL_SEC:
+            return hit.get('data')
+        meta = get_sector_meta(sector) or {}
+        lang = "ko" if market == 'KR' else "en"
+        query = meta.get(f"query_{lang}") or meta.get("query_en", sector)
+        try:
+            news = ai.fetch_sector_news(sector, query, lang=lang)
+            sent = ai.check_sector_sentiment(sector, meta.get("label_kr", sector), news)
+        except Exception as e:
+            logger.error(f"[{ticker}] 섹터 감성 조회 실패({sector}) — 중립으로 진행: {e}")
+            sent = None
+        _sentiment_cache[f'sector:{sector}'] = {'data': sent, 'at': now}
+        if sent:
+            logger.info(f"[{market}] 섹터 감성 {sector}: {sent.get('market_condition')} / risk={sent.get('risk_level')}")
+        return sent
+
     # Track retry counts for this session
     retry_counts = {}
 
@@ -1310,29 +1567,78 @@ def job():
     try:
         balance = kis.get_balance()
         if market == 'US':
-            # US 시장은 get_foreign_balance()로 정확한 USD 잔고 조회
+            # ================================================================
+            # [v6.0] "US 몇 달째 거래 없음" 사고의 1차 원인이 정확히 이 블록이었다.
+            #
+            # modules/kis_api.get_foreign_balance() 는 계좌에 USD 통화 라인이 없으면
+            # 예외를 던지지 않고 {'debug_raw': ..., 'deposit': 0} 을 반환한다.
+            # v5.0 이 넣은 방어코드는 `'deposit' in foreign_bal` 로 판정했는데,
+            # 이 응답에는 deposit 키가 **존재**(값만 0)하므로 정상 분기를 타버린다.
+            # → available_cash = 0.0 이 조용히 확정되고
+            # → 이후 모든 US 티커가 "자금 부족 (현금 0 < 1주 N)" 으로 차단되며
+            # → 경고 알림은 단 한 번도 발송되지 않는다.
+            #
+            # 그리고 이건 비정상 상태가 아니다. 원화로 미국주식을 사는
+            # 통합증거금(원화주문) 계좌는 **정상적으로** USD 예수금이 0이다.
+            # 즉 설정이 멀쩡한 계좌에서도 봇은 영원히 아무것도 못 산다.
+            #
+            # v6.0: (1) 0 을 실패 신호로 취급하고 (2) 원화 예수금 → USD 환산으로
+            # 폴백하며 (3) 둘 다 0 일 때만 알림을 띄운다.
+            # ================================================================
             foreign_bal = kis.get_foreign_balance()
-            if foreign_bal and 'deposit' in foreign_bal:
-                available_cash = safe_float(foreign_bal['deposit'])
-            else:
-                # [v5.0] 과거(2026-05/06) 여러 차례 "US 거래가 조용히 멈추는" 사고가
-                # 정확히 이 지점(잔고 조회 실패가 알림 없이 삼켜짐)에서 발생했다.
-                # get_foreign_balance()가 예외 없이 빈 응답을 주면 available_cash가
-                # 0으로 고정되어 이후 모든 US 티커가 "자금 부족"으로 매일 조용히
-                # 차단되는데, 이 사실이 텔레그램으로 전혀 보고되지 않았다. 반드시 알림.
-                logger.error(f"[US] get_foreign_balance() 응답에 'deposit' 없음: {foreign_bal}")
-                send_alert(
-                    "🚨 US 잔고 조회 실패 (deposit 필드 없음) — 이번 세션 매수가 전부 "
-                    "'자금 부족'으로 차단될 수 있습니다. KIS API/토큰 상태를 확인하세요.",
-                    is_error=True
-                )
-            # US 계좌는 환율 적용하여 원화 환산 (대략 1350원)
-            total_asset_krw = available_cash * 1350
+            usd_cash = safe_float((foreign_bal or {}).get('deposit', 0))
+            cash_source = 'USD 외화예수금'
+
+            if usd_cash <= 0:
+                krw_cash = 0.0
+                try:
+                    if balance and isinstance(balance.get('output2'), list) and balance['output2']:
+                        o2 = balance['output2'][0]
+                        krw_cash = safe_float(
+                            o2.get('ord_psbl_cash')       # 주문가능현금 (가장 정확)
+                            or o2.get('dnca_tot_amt')     # 예수금총금액
+                            or 0
+                        )
+                except Exception as _kb_e:
+                    logger.error(f"[US] 원화 예수금 폴백 조회 실패: {_kb_e}")
+
+                if krw_cash > 0:
+                    # 통합증거금(원화주문) 계좌. 보수적 환율로 환산하고, 환율/증거금
+                    # 오차를 흡수하기 위해 안전마진 5% 를 남긴다.
+                    usd_cash = (krw_cash / USD_KRW_RATE) * 0.95
+                    cash_source = f'원화 예수금 환산(통합증거금, ₩{krw_cash:,.0f})'
+                    logger.warning(
+                        f"[US] USD 외화예수금 0 → 원화 예수금 ₩{krw_cash:,.0f} 를 "
+                        f"${usd_cash:,.2f} 로 환산해 사용합니다 (통합증거금 가정)."
+                    )
+                else:
+                    logger.error(
+                        f"[US] USD 예수금과 원화 예수금이 모두 0입니다. "
+                        f"foreign_bal={foreign_bal}"
+                    )
+                    send_alert(
+                        "🚨 [US] 주문가능금액이 0으로 조회됩니다 (USD 예수금·원화 예수금 모두 0). 이 상태에서는 이번 세션의 모든 매수가 '자금 부족'으로 차단됩니다. 확인: KIS 외화 예수금 / 통합증거금(원화주문) 신청 여부 / API 토큰",
+                        is_error=True
+                    )
+
+            available_cash = usd_cash
+            total_asset_krw = available_cash * USD_KRW_RATE
+            logger.info(f"[US] 주문가능금액 출처: {cash_source}")
         else:
             if balance and 'output2' in balance and balance['output2']:
                 if isinstance(balance['output2'], list) and len(balance['output2']) > 0:
-                    available_cash = safe_float(balance['output2'][0].get('dnca_tot_amt', 0))
-                    total_asset_krw = safe_float(balance['output2'][0].get('tot_evlu_amt', available_cash))
+                    o2 = balance['output2'][0]
+                    # [v6.0] dnca_tot_amt(예수금총액)는 미결제/증거금을 포함해 실제
+                    # 주문가능액보다 클 수 있다. ord_psbl_cash(주문가능현금) 우선.
+                    available_cash = safe_float(o2.get('ord_psbl_cash') or o2.get('dnca_tot_amt', 0))
+                    total_asset_krw = safe_float(o2.get('tot_evlu_amt', available_cash))
+                    if available_cash <= 0:
+                        logger.error(f"[KR] 주문가능현금 0 (output2={o2})")
+                        send_alert(
+                            "🚨 [KR] 주문가능금액이 0으로 조회됩니다. 이번 세션 매수가 "
+                            "전부 차단됩니다. 예수금/미수금 상태를 확인하세요.",
+                            is_error=True
+                        )
         logger.info(f"Available Cash: {available_cash:,.2f}, Total Asset (KRW): {total_asset_krw:,.0f}")
 
         # 자동 모드 전환 체크 (1000만원 달성 시 레버리지 모드로)
@@ -1455,19 +1761,57 @@ def job():
     except Exception as e:
         logger.warning(f"[{market}] Failed to merge holdings into watch list: {e}")
     
-    # [v5.0] 포트폴리오 드로다운 서킷브레이커 — 신규 매수 진입 전에 먼저 평가한다.
-    # 기존에는 이 체크가 신규 매수 루프 "이후"에만 실행되어 경고만 보내고 실제로
-    # 그날 매수를 막지는 못했다 (알림은 갔지만 매수는 계속 실행됨). v5.0부터는
-    # 매수 루프 진입 "전"에 평가하여 실제로 신규 매수를 차단하는 플래그로 사용한다.
-    portfolio_drawdown_halt = False
+    # ========================================================================
+    # [v6.0] 낙폭 서킷브레이커 — modules/risk_state 로 교체
+    #
+    # v5.0/v5.1 이 쓰던 check_portfolio_drawdown() 은 '고점 대비 낙폭'이 아니라
+    # '매입원가 대비 현재 평가손실' 이었다. 기준 7% 로 두면 계좌가 원가 대비 7%
+    # 물리는 순간 신규 매수가 전면 차단되는데 — 해제 조건이 코드 어디에도 없었다.
+    # 게다가 자기강화적이다: 매수 차단 → 원가 불변 → 여전히 -7% → 다음날도 차단.
+    # 계좌가 저절로 반등하지 않는 한 봇은 영원히 아무것도 사지 않는다.
+    # "몇 달째 거래 없음"의 직접 원인 중 하나였다.
+    #
+    # v6.0 은 (a) 고점 대비 진짜 낙폭으로 계산하고, (b) 전면 차단 대신 낙폭 구간별
+    # 사이즈 축소(100%→60%→30%→중단) 사다리를 쓰며, (c) 중단은 cool-off 3영업일 또는
+    # 낙폭 절반 회복 시 자동 해제된다.
+    # ========================================================================
     try:
-        _holdings_pre = balance.get('output1', []) if balance else []
-        portfolio_drawdown_halt, _dd_loss_pct = check_portfolio_drawdown(_holdings_pre, PORTFOLIO_DRAWDOWN_PCT)
-        if portfolio_drawdown_halt:
-            logger.critical(f"🚨 PORTFOLIO DRAWDOWN ALERT! 전체 포트폴리오 손실 {_dd_loss_pct:.1f}% (기준: {PORTFOLIO_DRAWDOWN_PCT}%) → 신규 매수 전면 중단")
-            send_alert(f"🚨 포트폴리오 드로다운 경고! 전체 손실 {_dd_loss_pct:.1f}%. 신규 매수 중단 (보유분 리스크 관리는 계속).")
+        _equity = total_asset_krw if market == 'KR' else (available_cash * USD_KRW_RATE)
+        try:
+            _hold_val = 0.0
+            for _h in (balance.get('output1', []) if balance else []):
+                _q = safe_float(_h.get('hldg_qty', _h.get('ovrs_cblc_qty', 0)))
+                _pr = safe_float(_h.get('prpr', _h.get('now_pric2', _h.get('ovrs_now_pric1', 0))))
+                _hold_val += _q * _pr * (1.0 if market == 'KR' else USD_KRW_RATE)
+            _equity = (total_asset_krw if market == 'KR'
+                       else available_cash * USD_KRW_RATE) + _hold_val
+        except Exception as _hv_e:
+            logger.warning(f"보유 평가금액 합산 실패 (현금만으로 낙폭 계산): {_hv_e}")
+
+        risk_snap = risk_state.update_equity(_equity, market=market)
+        portfolio_drawdown_halt = risk_snap.halted
+        risk_size_multiplier = risk_snap.size_multiplier
+        logger.info(
+            f"[{market}] 계좌 낙폭: {risk_snap.drawdown_pct:.1f}% "
+            f"(고점 ₩{risk_snap.peak_equity:,.0f} → 현재 ₩{risk_snap.last_equity:,.0f}) "
+            f"→ 매수 사이즈 {risk_size_multiplier:.0%}"
+        )
+        if risk_snap.halted:
+            logger.critical(f"🚨 낙폭 서킷브레이커 발동: {risk_snap.reason}")
+            send_alert(
+                f"🚨 [{market}] 낙폭 서킷브레이커 — {risk_snap.reason}. "
+                f"신규 매수 중단 (보유분 리스크 관리는 계속). "
+                f"cool-off 경과 또는 낙폭 절반 회복 시 자동 해제됩니다."
+            )
+        elif risk_size_multiplier < 1.0:
+            logger.warning(
+                f"[{market}] 낙폭 {risk_snap.drawdown_pct:.1f}% → 매수 사이즈를 "
+                f"{risk_size_multiplier:.0%} 로 축소합니다."
+            )
     except Exception as e:
-        logger.error(f"Portfolio drawdown pre-check failed: {e}")
+        logger.error(f"낙폭 상태 갱신 실패 (안전하게 정상 사이즈로 진행): {e}", exc_info=True)
+        portfolio_drawdown_halt = False
+        risk_size_multiplier = 1.0
 
     # 활성 타겟 수 (분산 투자 계산용)
     num_active_targets = len(tickers)
@@ -1612,134 +1956,23 @@ def job():
                     }
                     continue
 
-                # Step 1: 신규 매수 — v5.0부터 게이트를 전부 복원 (묻지마 매수 폐지)
-                buy_blocked = False
-                block_reason = ""
-
-                # (0) [v5.1] 금일 이미 손절/청산한 종목 → 당일 재매수 금지 (휩쏘 방지)
-                if ticker in STOPPED_OUT_TODAY:
-                    buy_blocked = True
-                    block_reason = "금일 이미 손절/청산 - 당일 재매수 금지 (휩쏘 방지 가드)"
-
-                # (1) 패닉 갭다운 (>8%) — 하루 대기
-                if is_gap_down and gap_drop_pct >= AGG_DCA_PANIC_GAP:
-                    buy_blocked = True
-                    block_reason = f"패닉 갭다운 {gap_drop_pct:.1f}% (>{AGG_DCA_PANIC_GAP}%)"
-
-                # (2) 가용 현금 부족
-                if not buy_blocked and available_cash < current_price:
-                    buy_blocked = True
-                    block_reason = f"자금 부족 (현금 {available_cash:.0f} < 1주 {current_price:.0f})"
-
-                # (3) 포트폴리오 드로다운 서킷브레이커
-                if not buy_blocked and portfolio_drawdown_halt:
-                    buy_blocked = True
-                    block_reason = f"포트폴리오 드로다운 {PORTFOLIO_DRAWDOWN_PCT}% 초과 — 신규 매수 전면 중단"
-
-                # (4) 추세 이탈 — 레버리지는 10MA, 일반은 20MA 기준
-                if not buy_blocked and not AGG_DCA_SKIP_TREND:
-                    is_lev = (market == 'US' and ticker in US_LEVERAGED_ETF_SYMBOLS) or ticker in LEVERAGED_ETF_FACTOR
-                    if is_lev and len(ohlc) >= 10:
-                        _ma10 = calculate_ma([safe_float(x['clos']) for x in reversed(ohlc)], 10)
-                        trend_ok_buy = check_trend(current_price, _ma10) if _ma10 else is_uptrend
-                    else:
-                        trend_ok_buy = is_uptrend
-                    # KR 시장은 도메스틱 수급 변동성이 커서 5MA까지 함께 확인 (더 엄격한 확인)
-                    if market == 'KR' and trend_ok_buy:
-                        trend_ok_buy = is_short_uptrend
-                    if not trend_ok_buy:
-                        buy_blocked = True
-                        block_reason = "추세 이탈 (MA 하회) — 신규 매수 보류"
-
-                # (5) 상관 그룹 한도 — 같은 섹터/지수 그룹 동시 보유 제한
-                if not buy_blocked and not AGG_DCA_SKIP_CORR:
-                    _capped, _grp = is_correlation_capped(ticker, monitoring_targets)
-                    if _capped:
-                        buy_blocked = True
-                        block_reason = f"상관그룹 한도 초과 (group={_grp})"
-
-                # (6) 일일 손실 누적 서킷브레이커
-                if not buy_blocked and is_losing_streak_pause():
-                    buy_blocked = True
-                    block_reason = "일일 손실 한도 초과 — 신규 매수 중단"
-
-                # (7) 시장 전반 AI 뉴스 veto (기존 v4.0에서 꺼져 있던 것을 복원)
-                if not buy_blocked and not AGG_DCA_SKIP_AI:
-                    try:
-                        _news = ai.fetch_news()
-                        _sent = ai.check_market_sentiment(_news, persona=PERSONA)
-                        if _sent.get('market_condition') == 'CRASH' or _sent.get('risk_level') == 'HIGH':
-                            buy_blocked = True
-                            block_reason = f"AI 시장 위험 감지: {_sent.get('reason', 'N/A')[:80]}"
-                    except Exception as _ai_e:
-                        logger.error(f"[{ticker}] AI 시장 체크 실패 (안전을 위해 계속 진행): {_ai_e}")
-
-                # (8) [v5.0 신규] 섹터 특화 뉴스 veto — 반도체 등 특정 섹터 악재 시 해당
-                # 섹터 종목만 차단. 2026-07 반도체 붕괴 국면에서 SOXL/SMH를 뉴스 무시하고
-                # 계속 매수했던 사고의 직접적인 재발 방지책.
-                if not buy_blocked:
-                    _sec_blocked, _sec_reason = check_sector_news_veto(ticker)
-                    if _sec_blocked:
-                        buy_blocked = True
-                        block_reason = _sec_reason
-
-                if buy_blocked:
-                    logger.info(f"[{ticker}] ⛔ 매수 차단: {block_reason}")
-                    record_skip_reason(ticker, block_reason)
-                    monitoring_targets[ticker] = {
-                        'target': current_price, 'status': 'blocked', 'buys': 0,
-                        'exchange': exchange, 'ma20': ma20, 'ma5': ma5, 'ohlc': ohlc,
-                        'block_reason': block_reason,
-                    }
-                    continue
-
-                # Step 2: 게이트를 모두 통과한 경우에만 매수 실행
-                qty = calculate_dca_quantity(available_cash, current_price, num_active_targets, DCA_SETTINGS, market,
-                                             weight=ticker_weights.get(ticker, 1.0))
-                if qty <= 0:
-                    logger.info(f"[{ticker}] 매수 수량 0 (투자금액 부족)")
-                    monitoring_targets[ticker] = {
-                        'target': current_price, 'status': 'dca_wait', 'buys': 0,
-                        'exchange': exchange, 'ma20': ma20, 'ma5': ma5, 'ohlc': ohlc,
-                        'dca_buys_this_session': 0, 'last_dca_attempt_at': None,
-                        'dca_reentry_interval_min': DCA_REENTRY_INTERVAL_MIN,
-                    }
-                    continue
-
-                currency = "$" if market == 'US' else "₩"
-                logger.info(f"[{ticker}] 🚀 공격적 DCA 매수: {qty}주 @ {currency}{current_price:,.2f}")
-                if market == 'US':
-                    res = kis.buy_market_order(ticker, qty, exchange)
-                else:
-                    res = kis.buy_market_order(ticker, qty)
-
-                if res and res.get('rt_cd') == '0':
-                    logger.info(f"[{ticker}] ✅ 공격적 DCA 매수 성공! {qty}주")
-                    send_alert(f"🚀 [{ticker}] 공격적 DCA 매수 성공! {qty}주 @ {currency}{current_price:,.2f}")
-                    session_buy_count += 1
-                    monitoring_targets[ticker] = {
-                        'target': current_price, 'status': 'bought', 'buys': qty,
-                        'exchange': exchange,
-                        'buy_price': current_price, 'highest_price': current_price,
-                        'ma20': ma20, 'ma5': ma5, 'ohlc': ohlc,
-                        'entry_time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        'dca_buys_this_session': 1, 'avg_down_count': 0,
-                        'last_dca_attempt_at': datetime.datetime.now(),
-                        'dca_reentry_interval_min': DCA_REENTRY_INTERVAL_MIN,
-                    }
-                    # 현금 차감 (다음 종목 수량 계산에 반영)
-                    available_cash -= (qty * current_price)
-                else:
-                    err_msg = res.get('msg1', 'unknown') if res else 'no response'
-                    logger.error(f"[{ticker}] ❌ 매수 실패: {err_msg}")
-                    if res and res.get('msg_cd') in ['APBK1680', 'APBK1681']:
-                        FAILED_TICKERS.add(ticker)
-                    monitoring_targets[ticker] = {
-                        'target': current_price, 'status': 'dca_wait', 'buys': 0,
-                        'exchange': exchange, 'ma20': ma20, 'ma5': ma5, 'ohlc': ohlc,
-                        'dca_buys_this_session': 0, 'last_dca_attempt_at': datetime.datetime.now(),
-                        'dca_reentry_interval_min': DCA_REENTRY_INTERVAL_MIN,
-                    }
+                # ============================================================
+                # [v6.0] Step 1+2 통합 — 점수 기반 판단으로 전면 교체
+                #
+                # v5.0/v5.1 은 여기서 8개 게이트를 순차 검사해 하나라도 걸리면
+                # status='blocked' 를 찍고 그날은 끝이었다. 그리고 이 블록은
+                # **세션당 종목별로 딱 한 번**, 장 시작 직후에만 실행된다
+                # (감시 루프에는 aggressive_dca 재평가 경로가 아예 없었다).
+                # 즉 하루치 매매가 개장 한 틱의 MA20 비교로 결정됐다.
+                #
+                # v6.0 은 evaluate_buy() 에 위임한다. 결과는 3가지다:
+                #   veto  — 명확한 사유 + 자동 해제 조건이 있는 차단
+                #   defer — 점수 미달. status='candidate' 로 남겨 감시 루프가
+                #           재평가 주기마다 다시 판단한다. **오늘은 끝이 아니다.**
+                #   buy   — 점수에 비례한 사이즈로 매수
+                # ============================================================
+                decision = evaluate_and_buy(ticker, exchange, current_price, ohlc,
+                                            ma20, ma5, tag='open')
                 continue
 
             # DCA 전략 (기존 — 조건부 매수)
@@ -1957,33 +2190,36 @@ def job():
         logger.info(f"[{market}] No targets found for today. Sleeping.")
         return
 
-    # === 포트폴리오 드로다운 재확인 (진입 루프 이후 최신 잔고 기준으로 플래그 갱신) ===
-    # 최초 알림은 위 pre-check에서 이미 발송했으므로 여기서는 조용히 플래그만 갱신한다
-    # (감시 루프의 물타기/재진입 로직이 최신 상태를 참조할 수 있도록).
-    try:
-        holdings_for_check = []
-        if balance and 'output1' in balance:
-            holdings_for_check = balance['output1']
-        portfolio_drawdown_halt, total_loss_pct = check_portfolio_drawdown(holdings_for_check, PORTFOLIO_DRAWDOWN_PCT)
-        if portfolio_drawdown_halt:
-            logger.warning(f"🚨 [재확인] 포트폴리오 드로다운 지속 중: {total_loss_pct:.1f}% (기준 {PORTFOLIO_DRAWDOWN_PCT}%) — 물타기/재진입 차단 유지")
-    except Exception as e:
-        logger.error(f"Portfolio drawdown check failed: {e}")
+    # [v6.0] 낙폭 상태는 세션 시작 시 risk_state 로 이미 확정했다.
+    # v5.x 는 여기서 check_portfolio_drawdown() 을 한 번 더 호출해 플래그를 덮어썼는데,
+    # 그 함수가 '원가 대비 평가손실'이라 결국 같은 영구 래치를 다시 켜는 코드였다.
+    # 여기서는 상태를 재계산하지 않고 로깅만 한다 (해제는 risk_state 가 관리).
+    if risk_snap is not None and (risk_snap.halted or risk_snap.size_multiplier < 1.0):
+        logger.warning(
+            f"[{market}] 낙폭 상태 유지: {risk_snap.drawdown_pct:.1f}% "
+            f"(halted={risk_snap.halted}, 사이즈 {risk_snap.size_multiplier:.0%})"
+        )
 
     # DCA 모드: 매수 후에도 감시 루프 진입 (보유분 StopLoss/TrailingStop 모니터링)
     if STRATEGY_MODE in ('dca', 'aggressive_dca'):
-        bought_positions = {k: v for k, v in monitoring_targets.items() if v['status'] == 'bought'}
-        waiting_positions = {k: v for k, v in monitoring_targets.items() if v['status'] == 'dca_wait'}
-        blocked_positions = {k: v for k, v in monitoring_targets.items() if v.get('status') == 'blocked'}
+        bought_positions = {k: v for k, v in monitoring_targets.items() if v.get('status') == 'bought'}
+        waiting_positions = {k: v for k, v in monitoring_targets.items()
+                             if v.get('status') in ('dca_wait', 'candidate')}
         logger.info(
             f"[{market}] {'Aggressive ' if STRATEGY_MODE == 'aggressive_dca' else ''}DCA Mode - "
-            f"Monitoring bought={list(bought_positions.keys())}, "
-            f"waiting={list(waiting_positions.keys())}, "
-            f"blocked={list(blocked_positions.keys())}"
+            f"보유={list(bought_positions.keys())}, "
+            f"재평가 대기={list(waiting_positions.keys())}"
         )
 
-    # 활성 모니터링 대상 수 업데이트
-    num_active_targets = len([t for t in monitoring_targets.values() if t['status'] == 'monitoring'])
+    # 활성 모니터링 대상 수 업데이트.
+    # [v6.0] 기존에는 status=='monitoring' 만 셌는데 DCA 계열은 그 상태를 쓰지 않아
+    # 항상 0 이 나왔다. num_active_targets 는 calculate_dca_quantity() 의 분산
+    # 분모(per_ticker_cash = cash / num_targets)로 쓰이므로, 0 → max(...,1) → 1 이
+    # 되어 **한 종목에 가용현금 전액을 배정**하는 사이징 버그였다.
+    num_active_targets = len([
+        t for t in monitoring_targets.values()
+        if t.get('status') in ('monitoring', 'candidate', 'dca_wait', 'bought')
+    ]) or len(monitoring_targets) or 1
     logger.info(f"[{market}] Watch List: {list(monitoring_targets.keys())} ({num_active_targets} active)")
     
     # Clean up previous WebSocket if running
@@ -2008,6 +2244,7 @@ def job():
 
     # 2. Watch Loop
     last_scan_time = datetime.datetime.now()
+    last_reeval_time = datetime.datetime.now()
 
     while True:
         # Check if market closed
@@ -2015,7 +2252,45 @@ def job():
         if current_market != market:
             logger.info(f"[{market}] Market Closed. Ending Session.")
             break
-            
+
+        # ====================================================================
+        # [v6.0 핵심] 장중 연속 재평가 루프
+        #
+        # v5.x 의 가장 치명적인 구조 결함이 바로 이 자리에 **아무것도 없었다**는 것이다.
+        # aggressive_dca 는 개장 직후 종목별로 게이트를 1회 평가한 뒤 status='blocked'
+        # 를 찍었고, 그 뒤로는 어떤 코드도 그 종목을 다시 보지 않았다:
+        #   - 아래 DCA 재평가 블록은 `if STRATEGY_MODE == 'dca':` 라 aggressive_dca 제외
+        #   - 레거시 VBO 경로는 v5.1 이 `continue` 로 완전히 차단
+        #   - mid-session 재검토는 status=='downtrend_watch' 만 대상 (agg_dca 는 안 씀)
+        # 그 결과 하루치 매매가 개장 한 틱의 MA 비교로 확정됐다. 조정장이 이어지면
+        # 매수 건수는 정확히 0이 되고, 그게 몇 달 지속돼도 아무도 몰랐다.
+        #
+        # v6.0 은 REEVAL_INTERVAL_SEC 마다 모든 후보를 다시 평가한다. 'defer' 는
+        # "오늘은 끝"이 아니라 "지금은 아니다"가 된다.
+        # ====================================================================
+        if (STRATEGY_MODE in ('dca', 'aggressive_dca')
+                and (datetime.datetime.now() - last_reeval_time).total_seconds() >= REEVAL_INTERVAL_SEC):
+            last_reeval_time = datetime.datetime.now()
+            reeval_list = [
+                (t, d) for t, d in list(monitoring_targets.items())
+                if d.get('status') in ('candidate', 'dca_wait', 'blocked', 'bought')
+                and t not in FAILED_TICKERS
+            ]
+            logger.info(f"🔁 [{market}] 장중 재평가 {len(reeval_list)}종목 "
+                        f"(주기 {REEVAL_INTERVAL_SEC}초, 누적 평가 {session_evaluations}회)")
+            for _t, _d in reeval_list:
+                try:
+                    _ex = _d.get('exchange')
+                    _price, _ohlc, _ma20, _ma5 = refresh_ticker_snapshot(_t, _ex)
+                    if not _price or not _ohlc:
+                        continue
+                    evaluate_and_buy(_t, _ex, _price, _ohlc, _ma20, _ma5, tag='intraday')
+                except Exception as _re_e:
+                    # 종목 하나의 오류가 세션 전체를 죽이지 않도록 반드시 격리한다
+                    # (v5.1 이 같은 이유로 종목별 try/except 를 도입했던 교훈).
+                    logger.error(f"[{_t}] 장중 재평가 실패: {_re_e}", exc_info=True)
+
+
         # --- [New] US Mid-Session Re-analysis: downtrend_watch 종목 재검토 ---
         # 5분(300초)마다 실행: 장 시작에 MA20 하회로 제외된 US 종목이 추세 회복 시 편입
         if market == 'US' and (datetime.datetime.now() - last_scan_time).total_seconds() > 300:
@@ -2778,15 +3053,50 @@ def job():
             f"매수보류: {skipped_buy_reasons}"
         )
 
-    # [v5.0] 매수 0건 워치독 — 과거 "미국장이 몇 주째 거래가 안 된다" 사고처럼,
-    # 매수 후보 종목은 있었는데 실제 체결이 하나도 없는 세션이 조용히 반복되는
-    # 상황을 알림 없이 넘기지 않기 위한 최소한의 자가 점검.
-    if session_buy_count == 0 and tickers and not holding:
-        logger.warning(f"[{market}] ⚠️ 이번 세션 매수 0건 (후보 {len(tickers)}개). skip 사유: {skipped_buy_reasons}")
-        send_alert(
-            f"⚠️ [{market}] 이번 세션 매수가 0건입니다 (후보 {len(tickers)}개, 기존 보유 없음).\n"
-            f"매수 보류 사유: {skipped_buy_reasons or '기록된 사유 없음 — 잔고/API 응답을 확인하세요.'}"
-        )
+    # ========================================================================
+    # [v6.0] 세션 기록 + 자가진단 루프 (Loop Engineering)
+    #
+    # v5.0 의 워치독은 조건이 `buys==0 and tickers and not holding` 이었다.
+    # 즉 **보유 종목이 하나라도 있으면 영원히 침묵**한다. 실제 사고 상황(보유는
+    # 있는데 신규 매수가 전부 막힘)이 정확히 이 사각지대였다. 게다가 단발성이라
+    # "오늘 0건"은 알려도 "40세션 연속 0건"은 알리지 못했다. 하루 0건은 정상이고
+    # 40일 연속 0건은 고장인데, 둘을 구분하지 못하면 알림은 노이즈가 되어 무시된다.
+    #
+    # v6.0 은 세션 결과를 디스크에 누적하고, **연속 무매수 세션 수**와 **지배적
+    # 차단 사유**로 등급을 매겨 에스컬레이션한다.
+    # ========================================================================
+    try:
+        _reason_counts = {}
+        for _t, _reasons in (skipped_buy_reasons or {}).items():
+            for _r in _reasons:
+                _key = str(_r)[:80]
+                _reason_counts[_key] = _reason_counts.get(_key, 0) + 1
+
+        health_monitor.record_session(health_monitor.SessionRecord(
+            session_key=market_clock.session_key(market),
+            market=market,
+            started_at=session_started_at,
+            candidates=len(tickers or []),
+            buys=session_buy_count,
+            sells=len(sold_sl) + len(sold_tp),
+            evaluations=session_evaluations,
+            available_cash=float(available_cash or 0.0),
+            drawdown_pct=float(risk_snap.drawdown_pct if risk_snap else 0.0),
+            block_reasons=_reason_counts,
+            notes=f"strategy={STRATEGY_MODE}",
+        ))
+
+        diag = health_monitor.diagnose(market)
+        logger.info(f"[{market}] 자가진단: {diag.level.upper()} — {diag.message}")
+        if diag.should_alert:
+            send_alert(diag.message, is_error=(diag.level == 'critical'))
+        elif session_buy_count == 0 and tickers:
+            logger.info(
+                f"[{market}] 매수 0건 (후보 {len(tickers)}개, 평가 {session_evaluations}회). "
+                f"연속 무매수 {diag.dry_streak}세션 — 아직 정상 범위."
+            )
+    except Exception as _hm_e:
+        logger.error(f"세션 자가진단 기록 실패: {_hm_e}", exc_info=True)
 
 def run_with_recovery():
     """Wrapper function to run job with automatic recovery.
@@ -2810,6 +3120,9 @@ def run_with_recovery():
     us_retry_at = None
     opro_triggered_today = False  # 장 마감 후 백테스트+OPRO 자동 실행
     last_date = None
+    # [v6.0] 거래소 현지 영업일 기준 세션 키 (KST 자정 리셋 버그 제거)
+    last_kr_key = market_clock.session_key('KR')
+    last_us_key = market_clock.session_key('US')
 
     def _backoff_seconds(n):
         return min(300, 30 * n)
@@ -2864,19 +3177,33 @@ def run_with_recovery():
             t = int(now.strftime("%H%M"))
             today_str = now.strftime("%Y%m%d")
 
-            # Reset daily triggers at date change
-            if last_date != today_str:
+            # ================================================================
+            # [v6.0] 세션 플래그는 KST 날짜가 아니라 **거래소 현지 영업일**로 관리한다.
+            #
+            # v5.x 는 KST 자정에 us_triggered_today 를 리셋했는데, KST 자정은 미국장
+            # 한복판(현지 10:00/11:00)이다. 즉 진행 중인 US 세션의 플래그가 리셋되어
+            # 같은 세션에 job() 이 두 번 진입할 수 있었다 (감시 루프/웹소켓 중복 기동).
+            # 거래소 현지 날짜를 쓰면 세션 도중에는 절대 바뀌지 않는다.
+            # ================================================================
+            kr_key = market_clock.session_key('KR')
+            us_key = market_clock.session_key('US')
+            if kr_key != last_kr_key:
                 kr_triggered_today = False
-                us_triggered_today = False
                 kr_session_done_today = False
-                us_session_done_today = False
                 kr_retry_at = None
-                us_retry_at = None
                 kr_error_count = 0
+                last_kr_key = kr_key
+                logger.info(f"📅 New KR session: {kr_key}. Triggers reset.")
+            if us_key != last_us_key:
+                us_triggered_today = False
+                us_session_done_today = False
+                us_retry_at = None
                 us_error_count = 0
+                last_us_key = us_key
+                logger.info(f"📅 New US session: {us_key}. Triggers reset.")
+            if last_date != today_str:
                 opro_triggered_today = False
                 last_date = today_str
-                logger.info(f"📅 New day: {today_str} (KST). Daily triggers reset.")
 
             # KR 장 마감 후 16:00 KST — 백테스트 + OPRO 자동 최적화
             if 1600 <= t <= 1605 and not opro_triggered_today:
@@ -2913,7 +3240,10 @@ def run_with_recovery():
             kr_market_open_now = (get_market_status() == 'KR')
             kr_should_start = False
             if kr_market_open_now and not kr_session_done_today:
-                if not kr_triggered_today and 900 <= t <= 905:
+                if not kr_triggered_today:
+                    # [v6.0] 09:00~09:05 의 5분 창을 폐기. 그 창 안에 프로세스가
+                    # 살아있지 못하면(배포/재부팅/네트워크 순단) 그날 거래가 통째로
+                    # 사라졌다. 이제 "장이 열려 있고 이 세션을 아직 안 돌렸으면 시작".
                     kr_should_start = True
                 elif kr_triggered_today and kr_retry_at and now >= kr_retry_at:
                     kr_should_start = True
@@ -2951,7 +3281,10 @@ def run_with_recovery():
             us_market_open_now = (get_market_status() == 'US')
             us_should_start = False
             if us_market_open_now and not us_session_done_today:
-                if not us_triggered_today and 2330 <= t <= 2335:
+                if not us_triggered_today:
+                    # [v6.0] 23:30~23:35 5분 창 폐기 (+ 그 시각 자체가 서머타임
+                    # 기간에는 실제 개장보다 1시간 늦었다). 장이 열려 있으면 언제든
+                    # 진입한다.
                     us_should_start = True
                 elif us_triggered_today and us_retry_at and now >= us_retry_at:
                     us_should_start = True

@@ -39,13 +39,12 @@
         "leveraged_reentry_interval_minutes": 60
     },
     "risk_management": {
-        "stop_loss_pct": -4.0,
-        "trailing_stop_activation_pct": 4.0,
-        "trailing_stop_drop_pct": 2.5,
+        "stop_loss_pct": -7.0,
+        "trailing_stop_activation_pct": 5.0,
+        "trailing_stop_drop_pct": 3.5,
         "gap_down_threshold_pct": 5.0,
         "consecutive_decline_days": 3,
         "consecutive_decline_pct": 5.0,
-        "portfolio_drawdown_pct": 7.0,
         "dca_monitor_interval_sec": 60,
         "rebound_buy_enabled": true,
         "rebound_drop_threshold_pct": 3.0,
@@ -78,7 +77,9 @@
             "FNGU": 3.0,
             "UPRO": 3.0,
             "NVDL": 2.0
-        }
+        },
+        "drawdown_ladder_note": "v6.0: 낙폭 사다리/서킷브레이커는 modules/risk_state.py 가 관리 (고점 대비, 자동 해제)",
+        "_tuning_note": "v6.0: scripts/verify_strategy_loop.py 로 5국면×5시드 검증 후 조정. 기존 -4%/4%/2.5% 는 일간변동성(1~3.5%) 대비 손절폭이 노이즈 밴드 안이라 상승장에서도 승자를 계속 털어냈다(5시드 평균 상승장 +1.4%, B&H +23%). -7%/5%/3.5% 로 넓히면 상승 +3.1%, 횡보 -3.1% 로 개선되고 폭락 방어는 유지된다."
     },
     "portfolio_selection": {
         "max_kr_etf": 7,
@@ -90,16 +91,16 @@
         "min_stock_momentum": 5.0
     },
     "aggressive_dca": {
+        "_comment": "v6.0: 게이트는 허가가 아니라 사이즈를 정한다. skip_* 플래그는 폐기됨.",
+        "min_buy_score": 0.35,
+        "max_position_pct": 25.0,
+        "reeval_interval_sec": 300,
+        "sentiment_ttl_sec": 900,
         "averaging_down_enabled": true,
         "averaging_down_trigger_pct": -3.0,
         "averaging_down_max_per_session": 2,
         "panic_gap_down_threshold_pct": 8.0,
-        "portfolio_drawdown_halt_pct": 7.0,
-        "skip_ai_check": false,
-        "skip_trend_filter": false,
-        "skip_correlation_check": false,
-        "sector_news_veto_enabled": true,
-        "instant_buy_on_open": true
+        "sector_news_veto_enabled": true
     },
     "telegram": {
         "enabled": true,

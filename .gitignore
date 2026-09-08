@@ -14,3 +14,6 @@ test_*.py
 !tests/test_*.py
 database/kis_token_cache.json
 database/account_cache.json
+# v6.0 런타임 상태 (계좌 낙폭/전략 건강도) — 서버별로 다르므로 추적하지 않음
+database/risk_state.json
+database/strategy_health.json
