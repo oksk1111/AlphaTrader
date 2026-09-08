@@ -162,8 +162,19 @@ class TestSafeSell(unittest.TestCase):
         self.assertEqual(fake.calls, [])
 
     def test_kis_domestic_tick_size(self):
-        """KRX 호가단위 헬퍼 검증."""
-        from modules.kis_domestic import KisDomestic
+        """KRX 호가단위 헬퍼 검증.
+
+        `_import_safe_sell()` 이 `sys.modules['modules.kis_domestic']` 를 MagicMock 으로
+        선점하므로 평범한 import 는 목을 돌려준다(그러면 어떤 값이든 통과해 테스트가
+        무의미해진다). 실제 파일을 직접 로드해 진짜 구현을 검증한다.
+        """
+        import importlib.util
+        _path = os.path.join(ROOT, 'modules', 'kis_domestic.py')
+        _spec = importlib.util.spec_from_file_location('_real_kis_domestic', _path)
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        KisDomestic = _mod.KisDomestic
+
         cases = [
             (1500, 1),
             (3000, 5),
