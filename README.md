@@ -435,8 +435,22 @@ docs/         운영/설정/기획 문서
     였다(완만한 상승장 캡처율 **-34%**). 스윕 후 `-12%/+10%/6%` 채택
     (캡처율 72%/76%, 휩쏘 매도 절반 이하). `atr_stop_max_pct`도 -12로 함께 확장하지
     않으면 손절폭이 -10으로 되감기므로 같이 조정.
+  - **감시 장치를 넣으며 만든 자책골 2개 (실서버 관측으로 잡음)**:
+    - `job()` 은 세션 내내 메인 루프를 점유하므로 heartbeat 가 멈춘다 →
+      **좀비 감시가 정상 매매 중인 봇을 죽일 뻔했다.** `job()` 안에서 5분 이상
+      침묵할 수 있는 구간을 전부 덮음:
+      `job-enter → session-prep → scan → sentiment → evaluate → watchloop`
+    - `deploy.sh`(pkill 후 3초 뒤 재기동)와 항상 도는 감시가 겹치면 **봇이 두 개**
+      돌아 같은 신호에 주문이 두 번 나간다 → `database/.deploying` 배포 락
+      (`trap EXIT` 해제, 5분 초과 시 무시) + `kill_duplicate_bots()`(경과시간
+      기준으로 가장 오래된 하나만 유지) 추가
+  - **`/api/status` 확장**: `session_active`, `heartbeat_source` 노출.
+    "봇이 살아 있다"와 "매매 세션을 돌고 있다"는 다른 상태인데 구분할 값이 없었다.
+  - **배포 후 실서버 확인** (2026-09-10 23:5x KST, 미국장 개장 중):
+    `{"market_status":"US","heartbeat_source":"watchloop","session_active":true}`
+    → 서머타임 반영(수정 전 `CLOSED`), 매매 세션 정상 진행 확인
   - **파일**: `modules/logger.py`, `web/app.py`, `auto_restart_bot.sh`, `run_bot.py`,
-    `user_config.json`, `scripts/verify_strategy_loop.py`,
+    `deployment/deploy.sh`, `user_config.json`, `scripts/verify_strategy_loop.py`,
     `tests/test_v61_observability.py`, `.github/workflows/deploy.yml`
 
 - **2026-09-08 — v6.0 전면 개편: 몇 달간의 거래 정지 근본 수정**
