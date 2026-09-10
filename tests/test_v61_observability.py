@@ -153,6 +153,18 @@ class TestLiveness:
         assert "source='mainloop'" in src
         assert "source='schedule'" in src
 
+    def test_heartbeat_survives_a_long_session(self):
+        """job() 은 세션 내내 메인 루프를 점유한다 — 그동안 생존 신호가 끊기면
+        감시 스크립트가 **정상 동작 중인 봇을 좀비로 오인해 죽인다.**
+        감시 장치를 넣을 때 가장 흔한 자책골이다.
+        """
+        src = _read("run_bot.py")
+        # job() 의 감시 루프(watch loop) 안에서 갱신되어야 한다.
+        assert "source='watchloop'" in src,             "job() 감시 루프에 touch_heartbeat 가 없습니다 — 장중에 봇이 강제 종료됩니다."
+        # 세션 준비 구간과 종목 평가 단위에서도 갱신되어야 한다.
+        assert "source='session-prep'" in src
+        assert "source='evaluate'" in src
+
     def test_supervisor_checks_heartbeat_age_not_just_pgrep(self):
         src = _read("auto_restart_bot.sh")
         assert "check_bot_liveness" in src

@@ -1501,6 +1501,10 @@ def job():
         nonlocal session_buy_count, available_cash, session_evaluations
 
         session_evaluations += 1
+        # [v6.1] 종목 하나를 평가하는 것은 REST 왕복 + (경우에 따라) LLM 호출이다.
+        # 후보가 12~21개면 초기 스캔만으로 수 분이 걸릴 수 있으므로, 매수 판단의
+        # 최소 단위마다 생존 신호를 남긴다 (15초 스로틀이 걸려 있어 비용은 없다).
+        touch_heartbeat(market=market, source='evaluate')
         sess = current_session(market)
 
         pctx = PortfolioContext(
@@ -1641,6 +1645,10 @@ def job():
 
     # Track retry counts for this session
     retry_counts = {}
+
+    # [v6.1] 세션 준비 구간(잔고·시세 조회, 종목 수만큼 REST 왕복)도 수 분이
+    # 걸릴 수 있으므로 여기서도 생존 신호를 남긴다.
+    touch_heartbeat(force=True, market=market, source='session-prep')
 
     # --- 0. Get Account Balance for Dynamic Quantity ---
     available_cash = 0
@@ -2328,6 +2336,15 @@ def job():
     last_reeval_time = datetime.datetime.now()
 
     while True:
+        # [v6.1] job() 은 세션 내내(최대 6.5시간) 메인 루프를 점유한다. 그동안
+        # schedule.run_pending() 도, 메인 루프의 touch_heartbeat 도 돌지 않는다.
+        # 여기서 생존 신호를 갱신하지 않으면 감시 스크립트가 **장중에 정상 동작
+        # 중인 봇을 좀비로 오인해 강제 종료**한다. 감시 장치를 넣을 때 가장
+        # 흔한 자책골이므로 절대 지우지 말 것.
+        touch_heartbeat(market=market, source='watchloop',
+                        session_buys=session_buy_count,
+                        session_evals=session_evaluations)
+
         # Check if market closed
         current_market = get_market_status()
         if current_market != market:
