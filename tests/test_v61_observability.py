@@ -186,6 +186,17 @@ class TestLiveness:
         assert "stalled" in src
         assert "heartbeat_age_sec" in src
 
+    def test_status_api_distinguishes_alive_from_trading(self):
+        """'봇이 살아 있다'와 '매매 세션을 돌고 있다'는 전혀 다른 상태다.
+
+        2026-09-10 진단이 오래 걸린 이유가 이 둘을 구분할 수 없었기 때문이다.
+        heartbeat 의 source 가 mainloop/schedule 이면 살아만 있는 것이고,
+        watchloop/evaluate 면 실제로 매매 중이다.
+        """
+        src = _read("web/app.py")
+        assert "session_active" in src
+        assert "heartbeat_source" in src
+
     def test_stall_detector_exists_outside_job(self):
         """job() 이 아예 안 도는 고장은 job() 안의 자가진단으로 잡을 수 없다."""
         src = _read("run_bot.py")

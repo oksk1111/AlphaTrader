@@ -1117,10 +1117,18 @@ async def api_status(request: Request):
 
     # Unauthenticated: minimal health-check response (no sensitive data)
     if not is_authenticated(request):
+        # [v6.1] source 와 세션 진입 여부는 민감정보가 아니고, 원격 진단에서
+        # 가장 필요한 두 값이다. "봇이 살아 있다"와 "봇이 매매 세션을 돌고 있다"는
+        # 전혀 다른 상태인데, 이걸 구분할 수 없어서 2026-09-10 진단이 오래 걸렸다.
+        _hb = live_info.get("heartbeat") or {}
         return JSONResponse({
             "bot_status": liveness,
             "market_status": market_status,
             "heartbeat_age_sec": live_info["heartbeat_age_sec"],
+            "heartbeat_source": _hb.get("source"),
+            # watchloop/evaluate/session-prep 이면 job() 안에 있다 = 매매 세션 진행 중
+            "session_active": _hb.get("source") in
+                              ("watchloop", "evaluate", "session-prep", "job-enter"),
             # 장이 열려 있는데 봇이 멈춰 있으면 healthy 가 아니다.
             "healthy": not (market_status in ("US", "KR") and liveness == "stalled"),
         })
