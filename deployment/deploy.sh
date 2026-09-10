@@ -21,6 +21,19 @@ log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
 }
 
+# ==========================================================================
+# [v6.1] 배포 락
+#
+# 이 스크립트는 pkill 로 봇을 죽인 뒤 3초 후 새로 띄운다. 그 사이에
+# auto_restart_bot.sh 가 "봇이 없다"고 판단해 또 하나를 띄우면 봇이 두 개 돌고
+# **같은 신호에 주문이 두 번 나간다.** 락으로 그 구간을 막는다.
+# trap 으로 정상/비정상 종료 모두에서 반드시 해제한다.
+# ==========================================================================
+DEPLOY_LOCK="$PROJECT_DIR/database/.deploying"
+mkdir -p "$PROJECT_DIR/database"
+touch "$DEPLOY_LOCK"
+trap 'rm -f "$DEPLOY_LOCK"' EXIT
+
 log "🚀 Starting deployment..."
 
 if [ ! -x "$PYTHON_BIN" ]; then

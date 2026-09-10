@@ -17,3 +17,7 @@ database/account_cache.json
 # v6.0 런타임 상태 (계좌 낙폭/전략 건강도) — 서버별로 다르므로 추적하지 않음
 database/risk_state.json
 database/strategy_health.json
+
+# v6.1 런타임 산출물
+database/heartbeat.json
+database/.deploying

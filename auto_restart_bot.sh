@@ -223,6 +223,7 @@ HEARTBEAT_MAX_AGE_CLOSED=1800   # 장외: 30분
 
 check_bot_liveness() {
     local market="$1"
+    is_deploying && return 0
     # 프로세스가 아예 없으면 check_and_restart_bot 이 처리한다.
     pgrep -f "python.*run_bot.py" > /dev/null || return 0
     [ -f "$HEARTBEAT_FILE" ] || return 0   # 아직 한 번도 안 찍힘(기동 직후)
@@ -246,7 +247,68 @@ check_bot_liveness() {
     fi
 }
 
+# ==========================================================================
+# [v6.1] 배포 락 + 중복 봇 제거
+#
+# deploy.sh 는 pkill 로 봇을 죽인 뒤 3초 후 새로 띄운다. 그 사이에 이 감시
+# 스크립트가 "봇이 없다"고 판단해 또 하나를 띄우면 **봇이 두 개 돌게 되고,
+# 같은 신호에 주문이 두 번 나간다.** 실계좌에서 이건 그냥 손실이다.
+#
+# v6.0 까지는 감시가 장중에만 돌아 이 경합이 드물었는데, v6.1 이 봇을 항상
+# 살려두도록 바꾸면서(개장 순간 프로세스 부재 방지) 배포 시간대와 겹칠 확률이
+# 크게 올라갔다. 그래서 락을 명시적으로 도입한다.
+#
+# deploy.sh 가 DEPLOY_LOCK 을 만들고 끝나면 지운다(trap). 감시는 락이 있는 동안
+# (그리고 락이 신선한 동안만 — 배포가 중간에 죽어도 영원히 멈추지 않도록)
+# 봇 재기동을 건너뛴다.
+# ==========================================================================
+
+DEPLOY_LOCK="$LOG_DIR/.deploying"
+DEPLOY_LOCK_MAX_AGE=300   # 배포가 죽어서 락이 남아도 5분 뒤엔 무시한다
+
+is_deploying() {
+    [ -f "$DEPLOY_LOCK" ] || return 1
+    local mtime now age
+    mtime=$(date -r "$DEPLOY_LOCK" +%s 2>/dev/null) || return 1
+    now=$(date +%s)
+    age=$((now - mtime))
+    if [ "$age" -gt "$DEPLOY_LOCK_MAX_AGE" ]; then
+        log_message "[Deploy] 락이 ${age}s 째 남아 있어 무시하고 진행합니다."
+        rm -f "$DEPLOY_LOCK"
+        return 1
+    fi
+    return 0
+}
+
+kill_duplicate_bots() {
+    # 어떤 이유로든 봇이 두 개 이상이면 **가장 오래 살아 있는 하나만** 남긴다.
+    # (오래된 쪽이 세션 상태를 들고 있을 가능성이 높다)
+    # PID 크기는 나이 순서가 아니다(랩어라운드). ps 의 경과시간(etimes)으로 고른다.
+    local pids count keep
+    pids=$(pgrep -f "python.*run_bot.py")
+    [ -z "$pids" ] && return 0
+    count=$(echo "$pids" | grep -c .)
+    [ "$count" -le 1 ] && return 0
+
+    # $pids 를 따옴표 없이 넘겨 줄바꿈이 공백으로 접히게 한다 (ps -p 는 공백 구분을 받는다)
+    keep=$(ps -o pid=,etimes= -p $pids 2>/dev/null | sort -k2 -nr | head -1 | awk '{print $1}')
+    [ -z "$keep" ] && keep=$(echo "$pids" | head -1)
+
+    log_message "[Guard] run_bot.py 프로세스가 ${count}개입니다. PID $keep 만 남기고 종료합니다."
+    send_telegram "⚠️ <b>Alpha Trader</b>%0A봇 프로세스가 ${count}개 발견되어 중복 주문 위험이 있었습니다.%0APID ${keep} 만 남기고 정리했습니다."
+    for pid in $pids; do
+        [ "$pid" = "$keep" ] && continue
+        kill -9 "$pid" 2>/dev/null
+    done
+}
+
 check_and_restart_bot() {
+    # 배포 중이면 손대지 않는다 — deploy.sh 가 죽였다 살리는 중이다.
+    if is_deploying; then
+        log_message "[Deploy] 배포 진행 중 — 봇 재기동을 건너뜁니다."
+        return 0
+    fi
+
     if ! pgrep -f "python.*run_bot.py" > /dev/null; then
         log_message "⚠️ Bot process not found. Restarting... (attempt: $((BOT_RESTART_ATTEMPTS + 1)))"
         cd "$SCRIPT_DIR"
@@ -322,6 +384,7 @@ while true; do
     # [v6.1] 봇은 장 안팎을 가리지 않고 항상 살려둔다. 개장 순간에 프로세스가
     # 없어서 첫 구간을 통째로 놓치는 사고를 구조적으로 제거한다.
     # 순서 주의: 먼저 좀비를 걷어낸 뒤 재기동해야 한 사이클 안에 복구된다.
+    kill_duplicate_bots
     check_bot_liveness "$MARKET_STATUS"
     check_and_restart_bot
 
