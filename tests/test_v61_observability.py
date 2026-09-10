@@ -164,6 +164,10 @@ class TestLiveness:
         # 세션 준비 구간과 종목 평가 단위에서도 갱신되어야 한다.
         assert "source='session-prep'" in src
         assert "source='evaluate'" in src
+        # 초기 스캔(종목당 REST 2~3회)과 LLM 감성 조회 구간도 덮어야 한다.
+        # 이 두 구간이 장중 좀비 임계(5분)를 넘길 수 있는 유일한 곳이다.
+        assert "source='scan'" in src
+        assert "source='sentiment'" in src
 
     def test_supervisor_checks_heartbeat_age_not_just_pgrep(self):
         src = _read("auto_restart_bot.sh")

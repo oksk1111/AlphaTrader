@@ -1604,6 +1604,9 @@ def job():
     # 종목 17개면 개장 직후 LLM 왕복이 17회 — 느리고, 비싸고, 무엇보다 종목마다
     # 다른 답이 나와 판단이 비결정적이었다. 세션 단위로 한 번만 조회해 공유한다.
     def get_market_sentiment_cached():
+        # [v6.1] LLM 왕복은 수십 초가 걸릴 수 있는 유일한 구간이다. 좀비 오판정을
+        # 막기 위해 호출 직전에 생존 신호를 남긴다.
+        touch_heartbeat(market=market, source='sentiment')
         now = time.time()
         if _sentiment_cache.get('market') and now - _sentiment_cache.get('market_at', 0) < SENTIMENT_TTL_SEC:
             return _sentiment_cache['market']
@@ -1932,7 +1935,11 @@ def job():
                 ticker_weights[ticker] = 1.0
 
             logger.info(f"Analyzing {ticker}...")
-        
+            # [v6.1] 초기 스캔은 종목당 REST 2~3회 + (첫 종목에서) LLM 감성 조회까지
+            # 포함해 수 분이 걸릴 수 있다. 여기서 생존 신호를 남기지 않으면 좀비
+            # 감시(장중 5분)가 정상 스캔 중인 봇을 죽인다.
+            touch_heartbeat(market=market, source='scan', ticker=ticker)
+
             # A. Trend Check (20MA)
             if market == 'US':
                 ohlc = kis.get_daily_ohlc(ticker, exchange)
