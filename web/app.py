@@ -849,11 +849,38 @@ def get_bot_pid():
     return None
 
 def get_latest_log_file():
-    """최신 로그 파일 경로"""
-    log_files = glob.glob(str(BASE_DIR / "database" / "trading_*.log"))
-    if not log_files:
+    """대시보드 화면에 표시할 **봇 로그** 파일 경로.
+
+    [v6.1] "몇 달째 거래가 안 된다"는 오진의 직접적 원인이 이 함수였다.
+
+    이전 구현은 `sorted(glob("database/trading_*.log"))[-1]`, 즉 **파일명이 가장
+    최근 날짜인 파일**을 골랐다. 그런데 v6.0 까지 로거는 `logging.FileHandler`
+    라 프로세스 시작 시각으로 파일명이 고정됐고 날짜 회전이 없었다. 그래서:
+
+      · 9/8 배포로 뜬 봇은 며칠이 지나도 `trading_20260908.log` 에만 썼고
+      · 나중에 재시작된 대시보드는 `trading_20260910.log` 를 새로 만들어
+        자기 계좌 캐시 로그만 거기 쌓았고
+      · 이 함수는 `[-1]` 이므로 **대시보드 자기 로그 파일**을 골랐다.
+
+    화면에는 "✅ Account Cache Updated" 만 5분마다 반복해서 뜨고 봇의 매매 로그는
+    한 줄도 보이지 않았다. 봇이 실제로 무엇을 하는지 확인할 방법이 사라진 것이다.
+
+    이제 로거가 파일 소유자를 이름으로 못박으므로(modules.logger), 추측하지 않고
+    봇 로그 경로를 직접 읽는다. 레거시 날짜별 파일은 이행 기간 동안만 폴백.
+    """
+    try:
+        from modules.logger import BOT_LOG_FILE
+        bot_log = BASE_DIR / BOT_LOG_FILE
+        if bot_log.exists():
+            return str(bot_log)
+    except Exception:
+        pass
+
+    # 폴백: v6.0 이전 날짜별 파일 (봇이 아직 새 로거로 재기동되지 않은 경우)
+    legacy = glob.glob(str(BASE_DIR / "database" / "trading_*.log"))
+    if not legacy:
         return None
-    return sorted(log_files)[-1]
+    return sorted(legacy)[-1]
 
 def parse_log_line(line):
     """로그 라인 파싱"""
@@ -867,16 +894,24 @@ def parse_log_line(line):
     return None
 
 def get_market_status():
-    """현재 시장 상태 (KST 기준)"""
-    kst = pytz.timezone('Asia/Seoul')
-    now = datetime.now(kst)
-    t = int(now.strftime("%H%M"))
-    
-    if 2330 <= t <= 2400 or 0 <= t < 600:
-        return 'US'
-    if 900 <= t <= 1520:
-        return 'KR'
-    return 'CLOSED'
+    """현재 시장 상태.
+
+    [v6.1] 대시보드도 봇과 **같은 시계**(modules/market_clock)를 쓴다.
+
+    v6.0 은 run_bot 의 시계만 DST 대응으로 교체하고 이 함수는 그대로 뒀다.
+    그 결과 봇은 22:30 KST(서머타임 기준 실제 개장)에 세션을 돌리는데 대시보드는
+    23:30 이 될 때까지 'CLOSED' 를 표시했다. 사용자 입장에서는 "미국장이 열렸는데
+    봇이 안 움직인다"로 보이고, 실제로는 봇이 돌고 있었다. 즉 **관측 장치가
+    거짓말을 하는 상태**였고, 이것이 "거래가 안 된다"는 오진의 직접적 원인이 됐다.
+
+    시계는 반드시 한 곳에서만 정의되어야 한다.
+    """
+    try:
+        from modules import market_clock
+        return market_clock.get_market_status()
+    except Exception as e:  # 대시보드는 절대 죽으면 안 된다
+        print(f"[Dashboard] market_clock 사용 불가 — UNKNOWN 표시: {e}")
+        return 'UNKNOWN'
 
 def parse_ticker_data(parsed_lines):
     """로그에서 티커별 데이터 추출"""
@@ -1040,18 +1075,54 @@ async def dashboard(request: Request):
         set_auth_cookie(response, provided_key)
     return response
 
+# ==========================================================================
+# [v6.1] 봇 생존 판정은 pgrep 이 아니라 heartbeat 파일의 '나이'로 한다.
+#
+# 2026-09-10: pgrep 은 프로세스를 찾아냈고 이 화면은 "🟢 Running" 을 표시했지만
+# 봇은 미국장 개장 후 44분간 아무 일도 하지 않았다. "프로세스가 있다"를
+# "살아 있다"로 표시하는 것은 사용자에게 거짓말을 하는 것이다.
+# ==========================================================================
+
+HEARTBEAT_FILE = BASE_DIR / "database" / "heartbeat.json"
+HEARTBEAT_STALE_SECONDS = 300
+
+
+def get_bot_liveness():
+    """(status_text, detail_dict) 반환. heartbeat 가 없거나 오래되면 정지로 본다."""
+    pid = get_bot_pid()
+    info = {"pid": pid, "heartbeat_age_sec": None, "heartbeat": None}
+    if not pid:
+        return "stopped", info
+    try:
+        raw = json.loads(HEARTBEAT_FILE.read_text(encoding="utf-8"))
+        age = max(0.0, _time.time() - float(raw.get("ts", 0)))
+        info["heartbeat_age_sec"] = round(age, 1)
+        info["heartbeat"] = raw
+        if age > HEARTBEAT_STALE_SECONDS:
+            return "stalled", info
+        return "running", info
+    except FileNotFoundError:
+        # 아직 heartbeat 를 쓰지 않는 구버전 봇이 돌고 있을 수 있다.
+        return "running_unverified", info
+    except Exception:
+        return "running_unverified", info
+
+
 @app.get("/api/status")
 async def api_status(request: Request):
     """봇 상태 API (헬스체크용: 인증 없이 기본 상태만 반환, 인증 시 전체 데이터)"""
     bot_pid = get_bot_pid()
     market_status = get_market_status()
+    liveness, live_info = get_bot_liveness()
 
     # Unauthenticated: minimal health-check response (no sensitive data)
     if not is_authenticated(request):
         return JSONResponse({
-            "bot_status": "running" if bot_pid else "stopped",
+            "bot_status": liveness,
             "market_status": market_status,
-            "healthy": True,
+            "heartbeat_age_sec": live_info["heartbeat_age_sec"],
+            # 장이 열려 있는데 봇이 멈춰 있으면 healthy 가 아니다.
+            "healthy": not (market_status in ("US", "KR") and liveness == "stalled"),
         })
 
     # Authenticated: full status response
@@ -1073,9 +1144,19 @@ async def api_status(request: Request):
 
     ticker_data = parse_ticker_data(parsed_lines)
 
+    _badge = {
+        "running": "🟢 Running",
+        "running_unverified": "🟡 Running (heartbeat 미확인)",
+        "stalled": "🟠 Stalled (프로세스는 있으나 진행 없음)",
+        "stopped": "🔴 Stopped",
+    }[liveness]
+
     return JSONResponse({
         "bot_pid": bot_pid,
-        "bot_status": "🟢 Running" if bot_pid else "🔴 Stopped",
+        "bot_status": _badge,
+        "bot_liveness": liveness,
+        "heartbeat_age_sec": live_info["heartbeat_age_sec"],
+        "heartbeat": live_info["heartbeat"],
         "market_status": market_status,
         "last_update": last_update,
         "ticker_data": ticker_data,

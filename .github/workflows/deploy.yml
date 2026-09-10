@@ -40,12 +40,24 @@ jobs:
       - name: v6.0 회귀 테스트 (5대 사고 원인)
         run: pytest tests/test_v60_strategy.py tests/test_v60_integration.py -q
 
-      - name: 전략 검증 루프 (국면별 노출도 단조성)
-        # 종료코드 0 = 합격. 상승장에서 자본이 놀거나(v5.x 회귀), 폭락장에서
-        # 과다 노출이면(v4.0 회귀) 실패하여 배포가 중단된다.
+      - name: v6.1 회귀 테스트 (관측 실패 + 소액계좌 사이징)
+        # 2026-09-10 사고: 대시보드가 봇이 쓰지 않는 로그 파일을 보여주고,
+        # 시장 상태를 서머타임 미반영으로 CLOSED 라 표시하고, 프로세스 존재만으로
+        # "Running" 이라 표시했다. 그 상태에서 US $330 계좌는 사이징이 0주로
+        # 죽어 있었다. 계기판이 거짓말하면 전략을 아무리 고쳐도 소용이 없다.
+        run: pytest tests/test_v61_observability.py -q
+
+      - name: 전략 검증 루프 (국면 + 청산품질 + 소액계좌)
+        # 종료코드 0 = 합격. 실패 조건:
+        #   · 상승 국면에서 자본이 놀고 있음      (v5.x 회귀)
+        #   · 위험 국면에서 과다 노출             (v4.0 회귀)
+        #   · 캡처율 미달 — 번 것을 청산이 깎아먹음 (v6.0 에서 발견)
+        #   · 회전손실 과다 — 손절 휩쏘            (v6.0 에서 발견)
+        #   · 실계좌 잔고에서 매수 수량 0         (2026-09-10 사고)
+        # 단일 시드 통과는 운일 수 있으므로 시드 5개 평균으로 판정한다.
         run: |
-          python scripts/verify_strategy_loop.py --sessions 80 --seed 42
-          python scripts/verify_strategy_loop.py --sessions 80 --seed 7
+          python scripts/verify_strategy_loop.py --sessions 80 --seed 42 --seeds 5 --quiet
+          python scripts/verify_strategy_loop.py --sessions 80 --seed 7 --seeds 5 --quiet
 
   deploy:
     needs: verify

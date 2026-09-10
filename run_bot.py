@@ -158,6 +158,45 @@ def send_alert(message: str, is_error: bool = False):
     else:
         logger.info(message)
 
+# ============================================================================
+# [v6.1] 생존 신호(heartbeat) — "프로세스가 있다" != "봇이 살아 있다"
+#
+# 2026-09-10 사고: pgrep 은 run_bot.py 를 찾아냈고 대시보드는 "🟢 Running" 을
+# 표시했지만, 봇은 미국장이 열린 뒤 44분 동안 단 한 줄도 로그를 쓰지 않았다.
+# 메인 루프가 멈춰 있어도(또는 세션 진입 조건이 조용히 False 여도) 프로세스는
+# 멀쩡히 살아 있으므로 pgrep 기반 감시는 **절대 이 상태를 잡아내지 못한다.**
+#
+# 감시해야 하는 것은 프로세스의 존재가 아니라 **루프의 진행**이다. 그래서 봇은
+# 주기적으로 자기 상태를 파일에 찍고, auto_restart_bot.sh 와 대시보드는 그
+# 파일의 '나이'를 본다. 오래됐으면 프로세스가 있어도 죽은 것으로 간주한다.
+# ============================================================================
+
+HEARTBEAT_FILE = os.path.join('database', 'heartbeat.json')
+_HEARTBEAT_STATE = {}
+_last_heartbeat_write = 0.0
+
+
+def touch_heartbeat(force: bool = False, **state):
+    """봇 생존 신호를 갱신한다. 최소 15초 간격으로만 디스크에 쓴다."""
+    global _last_heartbeat_write
+    _HEARTBEAT_STATE.update(state)
+    now = time.time()
+    if not force and (now - _last_heartbeat_write) < 15:
+        return
+    _last_heartbeat_write = now
+    payload = dict(_HEARTBEAT_STATE)
+    payload['ts'] = now
+    payload['iso'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    payload['pid'] = os.getpid()
+    try:
+        tmp = HEARTBEAT_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, HEARTBEAT_FILE)
+    except Exception as e:
+        logger.error(f"[Heartbeat] 기록 실패: {e}")
+
+
 def load_config():
     """[v6.0] 인코딩을 명시한다.
 
@@ -312,6 +351,10 @@ if risk_config:
     ATR_DYNAMIC_STOP_ENABLED = bool(risk_config.get("atr_dynamic_stop_enabled", ATR_DYNAMIC_STOP_ENABLED))
     ATR_PERIOD = int(risk_config.get("atr_period", ATR_PERIOD))
     ATR_STOP_MULTIPLIER = float(risk_config.get("atr_stop_multiplier", ATR_STOP_MULTIPLIER))
+    # [v6.1] 손절폭 하한(cap)도 설정 가능해야 한다. 이 값이 -10 으로 고정돼 있으면
+    # stop_loss_pct 를 -12 로 넓혀도 max(-12, -10) = -10 으로 되감겨, 설정을 바꿔도
+    # 실제 동작이 안 바뀌는 '조용히 무시되는 설정'이 된다.
+    ATR_STOP_MAX_PCT = float(risk_config.get("atr_stop_max_pct", ATR_STOP_MAX_PCT))
     PULLBACK_REBUY_ENABLED = bool(risk_config.get("pullback_rebuy_enabled", PULLBACK_REBUY_ENABLED))
     PULLBACK_REBUY_RATIO = float(risk_config.get("pullback_rebuy_ratio", PULLBACK_REBUY_RATIO))
     # === v3.0 knobs ===
@@ -569,12 +612,38 @@ def calculate_order_quantity(available_cash, current_price, signal_strength=0.5,
     
     return max(qty, 1)  # 최소 1주
 
-def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_settings=None, market='US', weight=1.0):
+def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_settings=None,
+                           market='US', weight=1.0, size_multiplier=1.0):
     """
     DCA 전략용 매수 수량 계산
     - 매일 일정 비율/금액을 분할 매수
     - weight: 동적 포트폴리오 카테고리 비중(0~1). 코어 ETF=1.0, 새틀라이트/개별주<1.0.
               None/0/음수/비숫자는 1.0 으로 폴백.
+    - size_multiplier: decision_engine 의 점수 기반 사이즈 배율(0~1).
+
+    [v6.1] 이 함수가 "소액 계좌에서 영원히 0주"를 만들던 두 가지 결함을 고쳤다.
+
+    (1) 자금을 **전체 후보 수**로 나눴다.
+        실계좌 상태: US 주문가능금액 $330.64, US 후보 12종목.
+          per_ticker_cash = 330.64 / 12 = $27.55
+        $27.55 로는 어떤 종목도 1주를 못 산다. 후보를 12개 들고 있다고 해서
+        $330 을 12등분해야 하는 것은 아니다 — 12등분이 최소 주문금액보다
+        작아지는 순간, 분산은 "골고루 사기"가 아니라 "아무것도 못 사기"가 된다.
+        이제 최소투자금액으로 나눌 수 있는 만큼만(=실제로 채울 수 있는 슬롯 수만큼)
+        나눈다.
+
+    (2) 호출부가 `int(qty * size_multiplier)` 로 **정수화 뒤에 배율**을 곱했다.
+          qty=1, size_multiplier=0.5  →  int(1 * 0.5) = 0
+        점수가 기준을 넘어 'buy' 판정이 났는데도 수량이 0이 되어, 매수 결정이
+        조용히 증발했다. 소액 계좌에서는 qty 가 거의 항상 1이므로 배율이
+        1.0 이 아닌 한 **모든 매수가 사라진다**. 배율은 이제 정수화 **전에**
+        금액에 곱해지고, 그러고도 1주에 못 미치면 1주 바닥을 적용한다.
+
+        1주 바닥이 과매수 아니냐: 아니다. 여기 도달했다는 것은 이미
+        decision_engine 이 하드 veto 를 전부 통과시키고 점수 기준을 넘겨
+        action='buy' 를 냈다는 뜻이다. 살 수 있는 최소 단위가 1주인데 0주를
+        내는 것은 판단 계층이 거짓말을 하는 것이고, 그게 v5.x 의 실패였다.
+        과매수는 수량 0 이 아니라 MAX_POSITION_PCT(종목 노출 한도) 로 막는다.
     """
     if not available_cash or not current_price or current_price <= 0:
         return 1
@@ -601,22 +670,42 @@ def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_set
         max_investment = dca_settings.get("max_investment_krw", max_investment * exchange_rate)
         currency_symbol = "₩"
     
-    # 종목별 투자 금액 계산 (비중 weight 반영)
-    per_ticker_cash = available_cash / max(num_targets, 1)
+    try:
+        size_multiplier = float(size_multiplier)
+    except (TypeError, ValueError):
+        size_multiplier = 1.0
+    size_multiplier = max(0.0, min(1.0, size_multiplier))
+
+    # [v6.1] (1) 자금을 후보 수가 아니라 **실제로 채울 수 있는 슬롯 수**로 나눈다.
+    # 최소 주문금액보다 잘게 쪼개면 어느 종목도 1주를 못 사고, 결과는 분산이
+    # 아니라 전면 정지다.
+    max_slots = max(1, int(available_cash // max(min_investment, 1)))
+    effective_targets = max(1, min(max(num_targets, 1), max_slots))
+    per_ticker_cash = available_cash / effective_targets
     per_ticker_limit = per_ticker_cash * weight
-    
+
     # daily_pct를 가용 자금 전체(available_cash) 기준으로 계산하되, 비중(weight)을 곱해
     # 새틀라이트/개별주는 소액만 분할 매수. 한 종목 집중 방지를 위해 per_ticker_limit 한도 적용.
     target_investment_amount = available_cash * daily_pct * weight
     investment_amount = min(target_investment_amount, per_ticker_limit)
-    
+
     # 최소/최대 제한도 비중 반영
     effective_max = max_investment * weight
     effective_min = min(min_investment, effective_max)
     investment_amount = max(effective_min, min(effective_max, investment_amount))
 
+    # [v6.1] (2) 점수 배율은 정수화 **전에**, 금액에 곱한다.
+    # 예전에는 호출부가 int(qty) 를 구한 뒤 배율을 곱해서 int(1*0.5)=0 이 됐다.
+    investment_amount *= size_multiplier
+
     # 1주 floor 보정: 코어(weight≥1.0)에서만. 저비중 새틀라이트는 0주 허용.
+    # 'buy' 판정이 났는데 0주를 내면 판단 계층이 거짓말을 하는 것이므로,
+    # 현금이 1주를 감당할 수 있으면 최소 1주는 체결한다.
     if weight >= 1.0 and investment_amount < current_price and available_cash >= current_price:
+        logger.info(
+            f"🪙 1주 바닥 적용: 산정금액 {currency_symbol}{investment_amount:,.2f} < 1주 "
+            f"{currency_symbol}{current_price:,.2f} (사이즈배율 {size_multiplier:.0%}) → 1주 매수"
+        )
         investment_amount = current_price
 
     if investment_amount < current_price:
@@ -624,11 +713,15 @@ def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_set
             f"💸 DCA 스킵: 주문가능금액 부족 ({currency_symbol}{investment_amount:,.2f} < 1주 {currency_symbol}{current_price:,.2f})"
         )
         return 0
-    
+
     qty = int(investment_amount / current_price)
-    
-    logger.info(f"📈 DCA 매수: {currency_symbol}{investment_amount:,.0f} → {qty}주 (가격: {currency_symbol}{current_price:,.0f})")
-    
+
+    logger.info(
+        f"📈 DCA 매수: {currency_symbol}{investment_amount:,.0f} → {qty}주 "
+        f"(가격: {currency_symbol}{current_price:,.0f}, 슬롯 {effective_targets}/{num_targets}, "
+        f"배율 {size_multiplier:.0%})"
+    )
+
     return max(qty, 0)
 
 # 원↔달러 환산율. 통합증거금 환산·총자산 원화환산에 공용으로 쓴다.
@@ -986,25 +1079,12 @@ def job():
     # --- [New] Buy Delay Logic for Market Stabilization ---
     buy_delay = DCA_SETTINGS.get("buy_delay_minutes", 0) if STRATEGY_MODE == 'dca' else 0
     if buy_delay > 0:
-        kst = pytz.timezone('Asia/Seoul')
-        now = datetime.datetime.now(kst)
-        
-        # Determine Market Open Time
-        if market == 'US':
-            # US Open: 23:30 KST
-            market_open = now.replace(hour=23, minute=30, second=0, microsecond=0)
-            if 0 <= now.hour < 9: # Early morning (next day in KST)
-                market_open = market_open - datetime.timedelta(days=1)
-        else:
-            # KR Open: 09:00 KST
-            market_open = now.replace(hour=9, minute=0, second=0, microsecond=0)
-        
-        target_time = market_open + datetime.timedelta(minutes=buy_delay)
-        wait_seconds = (target_time - now).total_seconds()
-        
-        # Only wait if we are within the delay window (don't wait if we started late)
-        # also check if wait_seconds is reasonable (e.g. < 2 hours)
-        if 0 < wait_seconds <= (buy_delay * 60) + 60: 
+        # [v6.1] 개장시각 하드코딩(23:30 KST) 제거. v6.0 이 get_market_status() 는
+        # market_clock 으로 옮겼으면서 이 블록은 놓쳐, 서머타임 기간에는 개장시각을
+        # 1시간 늦게 계산했다. market_clock 의 실제 개장 경과 시간을 쓴다.
+        sess = current_session(market)
+        wait_seconds = (buy_delay - sess.minutes_since_open) * 60.0
+        if 0 < wait_seconds <= (buy_delay * 60) + 60:
             logger.info(f"⏳ Waiting {buy_delay} minutes for market stabilization... ({wait_seconds/60:.1f} min left)")
             time.sleep(wait_seconds)
             logger.info("⚡ Market stabilized. Starting analysis.")
@@ -1458,13 +1538,14 @@ def job():
             monitoring_targets[ticker] = base
             return decision
 
+        # [v6.1] 배율은 calculate_dca_quantity 안에서 **금액에** 곱한다.
+        # 예전처럼 int(qty)*배율 로 곱하면 소액 계좌(qty=1)에서 배율<1.0 인 모든
+        # 매수가 0주로 증발했다 — US 예수금 $330 계좌에서 실제로 그랬다.
         qty = calculate_dca_quantity(
             available_cash, current_price, num_active_targets, DCA_SETTINGS, market,
             weight=ticker_weights.get(ticker, 1.0),
+            size_multiplier=decision.size_multiplier,
         )
-        qty = int(qty * decision.size_multiplier)
-        if qty <= 0 and available_cash >= current_price and decision.score >= 0.6:
-            qty = 1  # 점수가 충분히 높으면 최소 1주는 담는다 (DCA 지속성)
         if qty <= 0:
             record_skip_reason(ticker, f"수량 0 (사이즈 {decision.size_multiplier:.0%})")
             base['status'] = 'bought' if int(base['buys'] or 0) > 0 else 'candidate'
@@ -3127,9 +3208,22 @@ def run_with_recovery():
     def _backoff_seconds(n):
         return min(300, 30 * n)
 
+    # [v6.1] 세션 미진입 감시용 상태. _run_session 보다 먼저 선언되어야 한다
+    # (부팅 직후 startup check 에서 이미 _run_session 이 호출되기 때문).
+    STALL_ALERT_AFTER_MIN = 10
+    job_entered_key = {}      # {'US': 'US:2026-09-10', ...} — job() 진입 기록
+    stall_alerted_key = {}    # 세션당 1회만 알리기 위한 기록
+
     def _run_session(market_label, ctx_now):
         """job()을 실행하고 (성공여부, 예외) 반환. 알림/로그는 호출부에서 처리."""
         try:
+            # 진입 사실을 먼저 기록한다. job() 이 중간에 죽더라도 "세션에 아예
+            # 진입조차 못했다"와 "진입했으나 실패했다"는 구분되어야 한다.
+            try:
+                job_entered_key[market_label] = market_clock.session_key(market_label)
+            except Exception:
+                pass
+            touch_heartbeat(force=True, market=market_label, source='job-enter')
             job()
             return True, None
         except Exception as e:
@@ -3167,6 +3261,41 @@ def run_with_recovery():
     else:
         logger.info(f"😴 Bot started during CLOSED hours (KST: {now_kst.strftime('%H:%M:%S')}). Waiting for market open...")
 
+    # ========================================================================
+    # [v6.1] 세션 미진입 감시 (stall detector)
+    #
+    # 2026-09-10: 미국장이 22:30 KST 에 열렸는데 23:14 까지 job() 이 한 번도
+    # 진입하지 않았고, 아무 알림도 없었다. v6.0 의 자가진단(health_monitor)은
+    # job() **안에서** 세션이 끝날 때 돌기 때문에, job() 자체가 안 돌면 진단도
+    # 안 돈다 — 가장 심각한 고장 모드가 정확히 사각지대였다.
+    #
+    # 그래서 감시를 job() 바깥, 메인 루프에 둔다: "장이 열렸고 개장 후 N분이
+    # 지났는데 이 세션에 job() 진입 기록이 없다" 면 그 자체로 사고다.
+    # ========================================================================
+    def _check_session_stall(now_market):
+        if now_market not in ('US', 'KR'):
+            return
+        try:
+            sess = market_clock.session_info(now_market)
+            key = market_clock.session_key(now_market)
+        except Exception:
+            return
+        if job_entered_key.get(now_market) == key:
+            return  # 이 세션에 이미 진입했다 — 정상
+        if sess.minutes_since_open < STALL_ALERT_AFTER_MIN:
+            return  # 아직 여유 있음
+        if stall_alerted_key.get(now_market) == key:
+            return  # 이 세션 알림은 이미 보냈다
+        stall_alerted_key[now_market] = key
+        msg = (
+            f"🚨 [{now_market}] 장이 열린 지 {sess.minutes_since_open:.0f}분이 지났는데 "
+            f"매매 세션(job)이 한 번도 시작되지 않았습니다.\n"
+            f"세션키={key}\n"
+            f"이 상태에서는 매수·매도가 전혀 일어나지 않습니다. 즉시 확인이 필요합니다."
+        )
+        logger.critical(msg)
+        send_alert(msg, is_error=True)
+
     # --- Main Loop ---
     while True:
         try:
@@ -3187,6 +3316,17 @@ def run_with_recovery():
             # ================================================================
             kr_key = market_clock.session_key('KR')
             us_key = market_clock.session_key('US')
+
+            # [v6.1] 루프가 실제로 돌고 있다는 증거를 남기고, 장이 열렸는데
+            # 세션이 시작되지 않는 상태를 감시한다.
+            _now_market = get_market_status()
+            touch_heartbeat(
+                market=_now_market, source='mainloop',
+                kr_done=kr_session_done_today, us_done=us_session_done_today,
+                kr_session=kr_key, us_session=us_key,
+                job_entered=dict(job_entered_key),
+            )
+            _check_session_stall(_now_market)
             if kr_key != last_kr_key:
                 kr_triggered_today = False
                 kr_session_done_today = False
@@ -3343,6 +3483,7 @@ if __name__ == "__main__":
     def heartbeat():
         status = get_market_status()
         logger.info(f"Heartbeat: Bot is alive... Market Status: {status}")
+        touch_heartbeat(force=True, market=status, source='schedule')
         
         # Collect account data for dashboard every minute
         try:

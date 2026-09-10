@@ -3,7 +3,7 @@
 # ==============================================
 # Alpha Trader Auto Restart Script
 # Monitors and auto-restarts both bot and dashboard
-# Only activates during market hours (weekdays)
+# [v6.1] 봇은 장 안팎을 가리지 않고 항상 살려둔다 (개장 순간 프로세스 부재 방지)
 # Includes Telegram notifications
 # ==============================================
 
@@ -172,56 +172,77 @@ mark_weekly_backtest_sent() {
     date +%G-W%V > "$WEEKLY_BACKTEST_FLAG"
 }
 
-is_market_hours() {
-    # Get current day of week (1=Monday, 7=Sunday)
-    local day_of_week=$(date +%u)
-    
-    # Weekend check (Saturday=6, Sunday=7)
-    if [ "$day_of_week" -ge 6 ]; then
-        return 1  # false - weekend
-    fi
-    
-    # Get current time in HHMM format
-    local current_time=$(date +%H%M)
-    
-    # KR Market: 08:50 ~ 15:30 (buffer included)
-    # US Market: 23:20 ~ 06:10 (buffer included)
-    
-    # Check if within KR market hours
-    if [ "$current_time" -ge 850 ] && [ "$current_time" -le 1530 ]; then
-        return 0  # true - KR market hours
-    fi
-    
-    # Check if within US market hours (spans midnight)
-    if [ "$current_time" -ge 2320 ] || [ "$current_time" -le 610 ]; then
-        # Additional check: Friday night US session ends Saturday morning
-        # So if it's Saturday morning (after midnight), check if we came from Friday
-        if [ "$day_of_week" -eq 6 ] && [ "$current_time" -le 610 ]; then
-            return 0  # true - still Friday's US session
-        elif [ "$day_of_week" -lt 6 ]; then
-            return 0  # true - US market hours on weekday
-        fi
-    fi
-    
-    return 1  # false - outside market hours
-}
+# ==========================================================================
+# [v6.1] 시장 시간 판정은 더 이상 이 스크립트가 직접 하지 않는다.
+#
+# v6.0 은 run_bot.py 의 시계만 modules/market_clock 로 교체하고 이 감시 스크립트는
+# 그대로 뒀다. 여기 하드코딩된 미국장 창(23:20~06:10 KST)은 미국 표준시(EST) 기준
+# 이라, 1년의 약 2/3 를 차지하는 서머타임(EDT) 기간에는 실제 개장(22:30 KST)보다
+# 50분 늦다. 그 50분 동안 check_and_restart_bot 이 호출되지 않으므로, 봇이 밤사이
+# 죽어 있으면 **미국장 개장 첫 50분 동안 아무도 되살리지 않았다**. 유동성이 가장
+# 높은 구간이 매일 통째로 비는 구조였다.
+#
+# 더 근본적으로, "장중에만 봇을 되살린다"는 설계 자체가 틀렸다. 감시 스크립트의
+# 유일한 임무는 프로세스를 살려두는 것이고, 언제 거래할지는 봇이 스스로 안다
+# (job() 은 CLOSED 면 즉시 반환하며 KIS 토큰도 발급하지 않는다). 장 밖에서 봇을
+# 죽여둘 이유가 없고, 죽여두면 개장 순간에 살아 있을 보장이 사라진다.
+#
+# 따라서 v6.1 은 봇을 항상 살려두고, market_clock 은 로그/폴링주기 결정에만 쓴다.
+# ==========================================================================
 
 get_market_status() {
-    local day_of_week=$(date +%u)
-    local current_time=$(date +%H%M)
-    
-    if [ "$day_of_week" -ge 6 ]; then
-        if [ "$day_of_week" -eq 6 ] && [ "$current_time" -le 610 ]; then
-            echo "US (Fri→Sat)"
-        else
-            echo "WEEKEND"
-        fi
-    elif [ "$current_time" -ge 850 ] && [ "$current_time" -le 1530 ]; then
-        echo "KR"
-    elif [ "$current_time" -ge 2320 ] || [ "$current_time" -le 610 ]; then
-        echo "US"
+    # 봇과 동일한 시계(modules/market_clock)를 사용한다. 실패 시 UNKNOWN.
+    local py="$SCRIPT_DIR/venv/bin/python"
+    local snippet="from modules import market_clock; print(market_clock.get_market_status())"
+    local status=""
+    if [ -x "$py" ]; then
+        status=$("$py" -c "$snippet" 2>/dev/null)
+    fi
+    if [ -n "$status" ]; then
+        echo "$status"
     else
-        echo "CLOSED"
+        echo "UNKNOWN"
+    fi
+}
+
+# ==========================================================================
+# [v6.1] 좀비 감시 — "프로세스가 있다" 는 "봇이 살아 있다" 가 아니다.
+#
+# 2026-09-10 사고: pgrep 은 run_bot.py 를 정상적으로 찾아냈고 대시보드도
+# "🟢 Running" 을 표시했지만, 미국장 개장 후 44분 동안 봇은 로그를 한 줄도
+# 쓰지 않았다. 메인 루프가 멈춘(또는 세션 진입이 조용히 막힌) 상태에서도
+# 프로세스는 멀쩡히 존재하므로, pgrep 기반 감시로는 **원리적으로** 잡을 수 없다.
+#
+# 그래서 봇이 주기적으로 갱신하는 database/heartbeat.json 의 '나이'를 본다.
+# 오래됐으면 프로세스가 있어도 죽은 것으로 간주하고 강제 재기동한다.
+# ==========================================================================
+
+HEARTBEAT_FILE="$LOG_DIR/heartbeat.json"
+HEARTBEAT_MAX_AGE_OPEN=300      # 장중: 5분 이상 정지면 좀비
+HEARTBEAT_MAX_AGE_CLOSED=1800   # 장외: 30분
+
+check_bot_liveness() {
+    local market="$1"
+    # 프로세스가 아예 없으면 check_and_restart_bot 이 처리한다.
+    pgrep -f "python.*run_bot.py" > /dev/null || return 0
+    [ -f "$HEARTBEAT_FILE" ] || return 0   # 아직 한 번도 안 찍힘(기동 직후)
+
+    local max_age="$HEARTBEAT_MAX_AGE_CLOSED"
+    if [ "$market" = "US" ] || [ "$market" = "KR" ]; then
+        max_age="$HEARTBEAT_MAX_AGE_OPEN"
+    fi
+
+    local mtime now age
+    mtime=$(date -r "$HEARTBEAT_FILE" +%s 2>/dev/null) || return 0
+    now=$(date +%s)
+    age=$((now - mtime))
+
+    if [ "$age" -gt "$max_age" ]; then
+        log_message "🧟 Bot heartbeat stale (${age}s > ${max_age}s, market=$market). Forcing restart."
+        send_telegram "🧟 <b>Alpha Trader</b>%0A봇 프로세스는 살아 있으나 ${age}초 동안 진행이 없습니다 (market=$market).%0A강제 재기동합니다."
+        pkill -9 -f "python.*run_bot.py" 2>/dev/null
+        sleep 2
+        rm -f "$HEARTBEAT_FILE"
     fi
 }
 
@@ -298,20 +319,23 @@ while true; do
         fi
     fi
     
-    if is_market_hours; then
-        # 장 운영 시간: 봇 재시작 활성화
+    # [v6.1] 봇은 장 안팎을 가리지 않고 항상 살려둔다. 개장 순간에 프로세스가
+    # 없어서 첫 구간을 통째로 놓치는 사고를 구조적으로 제거한다.
+    # 순서 주의: 먼저 좀비를 걷어낸 뒤 재기동해야 한 사이클 안에 복구된다.
+    check_bot_liveness "$MARKET_STATUS"
+    check_and_restart_bot
+
+    if [ "$MARKET_STATUS" = "US" ] || [ "$MARKET_STATUS" = "KR" ]; then
         if [ "$LAST_STATUS" != "ACTIVE" ]; then
-            log_message "📈 Market is OPEN ($MARKET_STATUS). Bot monitoring ACTIVE."
+            log_message "📈 Market is OPEN ($MARKET_STATUS). Polling every 30s."
             LAST_STATUS="ACTIVE"
         fi
-        check_and_restart_bot
-        sleep 30  # Check every 30 seconds during market hours
+        sleep 30
     else
-        # 장 운영 외 시간: 봇 재시작 비활성화 (토큰 발행 방지)
         if [ "$LAST_STATUS" != "IDLE" ]; then
-            log_message "😴 Market is CLOSED ($MARKET_STATUS). Bot monitoring IDLE. Skipping token refresh."
+            log_message "😴 Market $MARKET_STATUS. Bot kept alive; polling every 5m."
             LAST_STATUS="IDLE"
         fi
-        sleep 300  # Check every 5 minutes during off-hours
+        sleep 300
     fi
 done
