@@ -162,6 +162,50 @@ class KisDomestic:
             print(f"[KIS-KR] get_daily_ohlc parse error [{ticker}]: {e}")
         return None
 
+    def get_daily_history(self, ticker, bars=200, max_pages=4):
+        """[v7.0] 기간별 일봉 (FHKST03010100) — 페이징으로 `bars` 개 이상.
+
+        get_daily_ohlc(FHKST01010400)는 **최근 30봉만** 준다. 그런데 v3.0 이후
+        포트폴리오 선정은 R60·MA60 을 이 30봉으로 계산하고 있었다(closes[60] 이
+        없으니 R60 은 조용히 빠지고 MA60 은 30일 평균이 됐다). 모멘텀 로테이션은
+        R120 + 시장필터 MA120/기울기20 이 필요하므로 최소 140봉이 있어야 한다.
+
+        Returns: [{'date','open','high','low','close'}] 오래된 것 → 최신 순. 실패 시 [].
+        """
+        import datetime as _dt
+        path = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+        rows = {}
+        end = _dt.date.today()
+        for _ in range(max_pages):
+            start = end - _dt.timedelta(days=150)
+            params = {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": ticker,
+                "FID_INPUT_DATE_1": start.strftime("%Y%m%d"),
+                "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
+                "FID_PERIOD_DIV_CODE": "D",
+                "FID_ORG_ADJ_PRC": "0",  # 0 = 수정주가
+            }
+            res = self._request("GET", path, headers=self._get_headers("FHKST03010100"), params=params)
+            if not res or res.get('rt_cd') != '0':
+                print(f"[KIS-KR] get_daily_history 실패 [{ticker}]: {(res or {}).get('msg1')}")
+                break
+            fresh = 0
+            for it in res.get('output2') or []:
+                d = it.get('stck_bsop_date')
+                c = float(it.get('stck_clpr') or 0)
+                if not d or c <= 0 or d in rows:
+                    continue
+                rows[d] = {'date': d, 'close': c,
+                           'open': float(it.get('stck_oprc') or c),
+                           'high': float(it.get('stck_hgpr') or c),
+                           'low': float(it.get('stck_lwpr') or c)}
+                fresh += 1
+            if len(rows) >= bars or fresh == 0:
+                break
+            end = _dt.datetime.strptime(min(rows), "%Y%m%d").date() - _dt.timedelta(days=1)
+        return [rows[k] for k in sorted(rows)]
+
     def get_balance(self):
         """주식 잔고 조회 - TTTC8434R (실전/모의 구분 필요)"""
         # 실전: TTTC8434R, 모의: VTTC8434R

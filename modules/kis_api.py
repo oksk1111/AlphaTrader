@@ -239,6 +239,53 @@ class KisOverseas:
             print(f"[KIS] Exception getting OHLC: {e}")
             return None
 
+    def get_daily_history(self, ticker, exchange="NAS", bars=200, max_pages=4):
+        """[v7.0] 해외 일봉 (HHDFS76240000) — BYMD 를 과거로 옮기며 페이징.
+
+        한 번 호출은 약 100봉. 모멘텀 로테이션은 R120 + MA120/기울기20 이 필요해
+        최소 140봉이 있어야 한다.
+
+        Returns: [{'date','open','high','low','close'}] 오래된 것 → 최신 순. 실패 시 [].
+        """
+        import datetime as _dt
+        path = "/uapi/overseas-price/v1/quotations/dailyprice"
+        rows = {}
+        bymd = _dt.date.today().strftime("%Y%m%d")
+        for _ in range(max_pages):
+            params = {"AUTH": "", "EXCD": exchange, "SYMB": ticker,
+                      "GUBN": "0", "BYMD": bymd, "MODP": "1"}
+            try:
+                res = requests.get(self.url + path, headers=self._get_headers("HHDFS76240000"),
+                                   params=params, timeout=10)
+                res.raise_for_status()
+                data = res.json()
+            except Exception as e:
+                print(f"[KIS] get_daily_history 예외 [{ticker}]: {e}")
+                break
+            if data.get('rt_cd') != '0':
+                print(f"[KIS] get_daily_history 실패 [{ticker}]: {data.get('msg1')}")
+                break
+            fresh = 0
+            for it in data.get('output2') or []:
+                d = it.get('xymd')
+                try:
+                    c = float(it.get('clos') or 0)
+                except (TypeError, ValueError):
+                    c = 0.0
+                if not d or c <= 0 or d in rows:
+                    continue
+                rows[d] = {'date': d, 'close': c,
+                           'open': float(it.get('open') or c),
+                           'high': float(it.get('high') or c),
+                           'low': float(it.get('low') or c)}
+                fresh += 1
+            if len(rows) >= bars or fresh == 0:
+                break
+            bymd = (_dt.datetime.strptime(min(rows), "%Y%m%d").date()
+                    - _dt.timedelta(days=1)).strftime("%Y%m%d")
+            time.sleep(0.2)
+        return [rows[k] for k in sorted(rows)]
+
     def buy_market_order(self, ticker, qty, exchange="NAS"):
         """해외주식 시장가 매수"""
         # 모의투자/실전투자 TR_ID 구분 필요

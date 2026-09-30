@@ -2,7 +2,7 @@
     "auto_strategy": false,
     "trading_mode": "safe",
     "theme_mode": "light",
-    "strategy": "aggressive_dca",
+    "strategy": "momentum_rotation",
     "persona": "neutral",
     "leverage_threshold_krw": 15000000,
     "max_retries_per_ticker": 5,
@@ -107,5 +107,64 @@
         "enabled": true,
         "daily_report_hour": 16,
         "alert_on_trade": true
+    },
+    "momentum_rotation": {
+        "_comment": "v7.0: kr-quant-engine(듀얼 모멘텀 ETF 로테이션) + prism-insight(종가 기준 손절) 구조. 근거: scripts/backtest_real.py 실데이터 2017~2026. 되돌리려면 strategy 를 aggressive_dca 로.",
+        "entry_delay_min": 10,
+        "close_check_before_min": 20,
+        "kr": {
+            "universe": [
+                "069500",
+                "292150",
+                "495230",
+                "0151P0",
+                "0080G0",
+                "091160",
+                "305720",
+                "364980",
+                "133690",
+                "379800",
+                "426030",
+                "0015B0",
+                "381180",
+                "456600",
+                "0174B0",
+                "0173Y0",
+                "487230"
+            ],
+            "benchmark": "069500",
+            "slots": 2,
+            "sell_buffer": 3,
+            "rebalance_days": 10,
+            "market_filter": true,
+            "close_stop_pct": -15.0,
+            "min_slot_value": 200000,
+            "liquidate_non_universe": true
+        },
+        "us": {
+            "_comment": "3x 레버리지 제외 — 실데이터에서 3x+1x DCA 는 CAGR -12.4%/MDD -79.5%, 3x 포함 로테이션도 MDD -69%. 시장필터는 US 에서 V자 반등마다 휩쏘해 끔.",
+            "universe": [
+                {
+                    "symbol": "SPY",
+                    "exchange": "AMS"
+                },
+                {
+                    "symbol": "QQQ",
+                    "exchange": "NAS"
+                },
+                {
+                    "symbol": "SMH",
+                    "exchange": "NAS"
+                }
+            ],
+            "benchmark": "SPY",
+            "slots": 2,
+            "sell_buffer": 3,
+            "rebalance_days": 10,
+            "market_filter": false,
+            "close_stop_pct": -15.0,
+            "min_slot_value": 50,
+            "liquidate_non_universe": true
+        }
     }
 }

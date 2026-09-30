@@ -1044,6 +1044,353 @@ def safe_sell(kis_client, market, ticker, qty_hint, exchange=None,
     return {'success': False, 'sold_qty': 0, 'phase': 'failed',
             'error': last_err or 'unknown'}
 
+# ============================================================================
+# [v7.0] 모멘텀 로테이션 세션 — "무엇을 들고 있을 것인가"를 먼저 정한다
+#
+# 2026-10-01 실데이터 백테스트(scripts/backtest_real.py, 2017~2026 yfinance 일봉,
+# 비용 포함)에서 현행 v6.1 구조는:
+#   · KR (~21종목 DCA + 장중 손절) : CAGR  +4.7%, MDD -46.7%, 연 46회전, 승률 30%
+#   · US (3x+1x DCA + 장중 손절)    : CAGR -12.4%, MDD -79.5%
+# 같은 데이터에서 참고 저장소(kr-quant-engine / prism-insight) 구조를 옮긴
+# 로테이션은:
+#   · KR (ETF 상위2·10일·시장필터)  : CAGR +20.9%, MDD -19.6%, 연 9회전, 승률 64%
+#   · US (1x 상위2·10일)            : CAGR +11.2%, MDD -18.9%
+#
+# 문제는 매수 타이밍도 손절폭도 아니었다. 270만원을 21종목에 쪼개 매일 사고
+# 장중 꼬리에 털리는 **구조** 자체였다. 그래서 이 세션은:
+#   1) 완성된 일봉(오늘 봉 제외)으로 듀얼 모멘텀 순위를 매기고
+#   2) 10거래일마다 상위 N개(채울 수 있는 슬롯 수)로 교체하되, 보유 종목은
+#      순위가 버퍼 밖으로 밀려야만 판다 (회전율 억제)
+#   3) KR 은 KODEX200 이 MA120 아래 + MA120 하락이면 현금 (자동 해제: 복귀 즉시)
+#   4) 손절은 **종가 기준**(폐장 직전)으로만 본다 — 장중 꼬리는 매도 사유가 아니다
+#   5) 시장별 자금을 섞지 않는다. 통합증거금으로 KR 매수가 USD 를 끌어다 써
+#      9/22 US 예수금이 0 이 된 사고를 막기 위해 KR 은 원화 예수금만,
+#      US 는 USD 예수금만 쓴다.
+# ============================================================================
+ROTATION_STATE_FILE = os.path.join('database', 'rotation_state.json')
+
+
+def _rotation_active():
+    try:
+        return load_config().get('strategy') == 'momentum_rotation'
+    except Exception:
+        return False
+
+
+def _load_rotation_state():
+    try:
+        with open(ROTATION_STATE_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        logger.error(f"[Rotation] 상태 파일 읽기 실패 (새로 시작): {e}")
+        return {}
+
+
+def _save_rotation_state(state):
+    try:
+        tmp = ROTATION_STATE_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, ROTATION_STATE_FILE)
+    except Exception as e:
+        logger.error(f"[Rotation] 상태 파일 저장 실패: {e}")
+
+
+def _rotation_universe(mcfg, market):
+    """설정의 유니버스 → [(code, exchange)]."""
+    out = []
+    for item in mcfg.get('universe') or []:
+        if isinstance(item, dict):
+            code = item.get('symbol') or item.get('code')
+            exch = item.get('exchange') or _resolve_us_exchange(code)
+        else:
+            code, exch = str(item), (_resolve_us_exchange(str(item)) if market == 'US' else None)
+        if code:
+            out.append((code, exch))
+    return out
+
+
+def _rotation_account(kis, market):
+    """(holdings{code: {qty, avg, price, value, exchange}}, cash, equity).
+
+    시장별 자금만 본다 (위 5번). 조회 실패는 예외로 올린다 — 잔고를 모르는
+    상태에서 주문을 내면 안 된다.
+    """
+    bal = kis.get_balance()
+    if not bal:
+        raise RuntimeError(f"[{market}] 잔고 조회 실패 (응답 없음)")
+    holdings = {}
+    for h in bal.get('output1') or []:
+        code = h.get('pdno') if market == 'KR' else (h.get('ovrs_pdno') or h.get('pdno'))
+        qty = int(safe_float(h.get('hldg_qty', h.get('ovrs_cblc_qty', 0))))
+        if not code or qty <= 0:
+            continue
+        price = safe_float(h.get('prpr', h.get('now_pric2', h.get('ovrs_now_pric1', 0))))
+        avg = safe_float(h.get('pchs_avg_pric', h.get('avg_unpr3', 0)))
+        exch = None
+        if market == 'US':
+            exch = {'NASD': 'NAS', 'NYSE': 'NYS', 'AMEX': 'AMS'}.get(h.get('_exchange'), _resolve_us_exchange(code))
+        holdings[code] = {'qty': qty, 'avg': avg, 'price': price or avg,
+                          'value': qty * (price or avg), 'exchange': exch}
+    if market == 'KR':
+        o2 = (bal.get('output2') or [{}])[0] if isinstance(bal.get('output2'), list) else {}
+        # D+2 예수금(prvs_rcdl_excc_amt)이 결제 예정분을 반영한 실제 원화 여력이다.
+        cash = safe_float(o2.get('prvs_rcdl_excc_amt') or o2.get('dnca_tot_amt') or 0)
+    else:
+        cash = safe_float((kis.get_foreign_balance() or {}).get('deposit', 0))
+    cash = max(0.0, cash)
+    equity = cash + sum(v['value'] for v in holdings.values())
+    return holdings, cash, equity
+
+
+def _completed_closes(rows, market):
+    """일봉 리스트에서 **오늘(거래소 현지) 봉을 제외한** 종가 목록.
+
+    장중에 조회하면 오늘 봉은 미완성이다. 백테스트는 't일 종가로 판단 → t+1일
+    체결' 이므로, 봇도 어제까지의 완성 봉으로만 판단해야 검증과 운영이 같다.
+    """
+    today = market_clock.session_key(market).split(':')[-1].replace('-', '')
+    return [r['close'] for r in rows if r.get('date') and r['date'] < today]
+
+
+def _rotation_wait(market, cond, label, poll_sec=30):
+    """cond(session) 가 참이 되거나 장이 닫힐 때까지 heartbeat 를 찍으며 대기."""
+    while True:
+        sess = market_clock.session_info(market)
+        if not sess.is_open or cond(sess):
+            return sess
+        touch_heartbeat(market=market, source='watchloop', phase=label)
+        time.sleep(poll_sec)
+
+
+def run_rotation_session(market, user_config):
+    """[v7.0] 모멘텀 로테이션 1세션. job() 에서 strategy == 'momentum_rotation' 일 때 호출."""
+    from modules.momentum_rotation import (
+        compute_features, market_risk_on, plan_rotation, fillable_slots,
+    )
+
+    cfg = user_config.get('momentum_rotation') or {}
+    mcfg = cfg.get(market.lower()) or {}
+    slots_max = int(mcfg.get('slots', 2))
+    sell_buffer = int(mcfg.get('sell_buffer', 3))
+    rebalance_days = int(mcfg.get('rebalance_days', 10))
+    use_filter = bool(mcfg.get('market_filter', market == 'KR'))
+    close_stop = mcfg.get('close_stop_pct', -15.0)
+    min_slot = float(mcfg.get('min_slot_value', 200_000 if market == 'KR' else 50))
+    liquidate_outside = bool(mcfg.get('liquidate_non_universe', True))
+    entry_delay = float(cfg.get('entry_delay_min', 10))
+    close_check = float(cfg.get('close_check_before_min', 20))
+    bench = mcfg.get('benchmark', '069500' if market == 'KR' else 'SPY')
+
+    kis = KisOverseas() if market == 'US' else KisDomestic()
+    started_at = datetime.datetime.now().astimezone().isoformat(timespec='seconds')
+    skey = market_clock.session_key(market)
+    universe = _rotation_universe(mcfg, market)
+    uni_codes = [c for c, _ in universe]
+    exch_of = {c: e for c, e in universe}
+    logger.info(f"[{market}] 🔁 v7.0 모멘텀 로테이션 세션 시작 — 유니버스 {uni_codes}, "
+                f"슬롯 {slots_max}, 버퍼 {sell_buffer}위, 리밸런싱 {rebalance_days}거래일, "
+                f"시장필터 {'ON' if use_filter else 'OFF'}, 종가손절 {close_stop}%")
+    if not universe:
+        send_alert(f"🚨 [{market}] momentum_rotation 유니버스가 비어 있습니다 — user_config.json 확인", is_error=True)
+        return
+
+    # --- 1) 개장 직후 호가 불안정 구간은 피한다 (kr-quant-engine: 09:05 매도 / 09:10 매수) ---
+    touch_heartbeat(force=True, market=market, source='session-prep')
+    sess = _rotation_wait(market, lambda s: s.minutes_since_open >= entry_delay, 'entry-delay')
+    if not sess.is_open:
+        logger.info(f"[{market}] 대기 중 장이 닫혔습니다. 세션 종료.")
+        return
+
+    # --- 2) 계좌 + 일봉 ---
+    touch_heartbeat(force=True, market=market, source='session-prep')
+    holdings, cash, equity = _rotation_account(kis, market)
+    logger.info(f"[{market}] 계좌: 현금 {cash:,.2f} / 평가 {equity:,.2f} / 보유 {list(holdings)}")
+
+    def _history(code, exch):
+        touch_heartbeat(market=market, source='scan', ticker=code)
+        rows = (kis.get_daily_history(code, exchange=exch or 'NAS') if market == 'US'
+                else kis.get_daily_history(code))
+        return _completed_closes(rows or [], market)
+
+    closes_of = {}
+    for code in dict.fromkeys(uni_codes + list(holdings)):
+        exch = exch_of.get(code) or (holdings.get(code) or {}).get('exchange')
+        closes_of[code] = _history(code, exch)
+    bench_closes = closes_of.get(bench) or _history(bench, _resolve_us_exchange(bench) if market == 'US' else None)
+    short = [c for c in uni_codes if len(closes_of.get(c) or []) < 121]
+    if short:
+        # 신규 상장 ETF 는 121봉이 쌓이기 전까지 순위에서 자동 제외된다 (정상).
+        logger.info(f"[{market}] 히스토리 121봉 미만 → 순위 제외: {short}")
+    if len(bench_closes) < 140:
+        logger.warning(f"[{market}] 벤치마크 {bench} 일봉 {len(bench_closes)}개 < 140 → 시장필터 fail-open(risk-on)")
+
+    risk_on = market_risk_on(bench_closes) if use_filter else True
+
+    # --- 3) 리밸런싱 주기 (거래소 영업일 단위 세션 카운터) ---
+    state = _load_rotation_state()
+    ms = state.setdefault(market, {})
+    if ms.get('last_session_key') != skey:
+        ms['sessions_since_rebalance'] = int(ms.get('sessions_since_rebalance', 10 ** 6)) + 1
+        ms['last_session_key'] = skey
+    # 같은 세션 재시도(job 크래시 후 재진입)면 리밸런싱을 다시 수행한다 — 매수는
+    # 부족분만 채우므로 멱등이다.
+    rebalance_due = (ms['sessions_since_rebalance'] >= rebalance_days
+                     or ms.get('last_rebalance_key') == skey)
+    prev_risk_on = ms.get('risk_on')
+    if prev_risk_on is not None and bool(prev_risk_on) != bool(risk_on):
+        send_alert(
+            f"{'🟢' if risk_on else '🔴'} [{market}] 시장필터 전환: "
+            f"{'RISK-ON — 다음 리밸런싱부터 편입 재개' if risk_on else 'RISK-OFF — 보유 전량 현금화, ' + bench + ' 가 MA120 위로 복귀하고 MA120 이 상승하면 자동 해제'}"
+        )
+    ms['risk_on'] = bool(risk_on)
+
+    ranked_codes = [c for c in uni_codes]
+    held_in_uni = [c for c in holdings if c in uni_codes]
+    outside = [c for c in holdings if c not in uni_codes]
+    feats = [compute_features(c, closes_of.get(c) or []) for c in ranked_codes]
+    n_slots = fillable_slots(equity, min_slot, slots_max)
+    plan = plan_rotation(feats, held_in_uni, risk_on, n_slots, sell_buffer)
+    day_label = ('리밸런싱일' if rebalance_due
+                 else f"유지일 {ms['sessions_since_rebalance']}/{rebalance_days}")
+    logger.info(f"[{market}] 로테이션 판단 ({day_label}): {plan.summary()}")
+
+    sells = []
+    if rebalance_due or not risk_on:
+        sells = list(plan.sell)
+        if rebalance_due and liquidate_outside:
+            sells += [(c, "유니버스 밖 (v7.0 이관)") for c in outside]
+    if rebalance_due:
+        targets = plan.targets
+    else:
+        # 리밸런싱일에 주문이 실패한 목표는 다음 리밸런싱(10거래일 뒤)까지 현금으로
+        # 방치하지 않고, 여전히 순위 목표에 있는 한 매 세션 재시도한다.
+        pending = [t for t in ms.get('pending_buys') or [] if t in plan.targets]
+        targets = [t for t in plan.targets if t in holdings or t in pending]
+
+    # --- 4) 매도 먼저 ---
+    sold = []
+    for code, reason in sells:
+        h = holdings.get(code)
+        if not h:
+            continue
+        touch_heartbeat(market=market, source='evaluate', ticker=code)
+        logger.info(f"[{code}] 로테이션 매도: {h['qty']}주 — {reason}")
+        r = safe_sell(kis, market, code, h['qty'], h.get('exchange'), reason=f"rotation:{reason}")
+        if r.get('success'):
+            sold.append(code)
+        else:
+            send_alert(f"🚨 [{market}] {code} 로테이션 매도 실패: {r.get('error')}", is_error=True)
+
+    # --- 5) 매수: 목표 슬롯의 부족분만 채운다 ---
+    bought, wanted, buy_fail = [], [], []
+    fail_reason = {}
+    to_buy = [t for t in targets if t not in holdings or t in sold]
+    if rebalance_due:
+        # 리밸런싱일에만 기존 보유 목표의 비중 부족분을 보충한다 (이관된 1주짜리 등).
+        to_buy += [t for t in targets if t in holdings and t not in sold]
+    if to_buy and risk_on:
+        if sold:
+            time.sleep(3)
+        holdings, cash, equity = _rotation_account(kis, market)
+        per_slot = equity / max(1, n_slots)
+        for code in dict.fromkeys(to_buy):
+            exch = exch_of.get(code)
+            touch_heartbeat(market=market, source='evaluate', ticker=code)
+            price = (kis.get_current_price(code, exch or 'NAS') if market == 'US'
+                     else kis.get_current_price(code))
+            price = safe_float(price)
+            if price <= 0:
+                logger.warning(f"[{code}] 현재가 조회 실패 → 이번 세션 매수 보류")
+                buy_fail.append(code)
+                fail_reason[code] = "현재가 조회 실패"
+                continue
+            have = (holdings.get(code) or {}).get('value', 0.0)
+            shortfall = per_slot - have
+            if code in holdings and shortfall < max(price, per_slot * 0.2):
+                continue   # 이미 목표 비중 근처 — 잔매매로 회전율을 올리지 않는다
+            wanted.append(code)
+            budget = min(shortfall, cash * 0.995)
+            qty = int(budget // price)
+            if qty <= 0 and cash >= price and code not in holdings:
+                qty = 1    # AGENTS 규칙 6: 편입 판정이 났고 1주를 감당하면 1주는 산다
+            if qty <= 0:
+                logger.warning(f"[{code}] 💸 매수 불가: 예산 {budget:,.2f} < 1주 {price:,.2f} (현금 {cash:,.2f})")
+                buy_fail.append(code)
+                fail_reason[code] = f"주문가능금액 부족 (현금 {cash:,.2f} < 1주 {price:,.2f})"
+                continue
+            logger.info(f"[{code}] 로테이션 매수: {qty}주 @ {price:,.2f} (슬롯 목표 {per_slot:,.0f}, 보유 {have:,.0f})")
+            res = (kis.buy_market_order(code, qty, exch or 'NAS') if market == 'US'
+                   else kis.buy_market_order(code, qty))
+            if not (res and res.get('rt_cd') == '0') and qty > 1:
+                # 시장가 체결 여유분/수수료로 '주문가능금액 초과'가 나는 경우 한 번 줄여서 재시도
+                qty2 = max(1, int(qty * 0.9))
+                logger.warning(f"[{code}] 매수 거부({(res or {}).get('msg1')}) → {qty2}주로 재시도")
+                qty = qty2
+                res = (kis.buy_market_order(code, qty, exch or 'NAS') if market == 'US'
+                       else kis.buy_market_order(code, qty))
+            if res and res.get('rt_cd') == '0':
+                logger.info(f"[{code}] ✅ 로테이션 매수 성공 ({qty}주)")
+                bought.append(code)
+                cash -= qty * price
+            else:
+                err = (res or {}).get('msg1') or 'no response'
+                logger.error(f"[{code}] 로테이션 매수 주문 실패: {err}")
+                buy_fail.append(code)
+                fail_reason[code] = f"주문 실패: {err}"
+
+    if rebalance_due:
+        ms['sessions_since_rebalance'] = 0
+        ms['last_rebalance_key'] = skey
+        ms['last_rebalance_at'] = datetime.datetime.now().isoformat(timespec='seconds')
+        ms['last_targets'] = targets
+    ms['pending_buys'] = [c for c in dict.fromkeys(buy_fail) if c in targets] if risk_on else []
+    ms['last_plan'] = plan.summary()
+    _save_rotation_state(state)
+
+    if sold or bought:
+        send_alert(f"🔁 [{market}] 로테이션 {'리밸런싱' if rebalance_due else '리스크 청산'}\n"
+                   f"매도: {sold or '-'}\n매수: {bought or '-'}\n{plan.summary()}")
+
+    # --- 6) 종가 기준 비상손절 (prism-insight: 장중 꼬리는 매도 사유가 아니다) ---
+    stop_sold = []
+    if close_stop is not None:
+        sess = _rotation_wait(market, lambda s: s.minutes_to_close <= close_check, 'close-watch')
+        if sess.is_open:
+            holdings, cash, equity = _rotation_account(kis, market)
+            for code, h in holdings.items():
+                if h['avg'] <= 0:
+                    continue
+                pnl = (h['price'] / h['avg'] - 1) * 100
+                if pnl <= float(close_stop):
+                    touch_heartbeat(market=market, source='evaluate', ticker=code)
+                    logger.warning(f"[{code}] 🛑 종가 기준 손절 {pnl:.1f}% <= {close_stop}%")
+                    r = safe_sell(kis, market, code, h['qty'], h.get('exchange'), reason='rotation:close_stop')
+                    if r.get('success'):
+                        stop_sold.append(code)
+                        send_alert(f"🛑 [{market}] {code} 종가 기준 손절 ({pnl:.1f}%)")
+
+    # --- 7) 세션 기록 — 무매수 감시는 '사야 했는데 못 산' 경우만 센다 ---
+    try:
+        health_monitor.record_session(health_monitor.SessionRecord(
+            session_key=skey, market=market, started_at=started_at,
+            candidates=len(wanted) + len([c for c in buy_fail if c not in wanted]),
+            buys=len(bought), sells=len(sold) + len(stop_sold),
+            evaluations=len(feats), available_cash=float(cash or 0.0),
+            block_reasons={f"{fail_reason.get(c, '매수 실패')} [{c}]"[:80]: 1 for c in buy_fail},
+            notes=f"strategy=momentum_rotation risk_on={risk_on} rebalance={rebalance_due}",
+        ))
+        diag = health_monitor.diagnose(market)
+        logger.info(f"[{market}] 자가진단: {diag.level.upper()} — {diag.message}")
+        if diag.should_alert:
+            send_alert(diag.message, is_error=(diag.level == 'critical'))
+    except Exception as _hm_e:
+        logger.error(f"[{market}] 로테이션 세션 기록 실패: {_hm_e}", exc_info=True)
+    logger.info(f"[{market}] 🔁 로테이션 세션 종료 — 매도 {sold + stop_sold or '-'} / 매수 {bought or '-'}")
+
+
 WS_PRICES = {}
 ws_client = None
 
@@ -1067,6 +1414,13 @@ def job():
     IS_SAFE_MODE = effective_config.get("trading_mode") == "safe"
     STRATEGY_MODE = effective_config.get("strategy", "day")
     PERSONA = effective_config.get("persona", "aggressive")
+
+    # [v7.0] 모멘텀 로테이션은 자체 세션을 돈다. 아래 DCA 경로(전 후보 장중
+    # 재평가)는 strategy 를 'aggressive_dca' 로 되돌리면 그대로 복귀한다.
+    if STRATEGY_MODE == 'momentum_rotation':
+        logger.info(f"[{market}] Effective Config: Strategy=momentum_rotation")
+        run_rotation_session(market, user_config)
+        return
 
     # Update Target Tickers based on effective config
     # US 시장은 항상 3X + 1X 모두 사용 (레버리지 제한 없음)
@@ -3370,6 +3724,11 @@ def run_with_recovery():
                 last_date = today_str
 
             # KR 장 마감 후 16:00 KST — 백테스트 + OPRO 자동 최적화
+            if 1600 <= t <= 1605 and not opro_triggered_today and _rotation_active():
+                # [v7.0] OPRO 는 DCA 의 손절값을 LLM 제안으로 매일 바꾼다. 로테이션은
+                # 그 값을 쓰지 않으며, 검증 근거 없는 자동 변경은 AGENTS 규칙 6 과도
+                # 충돌하므로 로테이션 모드에서는 돌리지 않는다.
+                opro_triggered_today = True
             if 1600 <= t <= 1605 and not opro_triggered_today:
                 opro_triggered_today = True
                 logger.info(f"🤖 [OPRO] 장 마감 후 자동 최적화 시작 (KST {now.strftime('%H:%M')})")
@@ -3519,6 +3878,8 @@ if __name__ == "__main__":
         """Run Market Scanner for KR Stocks"""
         if scanner is None:
             return
+        if _rotation_active():
+            return  # [v7.0] 로테이션은 급등주 추격을 하지 않는다 (유니버스 고정)
         status = get_market_status()
         if status == 'KR': # Only scan during KR market hours
             try:
@@ -3553,6 +3914,8 @@ if __name__ == "__main__":
                 logger.error(f"Scanner failed: {e}")
         
     def update_dynamic_portfolio():
+        if _rotation_active():
+            return  # [v7.0] 로테이션은 매 세션 순위를 직접 계산한다
         logger.info("🔄 Running Scheduled Dynamic Portfolio Update...")
         try:
             from modules.portfolio_manager import PortfolioManager

@@ -21,3 +21,8 @@ database/strategy_health.json
 # v6.1 런타임 산출물
 database/heartbeat.json
 database/.deploying
+
+# v7.0 런타임/캐시
+database/rotation_state.json
+database/*.log.*
+data_cache/
