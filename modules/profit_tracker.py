@@ -277,7 +277,7 @@ def take_asset_snapshot(kis_kr, kis_us):
         logger.error(f"[ProfitTracker] US 스냅샷 에러: {e}")
     
     # 총 자산 (KRW 환산)
-    kr_total = snapshot["kr"]["deposit"] + snapshot["kr"]["eval_total"]
+    kr_total = kr_account_total(snapshot["kr"])
     us_total_krw = (snapshot["us"]["deposit_usd"] + snapshot["us"]["eval_total_usd"]) * usd_krw
     snapshot["total_krw"] = int(kr_total + us_total_krw)
     
@@ -326,6 +326,19 @@ def get_monthly_summary():
     return result
 
 
+def kr_account_total(kr: dict) -> int:
+    """KR 계좌 총액.
+
+    [v7.0] KIS 잔고 output2 의 tot_evlu_amt(총평가금액)는 **예수금을 이미 포함**한다
+    (2026-09-11 스냅샷: 보유 0종목에서 deposit == eval_total == 2,715,678).
+    그런데 이전 구현은 deposit + eval_total 로 더해 예수금을 두 번 셌다. 9/30 실제
+    KR 자산은 약 203만원인데 대시보드는 371만원으로 표시했다 — 수익/손실 판단을
+    왜곡하는 계기판 오류다. eval_total 이 있으면 그것만 쓴다.
+    """
+    eval_total = int(kr.get("eval_total", 0) or 0)
+    return eval_total if eval_total > 0 else int(kr.get("deposit", 0) or 0)
+
+
 def get_asset_history():
     """
     일별 자산 이력 (차트용)
@@ -342,10 +355,13 @@ def get_asset_history():
     for date_str, snap in sorted(snapshots.items()):
         kr = snap.get("kr", {})
         us = snap.get("us", {})
+        kr_total = kr_account_total(kr)
+        us_total_usd = us.get("deposit_usd", 0) + us.get("eval_total_usd", 0)
         result.append({
             "date": date_str,
-            "total_krw": snap.get("total_krw", 0),
-            "kr_total": kr.get("deposit", 0) + kr.get("eval_total", 0),
+            # 과거 스냅샷의 total_krw 는 예수금 이중계산 값이므로 구성요소로 재계산한다.
+            "total_krw": int(kr_total + us_total_usd * 1450.0),
+            "kr_total": kr_total,
             "kr_profit": kr.get("eval_profit", 0),
             "us_total_usd": us.get("deposit_usd", 0) + us.get("eval_total_usd", 0),
             "us_profit_usd": us.get("eval_profit_usd", 0)

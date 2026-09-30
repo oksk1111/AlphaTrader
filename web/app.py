@@ -268,8 +268,31 @@ def read_log_lines(file_path, limit=240):
     except Exception:
         return []
 
+def bot_log_files(limit_files=14):
+    """봇 로그 파일들을 오래된 것 → 최신 순으로.
+
+    [v7.0] v6.1 은 화면의 '로그' 탭(get_latest_log_file)만 BOT_LOG_FILE 로 옮기고
+    이 함수는 `trading_*.log`(v6.0 이전 날짜별 파일)만 계속 읽었다. 그 결과
+    2026-10-01 대시보드는 KR 에서 9월 내내 체결이 있었는데도
+    '마지막 거래 성공: 96일 전(6/26)', '마지막 heartbeat: 20일 전' 을 표시했다.
+    같은 종류의 거짓말이 두 번째 계기판에 남아 있었던 것이다.
+
+    순서: 레거시 날짜별 파일 → 자정 회전본(trading.log.YYYY-MM-DD) → 현재 파일.
+    """
+    base = BASE_DIR / "database"
+    try:
+        from modules.logger import BOT_LOG_FILE
+        current = BASE_DIR / BOT_LOG_FILE
+    except Exception:
+        current = base / "trading.log"
+    legacy = sorted(glob.glob(str(base / "trading_*.log")))
+    rotated = sorted(glob.glob(str(current) + ".*"))
+    files = legacy + rotated + ([str(current)] if current.exists() else [])
+    return files[-limit_files:]
+
+
 def load_recent_log_events(limit_files=14, line_limit=240):
-    log_files = sorted(glob.glob(str(BASE_DIR / "database" / "trading_*.log")))[-limit_files:]
+    log_files = bot_log_files(limit_files)
     events = []
     for file_path in log_files:
         for raw_line in read_log_lines(file_path, limit=line_limit):
@@ -310,6 +333,18 @@ def build_activity_snapshot(parsed_logs, strategy_timeline):
         return any(marker in message for marker in markers)
 
     last_heartbeat_log = find_latest(lambda log: "heartbeat:" in str(log.get("message", "")).lower())
+    # [v7.0] 세션 중에는 job() 이 메인 루프를 점유해 'Heartbeat:' 로그 줄이 안 찍힌다.
+    # 생존의 정본은 heartbeat.json 이므로(v6.1 규칙 3) 그쪽이 더 최신이면 그걸 쓴다.
+    try:
+        _hb = json.loads(HEARTBEAT_FILE.read_text(encoding="utf-8"))
+        _hb_ts = datetime.fromtimestamp(float(_hb.get("ts", 0))).strftime("%Y-%m-%d %H:%M:%S")
+        if not last_heartbeat_log or _hb_ts > str(last_heartbeat_log.get("timestamp", "")):
+            last_heartbeat_log = {
+                "timestamp": _hb_ts,
+                "message": f"Heartbeat(file): source={_hb.get('source')} market={_hb.get('market')}",
+            }
+    except Exception:
+        pass
     last_cache_log = find_latest(lambda log: "account cache updated" in str(log.get("message", "")).lower())
     last_trade_success_log = find_latest(lambda log: has_marker(log, TRADE_SUCCESS_MARKERS))
     last_trade_failure_log = find_latest(lambda log: has_marker(log, TRADE_FAILURE_MARKERS))
@@ -520,11 +555,19 @@ def build_asset_trend(asset_snapshots, combined_total_krw):
     points = []
     for key in sorted(asset_snapshots.keys()):
         snapshot = asset_snapshots.get(key, {})
+        # [v7.0] 저장된 total_krw 는 KR 예수금을 이중계산한 값이다(profit_tracker.
+        # kr_account_total 참고). 구성요소가 있으면 거기서 다시 계산한다.
+        value = safe_float(snapshot.get("total_krw", snapshot.get("combined_krw", 0)))
+        if isinstance(snapshot.get("kr"), dict) and isinstance(snapshot.get("us"), dict):
+            from modules.profit_tracker import kr_account_total
+            us = snapshot["us"]
+            value = kr_account_total(snapshot["kr"]) + (
+                safe_float(us.get("deposit_usd")) + safe_float(us.get("eval_total_usd"))) * 1450.0
         points.append({
             "id": f"snapshot-{key}",
             "label": key[5:].replace("-", "/"),
             "date": key,
-            "value": safe_float(snapshot.get("total_krw", snapshot.get("combined_krw", 0))),
+            "value": value,
             "usUsd": safe_float(snapshot.get("us", {}).get("eval_total_usd", snapshot.get("us_total_usd", 0))),
             "krKrw": safe_float(snapshot.get("kr", {}).get("eval_total", snapshot.get("kr_total_krw", 0))),
         })
@@ -1128,7 +1171,8 @@ async def api_status(request: Request):
             "heartbeat_source": _hb.get("source"),
             # watchloop/evaluate/session-prep 이면 job() 안에 있다 = 매매 세션 진행 중
             "session_active": _hb.get("source") in
-                              ("watchloop", "evaluate", "session-prep", "job-enter"),
+                              ("watchloop", "evaluate", "session-prep", "job-enter",
+                               "scan", "sentiment"),
             # 장이 열려 있는데 봇이 멈춰 있으면 healthy 가 아니다.
             "healthy": not (market_status in ("US", "KR") and liveness == "stalled"),
         })
