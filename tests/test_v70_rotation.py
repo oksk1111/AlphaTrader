@@ -310,17 +310,46 @@ class TestSessionWiring:
         fake = FakeKR({"SPY": _series(500, .002)}, cash=0)
         fake.get_balance = lambda: {"output1": [], "_failed_exchanges": []}
         fake.get_foreign_balance = lambda: {"deposit": 1000.0}
-        holdings, cash, equity = rb._rotation_account(fake, "US")
-        assert holdings == {} and cash == 1000.0 and equity == 1000.0
+        holdings, cash, equity, degraded = rb._rotation_account(fake, "US")
+        assert holdings == {} and cash == 1000.0 and equity == 1000.0 and degraded == []
 
-    @pytest.mark.parametrize("bal", [None, {"output1": [], "_failed_exchanges": ["AMEX"]}])
-    def test_balance_failure_still_raises(self, rb, bal):
+    def test_balance_failure_still_raises(self, rb):
         """반대 방향: 조회 실패를 '보유 0'으로 읽으면 이미 가진 종목을 또 산다."""
         fake = FakeKR({}, cash=0)
-        fake.get_balance = lambda: bal
+        fake.get_balance = lambda: None
         fake.get_foreign_balance = lambda: {"deposit": 1000.0}
         with pytest.raises(RuntimeError):
             rb._rotation_account(fake, "US")
+
+    def test_partial_balance_failure_is_degraded_not_crash(self, rb):
+        """[v7.0.2] AMEX 하나가 500 이면 세션 전체를 죽이지 않고 degraded 로 알린다."""
+        fake = FakeKR({}, cash=0)
+        fake.get_balance = lambda: {"output1": [], "_failed_exchanges": ["AMEX"]}
+        fake.get_foreign_balance = lambda: {"deposit": 1000.0}
+        assert rb._rotation_account(fake, "US")[3] == ["AMEX"]
+
+    def test_foreign_balance_failure_is_not_zero_cash(self, rb):
+        """[v7.0.2] 외화예수금 조회 실패를 현금 0 으로 읽으면 원인이 '주문가능금액 부족'으로 가려진다."""
+        fake = FakeKR({}, cash=0)
+        fake.get_balance = lambda: {"output1": [], "_failed_exchanges": []}
+        fake.get_foreign_balance = lambda: None
+        with pytest.raises(RuntimeError):
+            rb._rotation_account(fake, "US")
+
+    def test_us_exchange_from_config_not_balance_tag(self, rb):
+        """[v7.0.2] NASD 조회가 SPY 를 돌려줘도 매도 거래소는 설정(AMS)을 따른다."""
+        fake = FakeKR({"SPY": _series(500, .002)}, holdings={"SPY": (1, 500)}, cash=0)
+        orig = fake.get_balance
+
+        def bal():
+            b = orig()
+            for h in b["output1"]:
+                h["_exchange"] = "NASD"
+            return b
+        fake.get_balance = bal
+        fake.get_foreign_balance = lambda: {"deposit": 0}
+        holdings = rb._rotation_account(fake, "US", {"SPY": "AMS"})[0]
+        assert holdings["SPY"]["exchange"] == "AMS"
 
     def test_kis_overseas_balance_distinguishes_empty_from_failure(self, monkeypatch):
         # 다른 테스트가 sys.modules['modules.kis_api'] 를 스텁으로 바꿔 끼우므로 실제 파일을 직접 로드한다.
@@ -346,6 +375,67 @@ class TestSessionWiring:
 
         monkeypatch.setattr(kis_api.requests, "get", lambda *a, **kw: Resp({"rt_cd": "1", "msg1": "err"}))
         assert k.get_balance() is None
+
+    # ---- [v7.0.2] Fable 재검토에서 나온 버그들 ----
+    def test_safe_sell_does_not_report_flat_when_lookup_fails(self, rb):
+        """잔고 조회 실패(None)를 '이미 청산됨 = 성공'으로 읽으면 손절 주문이 안 나간다."""
+        fake = FakeKR(dict(UNIVERSE), holdings={"A": (10, 10000)}, cash=0)
+        fake.get_holding_qty = lambda c: None
+        r = rb.safe_sell(fake, "KR", "A", 10, reason="test")
+        assert r["success"] and ("A", 10) in fake.sells
+        r2 = rb.safe_sell(fake, "KR", "B", 0, reason="test")
+        assert not r2["success"] and r2["phase"] == "failed"
+
+    def _us(self, rb, monkeypatch, fake, slots=2):
+        monkeypatch.setattr(rb, "KisOverseas", lambda: fake)
+        cfg = {"momentum_rotation": {"us": {
+            "universe": [{"symbol": "SPY", "exchange": "AMS"}, {"symbol": "QQQ", "exchange": "NAS"},
+                         {"symbol": "SMH", "exchange": "NAS"}],
+            "benchmark": "SPY", "slots": slots, "market_filter": False, "min_slot_value": 50}}}
+        rb.run_rotation_session("US", cfg)
+
+    US_SERIES = {"SPY": _series(500, .001), "QQQ": _series(400, .002), "SMH": _series(300, .003)}
+
+    def _usfake(self, cash, holdings=None):
+        fake = FakeKR(dict(self.US_SERIES), holdings=holdings, cash=cash)
+        fake.get_foreign_balance = lambda: {"deposit": fake.cash}
+        return fake
+
+    def test_one_share_needs_limit_price_plus_fee(self, rb, monkeypatch):
+        """US 매수는 현재가 +1% 지정가 + 수수료. 현금이 그 사이면 주문하지 않는다(거부만 반복)."""
+        smh = self.US_SERIES["SMH"][-1]
+        fake = self._usfake(cash=smh * 1.005)
+        self._us(rb, monkeypatch, fake, slots=1)
+        assert fake.buys == []
+        fake2 = self._usfake(cash=smh * 1.02)
+        rb_state = rb.ROTATION_STATE_FILE
+        os.remove(rb_state)
+        self._us(rb, monkeypatch, fake2, slots=1)
+        assert fake2.buys == [("SMH", 1)]
+
+    def test_degraded_balance_blocks_buys_but_not_stop(self, rb, monkeypatch):
+        smh = self.US_SERIES["SMH"][-1]
+        fake = self._usfake(cash=5000, holdings={"SMH": (1, smh / 0.80)})
+        orig = fake.get_balance
+        fake.get_balance = lambda: {**orig(), "_failed_exchanges": ["AMEX"]}
+        self._us(rb, monkeypatch, fake)
+        assert fake.buys == [], "일부 보유가 안 보이면 사지 않는다"
+        assert ("SMH", 1) in fake.sells, "보이는 보유의 손절은 계속한다"
+
+    def test_incomplete_rebalance_replans_with_new_cash(self, rb, monkeypatch):
+        """리밸런싱일 USD $0 → 슬롯 1개로 저장. 입금 후 다음 세션엔 지금 자산 기준 2슬롯을 채운다."""
+        fake = self._usfake(cash=0)
+        self._us(rb, monkeypatch, fake)
+        assert fake.buys == []
+        from modules import market_clock
+        orig = market_clock.session_info
+        monkeypatch.setattr(market_clock, "session_info",
+                            lambda m, now_utc=None: orig(m).__class__(**{**orig(m).__dict__, "session_date": "2026-10-02"}))
+        fake.cash = 5000
+        self._us(rb, monkeypatch, fake)
+        assert {c for c, _ in fake.buys} == {"SMH", "QQQ"}
+        state = json.load(open(rb.ROTATION_STATE_FILE, encoding="utf-8"))
+        assert state["US"]["pending_buys"] == [] and state["US"]["sessions_since_rebalance"] == 1
 
     def test_signal_ignores_todays_partial_bar(self, rb):
         """백테스트는 't일 종가 판단 → t+1 체결'. 봇도 오늘 미완성 봉을 쓰면 안 된다."""

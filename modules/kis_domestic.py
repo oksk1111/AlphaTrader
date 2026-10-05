@@ -346,11 +346,11 @@ class KisDomestic:
         return 1000
 
     def get_holding_qty(self, ticker):
-        """ticker에 대한 실제 매도가능 수량 조회. 보유 없으면 0."""
+        """ticker에 대한 실제 매도가능 수량 조회. 보유 없으면 0, **조회 실패면 None** [v7.0.2]."""
         try:
             bal = self.get_balance()
             if not bal or bal.get('rt_cd') != '0':
-                return 0
+                return None
             for h in bal.get('output1', []) or []:
                 if h.get('pdno') == ticker:
                     # ord_psbl_qty(주문가능) 우선, 없으면 hldg_qty
@@ -358,11 +358,11 @@ class KisDomestic:
                     try:
                         return int(float(qty_str))
                     except Exception:
-                        return 0
+                        return None
             return 0
         except Exception as e:
             print(f"[KIS-KR] get_holding_qty error [{ticker}]: {e}")
-            return 0
+            return None
 
     def get_volume_rank(self):
         """거래량 급증 종목 순위 (전일 대비 급증) - FHPST01710000"""

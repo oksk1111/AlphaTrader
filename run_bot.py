@@ -1,3 +1,4 @@
+import re
 import time
 import datetime
 import schedule
@@ -975,6 +976,14 @@ def safe_sell(kis_client, market, ticker, qty_hint, exchange=None,
     except Exception as _e:
         logger.warning(f"[{ticker}] get_holding_qty 실패 ({_e}) → 캐시 수량 사용")
         actual_qty = qty_hint
+    if actual_qty is None:
+        # [v7.0.2] 조회 실패를 '보유 0 = 이미 청산'으로 읽으면 손절 주문이 안 나간 채
+        # 성공으로 보고된다. 호출자가 아는 수량으로 주문하고, 그것도 없으면 실패다.
+        logger.warning(f"[{ticker}] 보유 수량 조회 실패 → 호출자 수량 {qty_hint} 로 매도 시도")
+        if not qty_hint or int(qty_hint) <= 0:
+            return {'success': False, 'sold_qty': 0, 'phase': 'failed',
+                    'error': 'holding qty lookup failed'}
+        actual_qty = int(qty_hint)
 
     effective_qty = max(0, min(int(qty_hint or 0), int(actual_qty or 0))) if actual_qty else 0
 
@@ -1112,8 +1121,12 @@ def _rotation_universe(mcfg, market):
     return out
 
 
-def _rotation_account(kis, market):
-    """(holdings{code: {qty, avg, price, value, exchange}}, cash, equity).
+def _rotation_account(kis, market, exch_of=None):
+    """(holdings{code: {qty, avg, price, value, exchange}}, cash, equity, degraded).
+
+    degraded = 조회에 실패한 US 거래소 목록. 비어 있지 않으면 일부 보유가 안 보일 수
+    있으므로 호출자는 **매수를 막고**(중복 매수 방지) 보이는 보유의 매도·손절은 계속한다.
+    [v7.0.2] 예전엔 예외로 세션 전체를 죽였다 — AMEX 500 이 나는 날 손절도 못 한다.
 
     시장별 자금만 본다 (위 5번). 조회 실패는 예외로 올린다 — 잔고를 모르는
     상태에서 주문을 내면 안 된다.
@@ -1124,9 +1137,9 @@ def _rotation_account(kis, market):
         # 전 거래소 조회 실패일 때만 None 을 준다. 예전엔 보유 0 도 None 이라
         # 2026-10-01 배포 이후 US 세션이 매일 여기서 크래시 → 5회 재시도 → 포기했다.
         raise RuntimeError(f"[{market}] 잔고 조회 실패 (응답 없음)")
-    if bal.get('_failed_exchanges'):
-        # 일부 거래소만 실패하면 그 거래소 보유분이 안 보인다 → 이미 가진 걸 또 산다.
-        raise RuntimeError(f"[{market}] 잔고 일부 조회 실패: {bal['_failed_exchanges']}")
+    degraded = list(bal.get('_failed_exchanges') or [])
+    if degraded:
+        logger.warning(f"[{market}] 잔고 일부 조회 실패 {degraded} → 이번 판단에서 매수 보류")
     if market == 'KR' and bal.get('rt_cd') not in (None, '0'):
         # 실패 응답을 '보유 0 · 현금 0'으로 읽으면 조용히 아무것도 안 하는 세션이 된다.
         raise RuntimeError(f"[KR] 잔고 조회 실패: {bal.get('msg1')}")
@@ -1140,7 +1153,11 @@ def _rotation_account(kis, market):
         avg = safe_float(h.get('pchs_avg_pric', h.get('avg_unpr3', 0)))
         exch = None
         if market == 'US':
-            exch = {'NASD': 'NAS', 'NYSE': 'NYS', 'AMEX': 'AMS'}.get(h.get('_exchange'), _resolve_us_exchange(code))
+            # [v7.0.2] 설정의 거래소를 우선한다. '조회한 거래소' 태그(_exchange)는 NASD 조회가
+            # 미국 전체를 돌려주면 SPY(AMS)도 NAS 로 붙어 매도 시세조회가 실패할 수 있다.
+            exch = ((exch_of or {}).get(code)
+                    or {'NASD': 'NAS', 'NYSE': 'NYS', 'AMEX': 'AMS'}.get((h.get('ovrs_excg_cd') or '').strip())
+                    or _resolve_us_exchange(code))
         holdings[code] = {'qty': qty, 'avg': avg, 'price': price or avg,
                           'value': qty * (price or avg), 'exchange': exch}
     if market == 'KR':
@@ -1148,10 +1165,14 @@ def _rotation_account(kis, market):
         # D+2 예수금(prvs_rcdl_excc_amt)이 결제 예정분을 반영한 실제 원화 여력이다.
         cash = safe_float(o2.get('prvs_rcdl_excc_amt') or o2.get('dnca_tot_amt') or 0)
     else:
-        cash = safe_float((kis.get_foreign_balance() or {}).get('deposit', 0))
+        fb = kis.get_foreign_balance()
+        if fb is None:
+            # [v7.0.2] 실패를 현금 0 으로 읽으면 '주문가능금액 부족'으로 기록돼 원인이 가려진다.
+            raise RuntimeError("[US] 외화예수금 조회 실패 (응답 없음)")
+        cash = safe_float(fb.get('deposit', 0))
     cash = max(0.0, cash)
     equity = cash + sum(v['value'] for v in holdings.values())
-    return holdings, cash, equity
+    return holdings, cash, equity, degraded
 
 
 def _completed_closes(rows, market):
@@ -1215,7 +1236,7 @@ def run_rotation_session(market, user_config):
 
     # --- 2) 계좌 + 일봉 ---
     touch_heartbeat(force=True, market=market, source='session-prep')
-    holdings, cash, equity = _rotation_account(kis, market)
+    holdings, cash, equity, degraded = _rotation_account(kis, market, exch_of)
     logger.info(f"[{market}] 계좌: 현금 {cash:,.2f} / 평가 {equity:,.2f} / 보유 {list(holdings)}")
 
     def _history(code, exch):
@@ -1276,8 +1297,14 @@ def run_rotation_session(market, user_config):
     else:
         # 리밸런싱일에 주문이 실패한 목표는 다음 리밸런싱(10거래일 뒤)까지 현금으로
         # 방치하지 않고, 여전히 순위 목표에 있는 한 매 세션 재시도한다.
-        pending = [t for t in ms.get('pending_buys') or [] if t in plan.targets]
-        targets = [t for t in plan.targets if t in holdings or t in pending]
+        #
+        # [v7.0.2] 미완료 리밸런싱은 '그날의 목표 목록'이 아니라 **지금 자산 기준으로 다시
+        # 짠 목표**를 채운다. 리밸런싱일에 현금이 0 이면 fillable_slots(0)=1 로 목표가
+        # 1개만 저장돼, 이후 입금해도 2번째 슬롯은 다음 리밸런싱(10거래일)까지 비어 있었다.
+        if ms.get('pending_buys'):
+            targets = list(plan.targets)
+        else:
+            targets = [t for t in plan.targets if t in holdings]
 
     # --- 4) 매도 먼저 ---
     sold = []
@@ -1303,10 +1330,19 @@ def run_rotation_session(market, user_config):
     if to_buy and risk_on:
         if sold:
             time.sleep(3)
-        holdings, cash, equity = _rotation_account(kis, market)
+        holdings, cash, equity, degraded = _rotation_account(kis, market, exch_of)
         per_slot = equity / max(1, n_slots)
+        # [v7.0.2] 실제 주문 단가. US 매수는 현재가 +1% 지정가(kis_api.buy_market_order)에
+        # 수수료가 붙는다. 현재가로만 판정하면 현금이 [가격, 가격×1.0125) 일 때 1주 주문이
+        # 매 세션 '주문가능금액 초과'로 거부된다.
+        unit_mult = 1.01 * 1.0025 if market == 'US' else 1.003
         for code in dict.fromkeys(to_buy):
             exch = exch_of.get(code)
+            if degraded:
+                # 일부 거래소 보유가 안 보인다 → 이미 가진 종목을 또 살 수 있다. 매수만 보류.
+                buy_fail.append(code)
+                fail_reason[code] = f"잔고 일부 조회 실패 {degraded} — 중복매수 방지로 보류"
+                continue
             touch_heartbeat(market=market, source='evaluate', ticker=code)
             price = (kis.get_current_price(code, exch or 'NAS') if market == 'US'
                      else kis.get_current_price(code))
@@ -1321,14 +1357,15 @@ def run_rotation_session(market, user_config):
             if code in holdings and shortfall < max(price, per_slot * 0.2):
                 continue   # 이미 목표 비중 근처 — 잔매매로 회전율을 올리지 않는다
             wanted.append(code)
-            budget = min(shortfall, cash * 0.995)
-            qty = int(budget // price)
-            if qty <= 0 and cash >= price and code not in holdings:
+            unit = price * unit_mult
+            budget = min(shortfall, cash)
+            qty = int(budget // unit)
+            if qty <= 0 and cash >= unit and code not in holdings:
                 qty = 1    # AGENTS 규칙 6: 편입 판정이 났고 1주를 감당하면 1주는 산다
             if qty <= 0:
-                logger.warning(f"[{code}] 💸 매수 불가: 예산 {budget:,.2f} < 1주 {price:,.2f} (현금 {cash:,.2f})")
+                logger.warning(f"[{code}] 💸 매수 불가: 예산 {budget:,.2f} < 1주 주문단가 {unit:,.2f} (현금 {cash:,.2f})")
                 buy_fail.append(code)
-                fail_reason[code] = f"주문가능금액 부족 (현금 {cash:,.2f} < 1주 {price:,.2f})"
+                fail_reason[code] = f"주문가능금액 부족 (현금 {cash:,.2f} < 1주 {unit:,.2f})"
                 continue
             logger.info(f"[{code}] 로테이션 매수: {qty}주 @ {price:,.2f} (슬롯 목표 {per_slot:,.0f}, 보유 {have:,.0f})")
             res = (kis.buy_market_order(code, qty, exch or 'NAS') if market == 'US'
@@ -1343,7 +1380,7 @@ def run_rotation_session(market, user_config):
             if res and res.get('rt_cd') == '0':
                 logger.info(f"[{code}] ✅ 로테이션 매수 성공 ({qty}주)")
                 bought.append(code)
-                cash -= qty * price
+                cash -= qty * unit
             else:
                 err = (res or {}).get('msg1') or 'no response'
                 logger.error(f"[{code}] 로테이션 매수 주문 실패: {err}")
@@ -1368,7 +1405,7 @@ def run_rotation_session(market, user_config):
     if close_stop is not None:
         sess = _rotation_wait(market, lambda s: s.minutes_to_close <= close_check, 'close-watch')
         if sess.is_open:
-            holdings, cash, equity = _rotation_account(kis, market)
+            holdings, cash, equity, _deg = _rotation_account(kis, market, exch_of)
             for code, h in holdings.items():
                 if h['avg'] <= 0:
                     continue
@@ -3631,7 +3668,8 @@ def run_with_recovery():
             crashes = (prev.get('crashes', 0) if prev.get('session') == key else 0) + (0 if ok else 1)
             session_outcome[market_label] = {
                 'session': key, 'ok': ok, 'crashes': crashes,
-                'error': None if ok else f"{type(err).__name__}: {err}"[:200],
+                # 비인증 /api/status 로 나간다 — 계좌번호 등 긴 숫자열은 가린다.
+                'error': None if ok else re.sub(r"\d{6,}", "***", f"{type(err).__name__}: {err}")[:200],
                 'at': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             }
             touch_heartbeat(force=True, session_outcome=dict(session_outcome))

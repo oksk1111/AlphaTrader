@@ -384,11 +384,15 @@ class KisOverseas:
             return None
 
     def get_holding_qty(self, ticker):
-        """해외주식 ticker의 매도가능 수량. 보유 없으면 0."""
+        """해외주식 ticker의 매도가능 수량. 보유 없으면 0, **조회 실패면 None**.
+
+        [v7.0.2] 예전엔 실패도 0 이었고 safe_sell 이 그걸 '이미 청산됨(성공)'으로 읽어
+        손절 주문이 나가지 않은 채 손절 알림만 발송될 수 있었다.
+        """
         try:
             bal = self.get_balance()
             if not bal:
-                return 0
+                return None
             for h in bal.get('output1', []) or []:
                 if h.get('ovrs_pdno') == ticker or h.get('pdno') == ticker:
                     qty_str = (h.get('ord_psbl_qty')
@@ -397,11 +401,12 @@ class KisOverseas:
                     try:
                         return int(float(qty_str))
                     except Exception:
-                        return 0
-            return 0
+                        return None
+            # 못 찾았는데 일부 거래소 조회가 실패했다면 '없음'이라고 단정할 수 없다.
+            return None if bal.get('_failed_exchanges') else 0
         except Exception as e:
             print(f"[KIS] get_holding_qty error [{ticker}]: {e}")
-            return 0
+            return None
 
     def get_balance(self):
         """잔고 조회 (전체 거래소)"""
@@ -445,6 +450,25 @@ class KisOverseas:
             except Exception as e:
                 print(f"[KIS] Balance check failed for {exch}: {e}")
                 failed.append(exch)
+
+        if failed and len(failed) < len(exchanges):
+            # 연속 호출로 초당 한도(HTTP 500)에 걸리는 경우가 있어 실패분만 한 번 더 본다.
+            time.sleep(1.0)
+            for exch in list(failed):
+                params = {"CANO": self.acc_no_prefix, "ACNT_PRDT_CD": self.acc_no_suffix,
+                          "OVRS_EXCG_CD": exch, "TR_CRCY_CD": "USD",
+                          "CTX_AREA_FK200": "", "CTX_AREA_NK200": ""}
+                try:
+                    res = requests.get(self.url + path, headers=headers, params=params, timeout=10)
+                    res.raise_for_status()
+                    data = res.json()
+                    if data.get('rt_cd') == '0':
+                        for item in data.get('output1') or []:
+                            item['_exchange'] = exch
+                            all_holdings.append(item)
+                        failed.remove(exch)
+                except Exception as e:
+                    print(f"[KIS] Balance retry failed for {exch}: {e}")
 
         if len(failed) == len(exchanges):
             return None   # 진짜 조회 실패

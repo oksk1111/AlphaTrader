@@ -53,7 +53,9 @@ def update_us_account():
         balance = kis.get_balance()
         
         # Check if we got valid data - don't overwrite cache with zeros
-        if not foreign_bal and not balance:
+        # [v7.0.2] get_balance() 는 보유 0 이면 빈 dict(truthy)를 준다. 그래서 외화예수금
+        # 조회만 실패해도 예전 조건(둘 다 실패)을 통과해 캐시가 $0 으로 덮어써졌다.
+        if not foreign_bal or not balance:
             logger.warning("[US Account] API returned no data, keeping existing cache")
             return None
         
