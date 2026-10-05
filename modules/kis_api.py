@@ -411,6 +411,10 @@ class KisOverseas:
         
         all_holdings = []
         exchanges = ["NASD", "NYSE", "AMEX"]  # 모든 거래소 조회
+        # [v7.0.1] '보유 0'과 '조회 실패'를 구분한다. 예전에는 둘 다 None 이었고,
+        # 로테이션은 None 을 실패로 보고 세션을 죽였다 (US 보유 0 → 매일 크래시).
+        # 반대로 None 을 '보유 0'으로 읽으면 조회 실패 시 보유를 못 보고 중복 매수한다.
+        failed = []
         
         for exch in exchanges:
             params = {
@@ -431,25 +435,29 @@ class KisOverseas:
                 res.raise_for_status()
                 data = res.json()
                 
-                if data.get('rt_cd') == '0' and 'output1' in data:
-                    for item in data['output1']:
+                if data.get('rt_cd') == '0':
+                    for item in data.get('output1') or []:
                         item['_exchange'] = exch  # 거래소 정보 추가
-                    all_holdings.extend(data['output1'])
+                        all_holdings.append(item)
+                else:
+                    print(f"[KIS] Balance check failed for {exch}: {data.get('msg1')}")
+                    failed.append(exch)
             except Exception as e:
-                # If one exchange fails (e.g. AMEX 500 error), log it but continue to others if possible?
-                # Currently we print and loop continues.
                 print(f"[KIS] Balance check failed for {exch}: {e}")
-        
+                failed.append(exch)
+
+        if len(failed) == len(exchanges):
+            return None   # 진짜 조회 실패
+
         # Deduplicate holdings by pdno (ticker)
         unique_holdings = {}
-        if all_holdings:
-            for h in all_holdings:
-                ticker = h.get('ovrs_pdno', h.get('pdno'))
-                if ticker and ticker not in unique_holdings:
-                    unique_holdings[ticker] = h
-            return {"output1": list(unique_holdings.values())}
-        
-        return None
+        for h in all_holdings:
+            ticker = h.get('ovrs_pdno', h.get('pdno'))
+            if ticker and ticker not in unique_holdings:
+                unique_holdings[ticker] = h
+        # 보유 0 이면 output1 == [] (정상). 일부 거래소만 실패했으면 _failed_exchanges 로
+        # 알린다 — 주문 판단을 하는 호출부(로테이션)는 이걸 실패로 취급한다.
+        return {"output1": list(unique_holdings.values()), "_failed_exchanges": failed}
 
     def get_executed_orders(self, start_date, end_date, sell_buy="00"):
         """해외주식 주문체결내역 - TTTS3035R

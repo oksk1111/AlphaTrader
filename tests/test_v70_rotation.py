@@ -304,6 +304,49 @@ class TestSessionWiring:
         assert rec["buys"] == 0 and rec["candidates"] > 0
         assert any("주문가능금액" in k for k in rec["block_reasons"])
 
+    def test_us_empty_holdings_is_not_a_crash(self, rb):
+        """2026-10-01 배포 이후 US 세션이 매일 '잔고 조회 실패'로 크래시했다.
+        KisOverseas.get_balance() 가 보유 0 을 None(=실패)으로 반환했기 때문."""
+        fake = FakeKR({"SPY": _series(500, .002)}, cash=0)
+        fake.get_balance = lambda: {"output1": [], "_failed_exchanges": []}
+        fake.get_foreign_balance = lambda: {"deposit": 1000.0}
+        holdings, cash, equity = rb._rotation_account(fake, "US")
+        assert holdings == {} and cash == 1000.0 and equity == 1000.0
+
+    @pytest.mark.parametrize("bal", [None, {"output1": [], "_failed_exchanges": ["AMEX"]}])
+    def test_balance_failure_still_raises(self, rb, bal):
+        """반대 방향: 조회 실패를 '보유 0'으로 읽으면 이미 가진 종목을 또 산다."""
+        fake = FakeKR({}, cash=0)
+        fake.get_balance = lambda: bal
+        fake.get_foreign_balance = lambda: {"deposit": 1000.0}
+        with pytest.raises(RuntimeError):
+            rb._rotation_account(fake, "US")
+
+    def test_kis_overseas_balance_distinguishes_empty_from_failure(self, monkeypatch):
+        # 다른 테스트가 sys.modules['modules.kis_api'] 를 스텁으로 바꿔 끼우므로 실제 파일을 직접 로드한다.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("_real_kis_api", os.path.join(REPO, "modules", "kis_api.py"))
+        kis_api = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(kis_api)
+
+        class Resp:
+            def __init__(self, body):
+                self.body, self.status_code, self.text = body, 200, ""
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return self.body
+
+        k = kis_api.KisOverseas.__new__(kis_api.KisOverseas)
+        k.url, k.acc_no_prefix, k.acc_no_suffix = "https://x", "1", "01"
+        monkeypatch.setattr(k, "_get_headers", lambda tr: {}, raising=False)
+
+        monkeypatch.setattr(kis_api.requests, "get", lambda *a, **kw: Resp({"rt_cd": "0", "output1": []}))
+        assert k.get_balance() == {"output1": [], "_failed_exchanges": []}
+
+        monkeypatch.setattr(kis_api.requests, "get", lambda *a, **kw: Resp({"rt_cd": "1", "msg1": "err"}))
+        assert k.get_balance() is None
+
     def test_signal_ignores_todays_partial_bar(self, rb):
         """백테스트는 't일 종가 판단 → t+1 체결'. 봇도 오늘 미완성 봉을 쓰면 안 된다."""
         rows = _rows([1, 2, 3])

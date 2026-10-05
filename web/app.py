@@ -1173,6 +1173,11 @@ async def api_status(request: Request):
             "session_active": _hb.get("source") in
                               ("watchloop", "evaluate", "session-prep", "job-enter",
                                "scan", "sentiment"),
+            # [v7.0.1] 세션이 끝났다면 왜 끝났는지 (정상 종료 / 크래시 n회 + 사유).
+            # 장중인데 session_active=false 일 때 로그 없이 원인을 볼 수 있어야 한다.
+            "session_outcome": _hb.get("session_outcome") or {},
+            "us_done": _hb.get("us_done"),
+            "kr_done": _hb.get("kr_done"),
             # 장이 열려 있는데 봇이 멈춰 있으면 healthy 가 아니다.
             "healthy": not (market_status in ("US", "KR") and liveness == "stalled"),
         })

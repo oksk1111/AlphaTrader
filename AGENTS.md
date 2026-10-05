@@ -58,6 +58,12 @@ v6.x 의 DCA 경로(`decision_engine` / `evaluate_and_buy`)는 코드에 그대�
 5. **로테이션 신호는 완성된 봉으로만.** 장중 조회 시 오늘 봉은 미완성이다 (`_completed_closes`).
    백테스트는 "t 종가 판단 → t+1 시가 체결" 이므로 운영도 같아야 한다.
 6. **KIS `tot_evlu_amt` 에 예수금을 더하지 마라.** 이미 포함돼 있다.
+7. **[v7.0.1] "없음"과 "실패"를 같은 값으로 반환하지 마라.** `KisOverseas.get_balance()` 가 보유 0 을
+   `None` 으로 반환해 US 로테이션 세션이 10/1~10/5 매일 크래시했다. 반대로 `None` 을 "보유 0"으로
+   읽으면 조회 실패 시 중복 매수한다. 이제 보유 0 = `{"output1": []}`, 실패 = `None`,
+   일부 거래소 실패 = `_failed_exchanges` (로테이션은 예외).
+8. **[v7.0.1] 세션이 끝난 이유는 `/api/status` 의 `session_outcome` 에 있다.** 장중인데
+   `session_active: false` 면 먼저 그것을 본다. 로그 없이 추론하지 말 것.
 
 ---
 

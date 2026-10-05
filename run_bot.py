@@ -1120,7 +1120,16 @@ def _rotation_account(kis, market):
     """
     bal = kis.get_balance()
     if not bal:
+        # [v7.0.1] KisOverseas.get_balance() 는 이제 보유 0 이면 {'output1': []} 를,
+        # 전 거래소 조회 실패일 때만 None 을 준다. 예전엔 보유 0 도 None 이라
+        # 2026-10-01 배포 이후 US 세션이 매일 여기서 크래시 → 5회 재시도 → 포기했다.
         raise RuntimeError(f"[{market}] 잔고 조회 실패 (응답 없음)")
+    if bal.get('_failed_exchanges'):
+        # 일부 거래소만 실패하면 그 거래소 보유분이 안 보인다 → 이미 가진 걸 또 산다.
+        raise RuntimeError(f"[{market}] 잔고 일부 조회 실패: {bal['_failed_exchanges']}")
+    if market == 'KR' and bal.get('rt_cd') not in (None, '0'):
+        # 실패 응답을 '보유 0 · 현금 0'으로 읽으면 조용히 아무것도 안 하는 세션이 된다.
+        raise RuntimeError(f"[KR] 잔고 조회 실패: {bal.get('msg1')}")
     holdings = {}
     for h in bal.get('output1') or []:
         code = h.get('pdno') if market == 'KR' else (h.get('ovrs_pdno') or h.get('pdno'))
@@ -3603,10 +3612,31 @@ def run_with_recovery():
                 pass
             touch_heartbeat(force=True, market=market_label, source='job-enter')
             job()
+            _record_session_outcome(market_label, ok=True)
             return True, None
         except Exception as e:
             logger.critical(f"{market_label} Job Crashed: {e}", exc_info=True)
+            _record_session_outcome(market_label, ok=False, err=e)
             return False, e
+
+    # [v7.0.1] 세션이 '왜' 끝났는지를 heartbeat 에 남긴다. 2026-10-05, 장중인데
+    # session_active=false 인 이유(크래시 반복 → 재시도 소진)를 원격에서 볼 방법이
+    # 없어 코드 정적 분석으로 추론해야 했다. 추론이 필요하면 아직 관측이 아니다.
+    session_outcome = {}
+
+    def _record_session_outcome(market_label, ok, err=None):
+        try:
+            prev = session_outcome.get(market_label) or {}
+            key = market_clock.session_key(market_label)
+            crashes = (prev.get('crashes', 0) if prev.get('session') == key else 0) + (0 if ok else 1)
+            session_outcome[market_label] = {
+                'session': key, 'ok': ok, 'crashes': crashes,
+                'error': None if ok else f"{type(err).__name__}: {err}"[:200],
+                'at': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            }
+            touch_heartbeat(force=True, session_outcome=dict(session_outcome))
+        except Exception as _e:
+            logger.error(f"[Heartbeat] 세션 결과 기록 실패: {_e}")
 
     # --- Startup Check (runs once at boot) ---
     kst = pytz.timezone('Asia/Seoul')
