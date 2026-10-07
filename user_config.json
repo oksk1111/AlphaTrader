@@ -142,7 +142,7 @@
             "liquidate_non_universe": true
         },
         "us": {
-            "_comment": "3x 레버리지 제외 — 실데이터에서 3x+1x DCA 는 CAGR -12.4%/MDD -79.5%, 3x 포함 로테이션도 MDD -69%. 시장필터는 US 에서 V자 반등마다 휩쏘해 끔.",
+            "_comment": "v7.0.3: SPY/QQQ/SMH 가 모두 $600+ 라 $586 예수금으로 1주도 매수 불가 → IWM($281)/XLK($202) 추가. 5종목 중 모멘텀 상위 2개 보유. 프로덕션 배포 후 scripts/backtest_real.py 로 검증 필요.",
             "universe": [
                 {
                     "symbol": "SPY",
@@ -155,6 +155,14 @@
                 {
                     "symbol": "SMH",
                     "exchange": "NAS"
+                },
+                {
+                    "symbol": "IWM",
+                    "exchange": "AMS"
+                },
+                {
+                    "symbol": "XLK",
+                    "exchange": "AMS"
                 }
             ],
             "benchmark": "SPY",
