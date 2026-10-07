@@ -1317,6 +1317,15 @@ def run_rotation_session(market, user_config):
         r = safe_sell(kis, market, code, h['qty'], h.get('exchange'), reason=f"rotation:{reason}")
         if r.get('success'):
             sold.append(code)
+            _pnl = (h['price'] / h['avg'] - 1) * 100 if h['avg'] > 0 else 0
+            _cur = telegram.fmt_currency(h['price'] * h['qty'], market)
+            _avg_s = telegram.fmt_currency(h['avg'], market)
+            send_alert(
+                f"🔴 [{market}] 매도 체결\n"
+                f"{code} {h['qty']}주 × {telegram.fmt_currency(h['price'], market)} = {_cur}\n"
+                f"평단 {_avg_s} → {telegram.fmt_pnl(_pnl)}\n"
+                f"사유: {reason}"
+            )
         else:
             send_alert(f"🚨 [{market}] {code} 로테이션 매도 실패: {r.get('error')}", is_error=True)
 
@@ -1381,6 +1390,12 @@ def run_rotation_session(market, user_config):
                 logger.info(f"[{code}] ✅ 로테이션 매수 성공 ({qty}주)")
                 bought.append(code)
                 cash -= qty * unit
+                _amt = telegram.fmt_currency(qty * price, market)
+                send_alert(
+                    f"🟢 [{market}] 매수 체결\n"
+                    f"{code} {qty}주 × {telegram.fmt_currency(price, market)} = {_amt}\n"
+                    f"슬롯 목표 {telegram.fmt_currency(per_slot, market)}"
+                )
             else:
                 err = (res or {}).get('msg1') or 'no response'
                 logger.error(f"[{code}] 로테이션 매수 주문 실패: {err}")
@@ -1396,9 +1411,41 @@ def run_rotation_session(market, user_config):
     ms['last_plan'] = plan.summary()
     _save_rotation_state(state)
 
-    if sold or bought:
-        send_alert(f"🔁 [{market}] 로테이션 {'리밸런싱' if rebalance_due else '리스크 청산'}\n"
-                   f"매도: {sold or '-'}\n매수: {bought or '-'}\n{plan.summary()}")
+    # --- [v7.0.3] 세션 요약: 거래 유무와 관계없이 항상 발송 ---
+    _cur = lambda v: telegram.fmt_currency(v, market)
+    _summary_lines = [f"🔁 [{market}] 로테이션 세션 {'리밸런싱' if rebalance_due else day_label}"]
+    _summary_lines.append(f"{'🟢 RISK-ON' if risk_on else '🔴 RISK-OFF (현금화)'}")
+    if sold:
+        _summary_lines.append(f"매도: {', '.join(sold)}")
+    if bought:
+        _summary_lines.append(f"매수: {', '.join(bought)}")
+    if buy_fail:
+        _summary_lines.append("⚠️ 매수 실패:")
+        for _fc in buy_fail[:5]:
+            _summary_lines.append(f"  · {_fc}: {fail_reason.get(_fc, '알 수 없음')}")
+    if not sold and not bought and not buy_fail:
+        if not risk_on:
+            _summary_lines.append("시장필터 RISK-OFF → 신규 매수 없음")
+        elif not rebalance_due and not ms.get('pending_buys'):
+            _remaining = max(0, rebalance_days - int(ms.get('sessions_since_rebalance', 0)))
+            _summary_lines.append(f"유지일 — 다음 리밸런싱까지 {_remaining}세션")
+        else:
+            _summary_lines.append("편입 대상 없음 (모든 슬롯 충족)")
+    _summary_lines.append(f"현금: {_cur(cash)} | 평가: {_cur(equity)}")
+    # 보유 종목 P&L
+    if holdings:
+        _h_lines = []
+        for _hc, _hv in holdings.items():
+            _hp = (_hv['price'] / _hv['avg'] - 1) * 100 if _hv.get('avg', 0) > 0 else 0
+            _h_lines.append(f"{_hc} {_hv['qty']}주 {telegram.fmt_pnl(_hp)}")
+        _summary_lines.append(f"보유: {' / '.join(_h_lines)}")
+    else:
+        _summary_lines.append("보유: 없음")
+    # 순위 상위 (간략)
+    _top3 = [f"{t}({s:+.2f})" for t, s in plan.ranking[:3]]
+    if _top3:
+        _summary_lines.append(f"순위: {', '.join(_top3)}")
+    send_alert('\n'.join(_summary_lines))
 
     # --- 6) 종가 기준 비상손절 (prism-insight: 장중 꼬리는 매도 사유가 아니다) ---
     stop_sold = []
@@ -1416,7 +1463,37 @@ def run_rotation_session(market, user_config):
                     r = safe_sell(kis, market, code, h['qty'], h.get('exchange'), reason='rotation:close_stop')
                     if r.get('success'):
                         stop_sold.append(code)
-                        send_alert(f"🛑 [{market}] {code} 종가 기준 손절 ({pnl:.1f}%)")
+                        _loss_amt = _cur(h['qty'] * h['price'])
+                        send_alert(
+                            f"🛑 [{market}] 종가 손절\n"
+                            f"{code} {h['qty']}주 ({pnl:.1f}%)\n"
+                            f"금액: {_loss_amt}"
+                        )
+
+    # --- 6-1) [v7.0.3] 장 마감 포트폴리오 요약 ---
+    try:
+        _final_h, _final_cash, _final_eq, _ = _rotation_account(kis, market, exch_of)
+        _cash_pct = (_final_cash / _final_eq * 100) if _final_eq > 0 else 100
+        _close_lines = [f"📊 [{market}] 장 마감 포트폴리오", "━━━━━━━━━━━━"]
+        _close_lines.append(f"총 평가: {_cur(_final_eq)}")
+        _close_lines.append(f"현금: {_cur(_final_cash)} ({_cash_pct:.0f}%)")
+        if _final_h:
+            _close_lines.append("보유:")
+            for _fc2, _fv in _final_h.items():
+                _fp = (_fv['price'] / _fv['avg'] - 1) * 100 if _fv.get('avg', 0) > 0 else 0
+                _fpnl_amt = _fv['value'] - (_fv['avg'] * _fv['qty']) if _fv.get('avg', 0) > 0 else 0
+                _close_lines.append(
+                    f"├ {_fc2} {_fv['qty']}주 × {_cur(_fv['price'])} "
+                    f"→ {telegram.fmt_pnl(_fp)} ({_cur(_fpnl_amt)})"
+                )
+        else:
+            _close_lines.append("보유: 없음 (전액 현금)")
+        _trade_cnt = len(bought) + len(sold) + len(stop_sold)
+        _close_lines.append(f"오늘 거래: 매수 {len(bought)}건 / 매도 {len(sold) + len(stop_sold)}건")
+        _close_lines.append("━━━━━━━━━━━━")
+        send_alert('\n'.join(_close_lines))
+    except Exception as _close_e:
+        logger.error(f"[{market}] 장 마감 요약 발송 실패: {_close_e}")
 
     # --- 7) 세션 기록 — 무매수 감시는 '사야 했는데 못 산' 경우만 센다 ---
     try:
@@ -3925,10 +4002,26 @@ if __name__ == "__main__":
     logger.info(f"US Targets: {TARGET_TICKERS_US}")
     logger.info(f"KR Targets: {TARGET_TICKERS_KR}")
     logger.info(f"Safe Mode: {IS_SAFE_MODE}, Strategy: {STRATEGY_MODE}, Auto: {user_config.get('auto_strategy', False)}")
-    
+
+    # [v7.0.3] 텔레그램 설정 확인 — 미설정 시 모든 알림이 소실된다
+    if not telegram.is_configured():
+        logger.critical(
+            "🚨 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다. "
+            "모든 텔레그램 알림이 발송되지 않습니다! .env 파일을 확인하세요."
+        )
+    else:
+        logger.info("📱 텔레그램 알림 활성 (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID 확인됨)")
+
     # Startup notification
     auto_label = "🤖 Auto" if user_config.get('auto_strategy', False) else "Manual"
-    send_alert(f"🚀 Bot Started!\nMode: {'Safe' if IS_SAFE_MODE else 'Leverage'}\nStrategy: {STRATEGY_MODE.upper()}\n전략모드: {auto_label}")
+    _tg_status = "📱 텔레그램 ON" if telegram.is_configured() else "⚠️ 텔레그램 미설정"
+    send_alert(
+        f"🚀 Bot Started!\n"
+        f"Mode: {'Safe' if IS_SAFE_MODE else 'Leverage'}\n"
+        f"Strategy: {STRATEGY_MODE.upper()}\n"
+        f"전략모드: {auto_label}\n"
+        f"{_tg_status}"
+    )
     
     # Heartbeat & Data Collection
     def heartbeat():

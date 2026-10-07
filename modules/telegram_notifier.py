@@ -28,21 +28,42 @@ class TelegramNotifier:
         """텔레그램 설정이 완료되었는지 확인"""
         return bool(self.bot_token and self.chat_id)
     
+    # --- 포맷 헬퍼 -----------------------------------------------------------
+    @staticmethod
+    def fmt_currency(amount: float, market: str = 'KR') -> str:
+        """통화 포맷. KR → ₩1,234,567 / US → $1,234.56"""
+        if market == 'US':
+            return f"${amount:,.2f}"
+        return f"₩{amount:,.0f}"
+
+    @staticmethod
+    def fmt_pnl(pnl_pct: float) -> str:
+        """P&L 포맷. 📈 +2.3% 또는 📉 -1.1%"""
+        emoji = "📈" if pnl_pct >= 0 else "📉"
+        return f"{emoji} {pnl_pct:+.1f}%"
+
+    # --- 메시지 발송 --------------------------------------------------------
+    MAX_MESSAGE_LEN = 4000  # 텔레그램 한도 4096, 여유분 확보
+
     def send_message(self, message: str, parse_mode: str = "HTML") -> bool:
         """
         텔레그램 메시지 발송
-        
+
         Args:
             message: 발송할 메시지
             parse_mode: 메시지 형식 (HTML, Markdown, MarkdownV2)
-            
+
         Returns:
             성공 여부
         """
         if not self.is_configured():
             print("⚠️ Telegram not configured. Skipping notification.")
             return False
-            
+
+        # 텔레그램 메시지 길이 제한 (4096자)
+        if len(message) > self.MAX_MESSAGE_LEN:
+            message = message[:self.MAX_MESSAGE_LEN - 20] + "\n… (메시지 잘림)"
+
         try:
             url = f"{self.base_url}/sendMessage"
             payload = {
@@ -51,13 +72,19 @@ class TelegramNotifier:
                 "parse_mode": parse_mode
             }
             response = requests.post(url, json=payload, timeout=10)
-            
+
             if response.status_code == 200:
                 return True
             else:
+                # parse_mode 문제일 수 있으므로 plain text로 재시도
+                if parse_mode:
+                    payload["parse_mode"] = ""
+                    retry = requests.post(url, json=payload, timeout=10)
+                    if retry.status_code == 200:
+                        return True
                 print(f"❌ Telegram API error: {response.text}")
                 return False
-                
+
         except Exception as e:
             print(f"❌ Failed to send Telegram message: {e}")
             return False
