@@ -16,4 +16,6 @@ websockets
 PyJWT
 python-multipart
 backports.zoneinfo; python_version < "3.9"
-yfinance
+yfinance<0.2.54; python_version < "3.9"
+multitasking<0.0.12; python_version < "3.9"
+yfinance; python_version >= "3.9"
