@@ -25,6 +25,7 @@ from modules.brokers.models import (
 
 BASE_URL = "https://openapi.tossinvest.com"
 TOKEN_FILE = Path("database/toss_token_cache.json")
+_TOKEN_FILE_LOCK = threading.Lock()
 _ORDER_STATE = {
     "PENDING": OrderState.PENDING,
     "PENDING_CANCEL": OrderState.PENDING,
@@ -109,27 +110,44 @@ class TossBroker(Broker):
             if not self.client_id or not self.client_secret:
                 raise BrokerError("TOSS_CLIENT_ID/TOSS_CLIENT_SECRET이 설정되지 않았습니다",
                                   code="missing-credentials")
-            try:
-                response = self.session.post(
-                    self.base_url + "/oauth2/token",
-                    data={
-                        "grant_type": "client_credentials",
-                        "client_id": self.client_id,
-                        "client_secret": self.client_secret,
-                    },
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
-                    timeout=10,
-                )
-            except requests.RequestException as exc:
-                raise BrokerError(f"토스 토큰 발급 연결 실패: {exc}",
-                                  code="network-error", retryable=True) from exc
-            if response.status_code != 200:
-                self._raise_api_error(response)
-            data = response.json()
-            self.access_token = data["access_token"]
-            self.token_expiry = time.time() + int(data.get("expires_in", 0))
-            self._save_token()
-            return self.access_token
+            # 토큰은 클라이언트당 하나만 유효하다. 봇/대시보드/수집기가 동시에 새 토큰을
+            # 발급하면 서로를 token-revoked로 만든다. 프로세스 간 flock 아래에서 캐시를
+            # 한 번 더 읽고, 정말 필요한 한 프로세스만 발급한다.
+            TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+            lock_file = TOKEN_FILE.with_suffix(".lock")
+            with _TOKEN_FILE_LOCK, open(lock_file, "a+") as lock:
+                try:
+                    import fcntl
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                except ImportError:
+                    fcntl = None
+                try:
+                    if not force and self._load_token():
+                        return self.access_token
+                    try:
+                        response = self.session.post(
+                            self.base_url + "/oauth2/token",
+                            data={
+                                "grant_type": "client_credentials",
+                                "client_id": self.client_id,
+                                "client_secret": self.client_secret,
+                            },
+                            headers={"Content-Type": "application/x-www-form-urlencoded"},
+                            timeout=10,
+                        )
+                    except requests.RequestException as exc:
+                        raise BrokerError(f"토스 토큰 발급 연결 실패: {exc}",
+                                          code="network-error", retryable=True) from exc
+                    if response.status_code != 200:
+                        self._raise_api_error(response)
+                    data = response.json()
+                    self.access_token = data["access_token"]
+                    self.token_expiry = time.time() + int(data.get("expires_in", 0))
+                    self._save_token()
+                    return self.access_token
+                finally:
+                    if fcntl is not None:
+                        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
     def _headers(self, account: bool = False) -> Dict[str, str]:
         headers = {"Authorization": f"Bearer {self.authenticate()}"}

@@ -14,6 +14,7 @@ test_*.py
 !tests/test_*.py
 database/kis_token_cache.json
 database/toss_token_cache.json
+database/toss_token_cache.lock
 database/market_data.sqlite*
 database/order_state.json
 database/intraday_gate.json

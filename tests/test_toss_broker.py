@@ -53,6 +53,17 @@ def test_paper_mode_is_rejected_because_toss_has_no_documented_sandbox():
         TossBroker("client", "secret", "1", "paper", Session())
 
 
+def test_authentication_reuses_shared_token_cache(tmp_path, monkeypatch):
+    from modules.brokers import toss
+    monkeypatch.setattr(toss, "TOKEN_FILE", tmp_path / "token.json")
+    first_session = Session()
+    first_session.queue(Response({"access_token": "shared", "expires_in": 86400}))
+    assert TossBroker("client", "secret", "1", "shadow", first_session).authenticate() == "shared"
+    second_session = Session()
+    assert TossBroker("client", "secret", "1", "shadow", second_session).authenticate() == "shared"
+    assert second_session.calls == []
+
+
 def test_empty_holdings_is_success_not_failure():
     s = Session()
     s.queue(
