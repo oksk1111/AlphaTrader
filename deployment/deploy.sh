@@ -72,9 +72,9 @@ log "🚀 Starting services..."
 nohup "$PYTHON_BIN" run_bot.py >> database/bot_stdout.log 2>&1 &
 sleep 2
 
-# Toss shadow collector: credentials are configured and execution mode is shadow.
-# It only records realtime data and never submits an order.
-if grep -q '^MARKET_DATA_BROKER=toss' .env 2>/dev/null && grep -q '^EXECUTION_MODE=shadow' .env 2>/dev/null; then
+# Toss shadow collector: 장중 전략 검증용 실시간 데이터 수집 (EXECUTION_MODE 와 무관하게
+# TossBroker(execution_mode="shadow") 로 돌아 주문을 절대 내지 않는다). 토스 자격증명이 있을 때만.
+if grep -q '^TOSS_CLIENT_ID=.' .env 2>/dev/null; then
     pkill -f "python.*modules.shadow_collector" 2>/dev/null || true
     nohup "$PYTHON_BIN" -m modules.shadow_collector >> database/toss_shadow_stdout.log 2>&1 &
     log "  - Toss shadow collector started"

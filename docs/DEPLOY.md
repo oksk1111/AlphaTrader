@@ -1,6 +1,7 @@
 # 배포 · 운영 가이드
 
-Oracle Cloud(Ubuntu) 한 대에서 봇(`run_bot.py`)과 대시보드(FastAPI `web.app`, 포트 8501)를 돌린다.
+Oracle Cloud(Ubuntu) 한 대에서 봇(`run_bot.py`), 대시보드(FastAPI `web.app`, 포트 8501),
+토스 실시간 수집기(`modules.shadow_collector`, 주문 안 함)를 돌린다.
 `main` 에 푸시하면 GitHub Actions 가 검증 후 자동 배포한다.
 
 ## 1. 자동 배포 (CI/CD)
@@ -20,11 +21,22 @@ Oracle Cloud(Ubuntu) 한 대에서 봇(`run_bot.py`)과 대시보드(FastAPI `we
 | `ORACLE_HOST` / `ORACLE_USERNAME` / `ORACLE_SSH_KEY` | ✅ | 배포 SSH 접속 |
 | `TOSS_CLIENT_ID` | ✅ | 토스증권 Open API 클라이언트 ID |
 | `TOSS_CLIENT_SECRET` | ✅ | 토스증권 Open API 시크릿 |
-| `TOSS_ACCOUNT_SEQ` | 선택 | 계좌 식별값. 비우면 첫 종합매매(BROKERAGE) 계좌 자동 선택 |
+| `TOSS_ACCOUNT_SEQ` | 선택 | 계좌 식별값. 비우면 종합매매(BROKERAGE) 계좌가 하나일 때 자동 선택 |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | 권장 | 알림 |
+| `LOGIN_PASSWORD` | 권장 | 대시보드 비밀번호 로그인 (미설정 시 비활성) |
+
+### GitHub Variables (같은 화면의 Variables 탭)
+
+| 이름 | 값 | 의미 |
+|------|----|------|
+| `EXECUTION_MODE` | `shadow` (미설정 시 기본) | 판단·로그·알림은 전부 돌고 **주문만 보내지 않는다**. 알림에 `SHADOW` 표시 |
+| | `live` | **실주문.** 토스는 공식 모의투자 서버가 없다 — shadow 로 며칠 확인한 뒤 전환할 것 |
+
+`EXECUTION_MODE` 는 시크릿이 아니라 변수다(값을 로그에서 확인할 수 있어야 한다). 배포 로그에
+`ℹ️ EXECUTION_MODE=...` 줄이 찍힌다. 되돌리려면 변수를 `shadow` 로 바꾸고 재배포(Actions → Run workflow).
 
 - 시크릿은 **값이 있을 때만** 서버 `.env` 의 해당 줄을 덮어쓴다. 등록 전에 배포가 돌아도 기존 값이 지워지지 않는다.
-- 배포 시 서버 `.env` 의 `KIS_*` 줄은 삭제된다 (v8.0 에서 한국투자증권 API 제거).
+- 배포 시 서버 `.env` 의 `KIS_*` · `BROKER` · `MARKET_DATA_BROKER` 줄은 삭제된다 (v8.0 에서 한국투자증권 API 제거).
 - `GEMINI_API_KEY`, `DASHBOARD_API_KEY` 등 나머지 키는 서버 `.env` 에 직접 둔다 (`.env.example` 참고).
 
 ### 토스증권 쪽 준비 (GitHub 밖)
@@ -64,7 +76,10 @@ tail -f database/deploy.log                # 배포 기록
 ```
 
 - 장중인데 `session_active: false` 면 먼저 `session_outcome` 을 본다 (AGENTS v7.0.1 규칙 8).
-- 로그의 `[TOSS]` 는 REST, `[TOSS-WS]` 는 웹소켓(구독 확정·주문 이벤트·재연결)이다.
+- 로그의 `[TOSS-KR]`/`[TOSS-US]` 는 주문·잔고(체결 상태 포함), `Toss WS` 는 웹소켓 재연결이다.
+- 수집기 상태: `database/toss_stream_status.json` (연결 · 메시지 나이 · 수집 세션 수). 로그 `database/toss_shadow_stdout.log`.
+- 토스 웹소켓은 **계정당 동시 연결 2개**다 — 수집기 1 + 봇 세션 1. 로컬에서 하나 더 열면 가장 오래된
+  연결(수집기)이 끊긴다.
 
 ## 4. 문제 해결 (토스 에러 코드)
 

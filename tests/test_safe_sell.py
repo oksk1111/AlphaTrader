@@ -155,7 +155,7 @@ class TestSafeSell(unittest.TestCase):
 
     def test_domestic_tick_size(self):
         """KRX 호가단위 헬퍼 검증 (지정가 fallback 이 호가단위 위반으로 거부되지 않게)."""
-        from modules.toss_api import TossDomestic
+        from modules.brokers.compat import TossDomestic
 
         cases = [
             (1500, 1),

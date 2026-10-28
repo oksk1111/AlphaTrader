@@ -230,7 +230,7 @@ def take_asset_snapshot(broker_kr, broker_us):
         "total_krw": 0
     }
     
-    from modules.toss_api import usd_krw as _usd_krw
+    from modules.brokers.compat import usd_krw as _usd_krw
     usd_krw = _usd_krw()  # 토스 환율 API
     snapshot["usd_krw"] = usd_krw
     
@@ -373,8 +373,8 @@ def get_asset_history():
 
 
 if __name__ == "__main__":
-    from modules.toss_api import TossOverseas
-    from modules.toss_api import TossDomestic
+    from modules.brokers.compat import TossOverseas
+    from modules.brokers.compat import TossDomestic
     
     broker_us = TossOverseas()
     broker_kr = TossDomestic()

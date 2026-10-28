@@ -178,10 +178,10 @@
         }
     },
     "broker": {
-        "execution_provider": "kis",
+        "execution_provider": "toss",
         "market_data_provider": "toss",
         "execution_mode": "shadow",
-        "_comment": "1단계: 기존 KIS 실주문은 유지하고 Toss는 shadow 시세 수집만 한다. 정규 브로커 이관 전 Toss live 주문 금지"
+        "_comment": "v8.0: 한국투자증권 제거, 주문·시세 모두 토스. 실제 동작은 서버 .env 의 EXECUTION_MODE(shadow=주문 미전송 기본, live=실주문)가 정한다 — 이 값은 표시용 기본값"
     },
     "intraday_strategy": {
         "_comment": "웹소켓 기반 장중 ETF 전략. shadow 데이터 검증 전 live 활성화 금지.",

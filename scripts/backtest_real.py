@@ -101,7 +101,7 @@ def yf_symbol(code: str, market: str) -> str:
 
 
 def _download_toss(code: str, market: str) -> Optional[pd.DataFrame]:
-    from modules.toss_api import TossDomestic, TossOverseas
+    from modules.brokers.compat import TossDomestic, TossOverseas
     rows = (TossOverseas() if market == "US" else TossDomestic()).get_daily_history(
         code, bars=3500, max_pages=20)
     if not rows:
@@ -522,7 +522,7 @@ def robustness(market: str, refresh: bool, source: str) -> None:
     (AGENTS v7.0 규칙 2). 운영설정과 '방어자산 없는 v7.0'을 나란히 찍는다.
     """
     rc = _load_rotation(market)
-    uni = list(KR_ETFS) if market == "KR" else list(US_1X)
+    uni = list(dict.fromkeys(_operational_universe(market) + list(KR_ETFS if market == "KR" else US_1X)))
     cap = 2_700_000.0 if market == "KR" else 2000.0
     data = load_prices(uni + rc.get("defensive", []), market, "2017-01-01", refresh, source)
     uni = [c for c in uni if c in data]

@@ -58,7 +58,7 @@ def _normalize_ohlc(raw):
 
 def _fetch_ohlc_kr(ticker, days):
     try:
-        from modules.toss_api import TossDomestic
+        from modules.brokers.compat import TossDomestic
         broker = TossDomestic()
         raw = broker.get_daily_ohlc(ticker, days=days)
         return _normalize_ohlc(raw)
@@ -69,7 +69,7 @@ def _fetch_ohlc_kr(ticker, days):
 
 def _fetch_ohlc_us(ticker, days, exchange="NAS"):
     try:
-        from modules.toss_api import TossOverseas
+        from modules.brokers.compat import TossOverseas
         broker = TossOverseas()
         raw = broker.get_daily_ohlc(ticker, exchange, days=days)
         return _normalize_ohlc(raw)

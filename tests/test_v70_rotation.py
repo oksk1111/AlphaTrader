@@ -12,7 +12,7 @@ v7.0 은 참고 저장소 두 곳의 구조를 옮겼다:
 
 층별로:
   1. 순수 판단 (modules/momentum_rotation)
-  2. 배선 (run_bot.run_rotation_session — 가짜 KIS 로 실제 주문 경로까지)
+  2. 배선 (run_bot.run_rotation_session — 가짜 브로커로 실제 주문 경로까지)
   3. 관측 (대시보드 로그 소스 / 총자산 이중계산)
   4. 검증 루프가 운영 설정을 읽는가
 """
@@ -313,7 +313,7 @@ class TestSessionWiring:
         fake = FakeKR(dict(UNIVERSE), cash=2_000_000)
         original = fake.get_daily_history
         fake.get_daily_history = lambda code, **kwargs: [] if code == "B" else original(code, **kwargs)
-        monkeypatch.setattr(rb, "KisDomestic", lambda: fake)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
         rb.run_rotation_session("KR", _cfg())
         assert fake.buys == []
 
@@ -321,7 +321,7 @@ class TestSessionWiring:
         fake = FakeKR(dict(UNIVERSE), cash=2_000_000)
         original = fake.get_daily_history
         fake.get_daily_history = lambda code, **kwargs: [] if code == "BENCH" else original(code, **kwargs)
-        monkeypatch.setattr(rb, "KisDomestic", lambda: fake)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
         with pytest.raises(RuntimeError, match="벤치마크"):
             rb.run_rotation_session("KR", _cfg())
 

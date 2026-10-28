@@ -1,224 +1,227 @@
 """
-[v8.0] 토스증권 어댑터 회귀 테스트 — 네트워크 없이 TossSession.request 를 대역으로 바꿔 검증한다.
+[v8.0] 토스 이관 회귀 테스트 — run_bot 호환 계층(brokers.compat) + 실시간 캐시 fast path.
 
 잠그는 것:
   - 규칙 7/9: 보유 0 ≠ 조회 실패 (빈 목록 vs None), 수량·외화 조회 실패 = None
-  - 규칙 6: KR tot_evlu_amt 는 예수금을 포함, KR 금액은 int() 로 읽히는 정수 문자열
+  - 규칙 6: KR tot_evlu_amt 는 예수금 포함, KR 금액은 int() 로 읽히는 정수 문자열
   - 규칙 11: US 매수 = 현재가 +1% 지정가 (run_bot 의 1주 판정과 같은 단가)
-  - 주문 실패 → rt_cd '1' + 토스 에러코드(msg_cd), 계좌 제한 코드는 run_bot 이 인식
-  - 속도: 웹소켓 체결가·주문 이벤트가 있으면 REST 를 부르지 않는다
-  - 토큰: 다른 프로세스가 새로 받은 토큰을 재사용 (서로 revoke 하는 루프 방지)
+  - 접수 ≠ 체결: 거부·취소(체결 0)는 rt_cd '1', 부분체결은 체결분만, shadow 는 표시
+  - 속도: 웹소켓 체결가·주문 이벤트가 있으면 REST 를 기다리지 않는다
 """
+import json
 import os
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from modules import toss_api  # noqa: E402
-from modules.toss_api import TossApiError, TossDomestic, TossOverseas  # noqa: E402
+from modules.brokers import compat, toss_stream  # noqa: E402
+from modules.brokers.models import (  # noqa: E402
+    AccountSnapshot, Bar, BrokerError, ExecutionMode, Holding, Market, OrderAck, OrderState, Quote,
+)
 
 
-class FakeSession:
-    def __init__(self, routes):
-        self.routes = routes          # path -> result | Exception | callable(params, body)
-        self.calls = []
+def holding(sym, market, qty, last, avg, pl, rate):
+    return Holding(sym, sym, market, "USD" if market == Market.US else "KRW", qty, qty,
+                   avg, last, qty * last, pl, rate)
+
+
+SNAP = AccountSnapshot("1", {"KRW": 1234567.0, "USD": 50.5}, [
+    holding("SPY", Market.US, 2.5, 600, 550, 125, 9.09),
+    holding("069500", Market.KR, 10, 40000, 38000, 20000, 5.26),
+])
+
+
+class FakeBroker:
+    def __init__(self, mode="live", snapshot=SNAP, ack=None, error=None):
+        self.execution_mode = ExecutionMode(mode)
         self.base_url = "https://x"
+        self.account_seq = "1"
+        self.snapshot, self.ack, self.error = snapshot, ack, error
+        self.orders, self.requests = [], []
 
-    def request(self, method, path, group, params=None, body=None, account=False, idempotent=None):
-        self.calls.append((method, path, params, body))
-        r = self.routes.get(path)
-        if isinstance(r, Exception):
-            raise r
-        return r(params, body) if callable(r) else r
-
-    def token(self):
+    def authenticate(self, force=False):
         return "t"
 
+    def account_snapshot(self):
+        if isinstance(self.snapshot, Exception):
+            raise self.snapshot
+        return self.snapshot
 
-def client(cls, routes):
-    c = cls.__new__(cls)
-    c.s = FakeSession(routes)
-    c.url = "https://x"
-    return c
+    def _buying_power(self, currency):
+        if isinstance(self.snapshot, Exception):
+            raise self.snapshot
+        return self.snapshot.cash[currency]
+
+    def quote(self, symbol, market):
+        return Quote(symbol, market, "USD", 500.0)
+
+    def bars(self, symbol, market, interval="1d", count=200, before=None):
+        return getattr(self, "pages", {}).get(before, [])
+
+    def sellable_quantity(self, symbol):
+        if self.error:
+            raise self.error
+        return 7.9
+
+    def submit_and_wait(self, order, timeout_sec=15.0, poll_sec=0.5):
+        self.orders.append(order)
+        if self.error:
+            raise self.error
+        return self.ack or OrderAck("oid", "cid", OrderState.FILLED, order.symbol,
+                                    order.quantity, 500.0)
+
+    def _request(self, method, path, **kw):
+        self.requests.append((method, path, kw))
+        return {"result": {}}
 
 
-def item(sym, mc, qty, last, avg, mv, pl, rate, buy):
-    return {"symbol": sym, "name": sym, "marketCountry": mc, "currency": "USD" if mc == "US" else "KRW",
-            "quantity": str(qty), "lastPrice": str(last), "averagePurchasePrice": str(avg),
-            "marketValue": {"amount": str(mv), "purchaseAmount": str(buy)},
-            "profitLoss": {"amount": str(pl), "rate": str(rate)}}
-
-
-HOLDINGS = {"items": [item("SPY", "US", 2.5, 600, 550, 1500, 125, 0.0909, 1375),
-                      item("069500", "KR", 10, 40000, 38000, 400000, 20000, 0.0526, 380000)]}
-
-
-@pytest.fixture(autouse=True)
-def _clean():
-    toss_api.LIVE_PRICES.clear()
-    toss_api.ORDER_EVENTS.clear()
-    yield
+@pytest.fixture
+def use(monkeypatch):
+    def _use(fake, cls):
+        monkeypatch.setattr(compat, "_BROKER", fake)
+        return cls()
+    return _use
 
 
 class TestBalance:
-    def test_us_empty_is_empty_list_not_none(self):
-        c = client(TossOverseas, {"/api/v1/holdings": {"items": []}})
+    def test_us_empty_is_empty_list_not_none(self, use):
+        c = use(FakeBroker(snapshot=AccountSnapshot("1", {"KRW": 0, "USD": 0}, [])), compat.TossOverseas)
         assert c.get_balance()["output1"] == []
 
-    def test_us_failure_is_none(self):
-        c = client(TossOverseas, {"/api/v1/holdings": TossApiError(500, "internal-error", "x")})
+    def test_failure_is_none(self, use):
+        c = use(FakeBroker(snapshot=BrokerError("down", code="internal-error")), compat.TossOverseas)
         assert c.get_balance() is None
+        assert c.get_foreign_balance() is None          # 현금 0 이 아니다
 
-    def test_us_filters_market_and_floors_fractional(self):
-        c = client(TossOverseas, {"/api/v1/holdings": HOLDINGS})
-        rows = c.get_balance()["output1"]
+    def test_us_filters_market_and_floors_fractional(self, use):
+        rows = use(FakeBroker(), compat.TossOverseas).get_balance()["output1"]
         assert [r["ovrs_pdno"] for r in rows] == ["SPY"]
         assert rows[0]["ovrs_cblc_qty"] == "2" and rows[0]["now_pric2"] == "600"
 
-    def test_kr_total_includes_cash_and_amounts_are_int_strings(self):
-        c = client(TossDomestic, {"/api/v1/holdings": HOLDINGS,
-                                  "/api/v1/buying-power": {"currency": "KRW", "cashBuyingPower": "1234567"}})
-        bal = c.get_balance()
+    def test_kr_total_includes_cash_and_amounts_are_int_strings(self, use):
+        bal = use(FakeBroker(), compat.TossDomestic).get_balance()
         o2 = bal["output2"][0]
         assert [r["pdno"] for r in bal["output1"]] == ["069500"]
-        assert int(o2["tot_evlu_amt"]) == 400000 + 1234567      # 규칙 6
-        for k in ("dnca_tot_amt", "prvs_rcdl_excc_amt", "ord_psbl_cash", "evlu_pfls_smtl_amt"):
-            int(o2[k])                                            # 호출부가 int(str) 로 읽는다
-        assert int(bal["output1"][0]["hldg_qty"]) == 10
+        assert int(o2["tot_evlu_amt"]) == 400000 + 1234567          # 규칙 6
+        for key in ("dnca_tot_amt", "prvs_rcdl_excc_amt", "ord_psbl_cash", "evlu_pfls_smtl_amt"):
+            int(o2[key])                                              # 호출부가 int(str) 로 읽는다
 
-    def test_kr_cash_failure_fails_whole_balance(self):
-        """현금을 0 으로 읽으면 '자금 부족'으로 기록돼 원인이 가려진다."""
-        c = client(TossDomestic, {"/api/v1/holdings": HOLDINGS,
-                                  "/api/v1/buying-power": TossApiError(500, "internal-error", "x")})
-        assert c.get_balance() is None
-
-    def test_foreign_balance_failure_is_none_not_zero(self):
-        c = client(TossOverseas, {"/api/v1/buying-power": TossApiError(0, "network-error", "x")})
-        assert c.get_foreign_balance() is None
-        c = client(TossOverseas, {"/api/v1/buying-power": {"currency": "USD", "cashBuyingPower": "0"}})
-        assert c.get_foreign_balance() == {"deposit": 0.0, "withdraw_possible": 0.0}
-
-    def test_holding_qty_failure_is_none(self):
-        c = client(TossDomestic, {"/api/v1/sellable-quantity": TossApiError(500, "internal-error", "x")})
-        assert c.get_holding_qty("069500") is None
-        c = client(TossDomestic, {"/api/v1/sellable-quantity": {"sellableQuantity": "7"}})
-        assert c.get_holding_qty("069500") == 7
+    def test_holding_qty(self, use):
+        assert use(FakeBroker(), compat.TossDomestic).get_holding_qty("069500") == 7
+        assert use(FakeBroker(error=BrokerError("x", code="internal-error")),
+                   compat.TossDomestic).get_holding_qty("069500") is None
+        assert use(FakeBroker(error=BrokerError("x", code="stock-not-found")),
+                   compat.TossDomestic).get_holding_qty("069500") == 0
 
 
 class TestOrders:
-    def test_us_buy_is_limit_plus_one_percent(self):
-        c = client(TossOverseas, {"/api/v1/prices": [{"symbol": "SPY", "lastPrice": "500.00"}],
-                                  "/api/v1/orders": {"orderId": "oid-1"}})
-        res = c.buy_market_order("SPY", 3, "AMS")
-        body = c.s.calls[-1][3]
-        assert res["rt_cd"] == "0" and res["order_id"] == "oid-1"
-        assert body["orderType"] == "LIMIT" and body["price"] == "505.0" and body["quantity"] == "3"
-        assert body["clientOrderId"].startswith("sniper-")      # 재전송 멱등성 키
+    def test_us_buy_is_limit_plus_one_percent(self, use):
+        fake = FakeBroker()
+        res = use(fake, compat.TossOverseas).buy_market_order("SPY", 3, "AMS")
+        order = fake.orders[-1]
+        assert res["rt_cd"] == "0" and res["filled_qty"] == 3 and not res["shadow"]
+        assert order.order_type.value == "LIMIT" and order.price == 505.0 and order.quantity == 3
 
-    def test_sell_is_market(self):
-        c = client(TossDomestic, {"/api/v1/orders": {"orderId": "oid-2"}})
-        c.sell_market_order("069500", 5)
-        assert c.s.calls[-1][3]["orderType"] == "MARKET"
+    def test_rejected_or_cancelled_without_fill_is_failure(self, use):
+        for state in (OrderState.REJECTED, OrderState.CANCELED):
+            ack = OrderAck("oid", "cid", state, "069500", 0.0)
+            res = use(FakeBroker(ack=ack), compat.TossDomestic).sell_market_order("069500", 5)
+            assert res["rt_cd"] == "1", "접수 후 거부·취소를 체결로 세면 안 된다"
 
-    def test_order_error_maps_to_rt_cd_1_with_toss_code(self):
-        c = client(TossOverseas, {"/api/v1/orders": TossApiError(422, "insufficient-buying-power", "부족")})
-        res = c.sell_market_order("SPY", 1)
+    def test_partial_fill_reports_filled_quantity(self, use):
+        ack = OrderAck("oid", "cid", OrderState.CANCELED, "069500", 3.0, 40000.0)   # 3/5 체결 후 잔량 취소
+        res = use(FakeBroker(ack=ack), compat.TossDomestic).buy_market_order("069500", 5)
+        assert res["rt_cd"] == "0" and res["filled_qty"] == 3 and res["partial"]
+
+    def test_shadow_mode_is_flagged(self, use):
+        ack = OrderAck("shadow-x", "x", OrderState.ACCEPTED, "069500")
+        res = use(FakeBroker(mode="shadow", ack=ack), compat.TossDomestic).buy_market_order("069500", 2)
+        assert res["rt_cd"] == "0" and res["shadow"] and "SHADOW" in res["msg1"]
+
+    def test_broker_error_maps_to_toss_code(self, use):
+        res = use(FakeBroker(error=BrokerError("부족", code="insufficient-buying-power")),
+                  compat.TossOverseas).sell_market_order("SPY", 1)
         assert res["rt_cd"] == "1" and res["msg_cd"] == "insufficient-buying-power"
 
     def test_account_restriction_codes_known_to_bot(self):
-        assert "account-restricted" in toss_api.ACCOUNT_RESTRICTED_CODES
-        assert "prerequisite-required" in toss_api.ACCOUNT_RESTRICTED_CODES
+        import run_bot
+        assert run_bot.ACCOUNT_RESTRICTED_CODES == compat.ACCOUNT_RESTRICTED_CODES
+        assert {"account-restricted", "prerequisite-required"} <= set(compat.ACCOUNT_RESTRICTED_CODES)
 
-    def test_kr_limit_sell_rounds_down_to_tick(self):
-        c = client(TossDomestic, {"/api/v1/orders": {"orderId": "o"}})
-        c.sell_limit_order("069500", 1, 40070.7)
-        assert c.s.calls[-1][3]["price"] == "40050"
-
-
-class TestSpeed:
-    def test_fresh_websocket_price_skips_rest(self):
-        c = client(TossOverseas, {"/api/v1/prices": TossApiError(500, "x", "should not be called")})
-        toss_api.record_trade("SPY", 512.3)
-        assert c.get_current_price("SPY") == 512.3 and c.s.calls == []
-
-    def test_stale_websocket_price_falls_back_to_rest(self):
-        c = client(TossOverseas, {"/api/v1/prices": [{"symbol": "SPY", "lastPrice": "500"}]})
-        toss_api.LIVE_PRICES["SPY"] = (512.3, time.monotonic() - 60)
-        assert c.get_current_price("SPY") == 500.0
-
-    def test_wait_order_returns_on_websocket_event_without_rest(self):
-        c = client(TossOverseas, {"/api/v1/orders/oid": TossApiError(500, "x", "no rest")})
-        toss_api.record_order_event({"orderId": "oid", "status": "FILLED",
-                                     "execution": {"filledQuantity": "3"}})
-        t0 = time.monotonic()
-        snap = c.wait_order("oid", timeout_sec=5)
-        assert snap["status"] == "FILLED" and time.monotonic() - t0 < 0.5
-        assert not any(p.startswith("/api/v1/orders/") for _, p, _, _ in c.s.calls)
-
-    def test_wait_order_falls_back_to_rest(self):
-        c = client(TossOverseas, {"/api/v1/orders/oid": {"orderId": "oid", "status": "REJECTED"}})
-        assert c.wait_order("oid", timeout_sec=3)["status"] == "REJECTED"
+    def test_kr_limit_sell_rounds_down_to_tick(self, use):
+        fake = FakeBroker()
+        use(fake, compat.TossDomestic).sell_limit_order("069500", 1, 40070.7)
+        assert fake.orders[-1].price == 40050
 
 
 class TestDailyBars:
     def test_us_bar_date_is_new_york_trading_day(self):
         # FAQ: 미국 2026-10-05 거래일 → 2026-10-05T13:00:00+09:00 (서머타임)
-        assert toss_api._bar_date("2026-10-05T13:00:00+09:00", "US") == "20261005"
-        assert toss_api._bar_date("2026-12-07T14:00:00+09:00", "US") == "20261207"
-        assert toss_api._bar_date("2026-10-05T00:00:00+09:00", "KR") == "20261005"
+        assert compat._bar_date("2026-10-05T13:00:00+09:00", "US") == "20261005"
+        assert compat._bar_date("2026-12-07T14:00:00+09:00", "US") == "20261207"
+        assert compat._bar_date("2026-10-05T00:00:00+09:00", "KR") == "20261005"
 
-    def test_history_is_oldest_first_and_paginates(self):
-        pages = {None: {"candles": [{"timestamp": "2026-10-02T00:00:00+09:00", "closePrice": "3"},
-                                    {"timestamp": "2026-10-01T00:00:00+09:00", "closePrice": "2"}],
-                        "nextBefore": "2026-09-30T00:00:00+09:00"},
-                 "2026-09-30T00:00:00+09:00": {"candles": [{"timestamp": "2026-09-30T00:00:00+09:00",
-                                                            "closePrice": "1"}], "nextBefore": None}}
-        c = client(TossDomestic, {"/api/v1/candles": lambda p, b: pages[p.get("before")]})
-        rows = c.get_daily_history("069500", bars=10)
+    def test_history_is_oldest_first_and_paginates(self, use):
+        def bar(day, close):
+            return Bar("069500", Market.KR, "KRW", f"2026-{day}T00:00:00+09:00", close, close, close, close, 1, "1d")
+        fake = FakeBroker()
+        page1 = [bar("10-02", 3)] + [bar("10-01", 2)] * 199          # 200개 → 다음 페이지 요청
+        fake.pages = {None: page1, "2026-10-01T00:00:00+09:00": [bar("10-01", 2), bar("09-30", 1)]}
+        rows = use(fake, compat.TossDomestic).get_daily_history("069500", bars=10)
         assert [r["date"] for r in rows] == ["20260930", "20261001", "20261002"]
         assert [r["close"] for r in rows] == [1.0, 2.0, 3.0]
 
 
-class TestToken:
-    def test_recover_adopts_token_from_other_process(self, tmp_path, monkeypatch):
-        """봇이 401 을 받았는데 대시보드가 이미 새 토큰을 받아 뒀다면 재발급하지 않는다
-        (재발급하면 대시보드 토큰이 revoke 되고, 그쪽도 재발급 → 서로 끊는 루프)."""
-        monkeypatch.setattr(toss_api, "TOKEN_FILE", str(tmp_path / "tok.json"))
-        monkeypatch.setattr(toss_api, "_LOCK_FILE", str(tmp_path / "tok.lock"))
-        s = toss_api.TossSession(base_url="https://x", client_id="id", client_secret="sec")
-        s._write_cache("fresh", time.time() + 3600)
-        issued = []
-        monkeypatch.setattr(s, "_issue", lambda: issued.append(1))
-        s._recover_auth("stale")
-        assert s._token == "fresh" and issued == []
-        s._recover_auth("fresh")                 # 파일 토큰도 죽었다 → 그때만 재발급
-        assert issued == [1]
+class TestRealtimeFastPath:
+    def setup_method(self):
+        toss_stream.LIVE_PRICES.clear()
+        toss_stream.ORDER_EVENTS.clear()
 
+    def _broker(self, responses):
+        from tests.test_toss_broker import Response, Session, broker
+        s = Session()
+        s.queue(*[Response(r) for r in responses])
+        return broker(s, "live"), s
 
-class TestWebSocketDispatch:
-    def test_trade_and_order_frames(self):
-        import asyncio
-        import json
-        from modules.toss_websocket import TossWebSocket
-        got = []
-        ws = TossWebSocket(["SPY"], lambda t, p: got.append((t, p)), market="US")
-        asyncio.run(ws._dispatch(json.dumps({"type": "message", "topic": "trade:us:SPY",
-                                             "data": {"price": "601.5", "volume": "1"}})))
-        asyncio.run(ws._dispatch(json.dumps({"type": "message", "topic": "personal:order:3",
-                                             "data": {"event": "FILL", "order": {"orderId": "z",
-                                                                                  "status": "FILLED"}}})))
-        assert got == [("SPY", 601.5)] and toss_api.live_price("SPY") == 601.5
-        assert toss_api.ORDER_EVENTS["z"]["status"] == "FILLED"
+    def test_fresh_streamed_price_skips_rest(self):
+        b, s = self._broker([])
+        toss_stream.LIVE_PRICES["SPY"] = (512.3, time.monotonic())
+        assert b.quote("SPY", Market.US).price == 512.3 and s.calls == []
 
+    def test_stale_streamed_price_falls_back_to_rest(self):
+        b, s = self._broker([{"result": [{"symbol": "SPY", "lastPrice": "500", "currency": "USD"}]}])
+        toss_stream.LIVE_PRICES["SPY"] = (512.3, time.monotonic() - 60)
+        assert b.quote("SPY", Market.US).price == 500.0 and len(s.calls) == 1
 
-def test_bot_treats_rejected_order_as_failure():
-    import run_bot
+    def test_submit_and_wait_takes_order_event_without_polling(self):
+        from modules.brokers.models import OrderRequest, OrderSide, OrderType
+        b, s = self._broker([
+            {"result": {"orderId": "o1", "clientOrderId": "c1"}},
+            {"result": {"orderId": "o1", "symbol": "SPY", "status": "PENDING", "execution": {"filledQuantity": "0"}}},
+        ])
+        toss_stream.ORDER_EVENTS["o1"] = {"orderId": "o1", "symbol": "SPY", "status": "FILLED",
+                                          "execution": {"filledQuantity": "2", "averageFilledPrice": "501"}}
+        t0 = time.monotonic()
+        ack = b.submit_and_wait(OrderRequest("SPY", Market.US, OrderSide.BUY, OrderType.LIMIT, 2, price=505),
+                                timeout_sec=5, poll_sec=2)
+        assert ack.state == OrderState.FILLED and ack.filled_quantity == 2
+        assert time.monotonic() - t0 < 0.5 and len(s.calls) == 2   # 접수 + 첫 상세 조회뿐
 
-    class B:
-        def wait_order(self, oid, timeout_sec=0):
-            return {"orderId": oid, "status": "REJECTED", "execution": {"filledQuantity": "0"}}
-    ok, note = run_bot._confirm_order(B(), {"rt_cd": "0", "order_id": "x"}, "SPY")
-    assert not ok and "REJECTED" in note
+    def test_stream_frames_fill_caches(self):
+        trade = toss_stream.parse_frame(json.dumps({"type": "message", "topic": "trade:us:SPY",
+                                                    "data": {"price": "601.5", "volume": "1"}}))
+        order = toss_stream.parse_frame(json.dumps({"type": "message", "topic": "personal:order:1", "data": {
+            "event": "FILL", "order": {"orderId": "z", "symbol": "SPY", "currency": "USD", "status": "FILLED"}}}))
+        toss_stream.remember(trade)
+        toss_stream.remember(order)
+        assert toss_stream.live_price("SPY") == 601.5
+        assert toss_stream.ORDER_EVENTS["z"]["status"] == "FILLED"
+
+    def test_websockets_header_kwarg_matches_installed_version(self):
+        import inspect
+        src = inspect.getsource(toss_stream._connect)
+        assert "additional_headers" in src and "extra_headers" in src

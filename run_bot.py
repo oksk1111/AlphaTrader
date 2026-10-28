@@ -7,8 +7,7 @@ import json
 import os
 import traceback
 import pytz
-from modules.toss_api import TossOverseas, TossDomestic, ACCOUNT_RESTRICTED_CODES
-from modules.toss_websocket import TossWebSocket
+from modules.brokers.compat import TossOverseas, TossDomestic, ACCOUNT_RESTRICTED_CODES, LiveFeed
 from config import TOSS_CLIENT_ID
 from modules.gemini_analyst import GeminiAnalyst
 from modules.logger import logger
@@ -727,7 +726,7 @@ def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_set
     return max(qty, 0)
 
 # 원↔달러 환산율 — DCA 경로의 총자산 원화환산(사이징 상한) 전용. 주문 자금에는 쓰지 않는다.
-# 표시용 실시간 환율은 toss_api.usd_krw() (토스 환율 API).
+# 표시용 실시간 환율은 modules.brokers.compat.usd_krw() (토스 환율 API).
 USD_KRW_RATE = float(os.getenv('USD_KRW_RATE', '1400'))
 
 # === [v6.0] 점수 기반 판단 파라미터 ===
@@ -1008,16 +1007,16 @@ def safe_sell(broker, market, ticker, qty_hint, exchange=None,
                 res = broker.sell_market_order(ticker, effective_qty, exchange or 'NAS')
             else:
                 res = broker.sell_market_order(ticker, effective_qty)
-            ok, note = _confirm_order(broker, res, ticker) if res and res.get('rt_cd') == '0' else (False, '')
-            if ok:
-                logger.info(f"[{ticker}] ✅ {reason} 시장가 매도 성공 ({effective_qty}주)")
+            if res and res.get('rt_cd') == '0':
+                # [v8.0] rt_cd '0' = 체결(또는 shadow). 접수 후 거부·취소는 어댑터가 '1' 로 돌려준다.
+                logger.info(f"[{ticker}] ✅ {reason} 시장가 매도 ({effective_qty}주, {res.get('msg1')})")
                 _journal_record(market, ticker, reason,
                                 exit_price=_lookup_price(broker, ticker, market, exchange),
                                 sold_qty=effective_qty, phase='market',
                                 monitor_data=monitor_data)
-                return {'success': True, 'sold_qty': effective_qty,
-                        'phase': 'market', 'error': None}
-            last_err = note or (res or {}).get('msg1') or 'no response'
+                return {'success': True, 'sold_qty': effective_qty, 'phase': 'market',
+                        'error': None, 'shadow': bool(res.get('shadow'))}
+            last_err = (res or {}).get('msg1') or 'no response'
             logger.warning(f"[{ticker}] {reason} 시장가 시도 {attempt+1} 실패: {last_err}")
         except Exception as e:
             last_err = str(e)
@@ -1197,43 +1196,14 @@ def _rotation_wait(market, cond, label, poll_sec=30):
         time.sleep(poll_sec)
 
 
-ORDER_CONFIRM_SEC = 10.0
-
-
-def _confirm_order(broker, res, code):
-    """[v8.0] 주문 접수 후 체결 확인 — 웹소켓 personal:order 이벤트 우선, 없으면 REST.
-
-    Returns: (ok, note). 접수 후 거부·취소(체결 0)면 ok=False. 체결 대기(PENDING)는
-    DAY 주문이 장중 유효하므로 ok=True. order_id 가 없으면(테스트 대역 등) 확인 생략.
-    """
-    oid = (res or {}).get('order_id')
-    if not oid:
-        return True, ''
-    t0 = time.monotonic()
-    snap = broker.wait_order(oid, timeout_sec=ORDER_CONFIRM_SEC) or {}
-    status = snap.get('status') or 'UNKNOWN'
-    ex = snap.get('execution') or {}
-    filled = safe_float(ex.get('filledQuantity'))
-    ms = (time.monotonic() - t0) * 1000
-    if status in ('REJECTED', 'CANCELED') and filled <= 0:
-        logger.error(f"[{code}] ❌ 주문 {status} ({ms:.0f}ms)")
-        return False, f"주문 {status}"
-    if status == 'FILLED':
-        logger.info(f"[{code}] ⚡ 체결 확인 {filled:g}주 @ {ex.get('averageFilledPrice')} ({ms:.0f}ms)")
-    else:
-        logger.warning(f"[{code}] 체결 대기 {status} (체결 {filled:g}) — DAY 주문 유지 ({ms:.0f}ms)")
-    return True, status
-
-
 def _start_ws(market, codes):
-    """토스 웹소켓 (체결 틱 + 주문 이벤트). 자격증명이 없으면(테스트 등) 시작하지 않는다."""
+    """토스 실시간 스트림 (체결 틱·호가·주문 이벤트). 자격증명이 없으면(테스트 등) 시작하지 않는다."""
     global ws_client
     _stop_ws()
     if not TOSS_CLIENT_ID:
         return None
     try:
-        ws_client = TossWebSocket(codes, ws_price_callback, market=market)
-        ws_client.start_background()
+        ws_client = LiveFeed(market, codes, ws_price_callback).start()
     except Exception as e:
         logger.error(f"❌ [WS] 시작 실패 → REST 로 진행: {e}")
         ws_client = None
@@ -1253,8 +1223,8 @@ def _stop_ws():
 def run_rotation_session(market, user_config):
     """[v7.0] 모멘텀 로테이션 1세션. job() 에서 strategy == 'momentum_rotation' 일 때 호출.
 
-    [v8.0] 세션 동안 웹소켓을 연다 — 판단은 여전히 완성된 일봉(규칙 5)이지만, 주문 단가는
-    실시간 체결가로, 체결 여부는 주문 이벤트로 즉시 확인한다.
+    [v8.0] 세션 동안 실시간 스트림을 연다 — 판단은 여전히 완성된 일봉(v7.0 규칙 5)이지만,
+    주문 단가는 실시간 체결가로, 체결 여부는 주문 이벤트로 즉시 확인한다 (TossBroker 가 캐시를 먼저 본다).
     """
     mcfg = ((user_config.get('momentum_rotation') or {}).get(market.lower())) or {}
     _start_ws(market, [c for c, _ in _rotation_universe(mcfg, market)] + list(mcfg.get('defensive') or []))
@@ -1412,7 +1382,8 @@ def _rotation_session(market, user_config):
             _cur = telegram.fmt_currency(h['price'] * h['qty'], market)
             _avg_s = telegram.fmt_currency(h['avg'], market)
             send_alert(
-                f"🔴 [{market}] 매도 체결\n"
+                f"{'🧪' if r.get('shadow') else '🔴'} [{market}] 매도 "
+                f"{'(SHADOW — 주문 미전송)' if r.get('shadow') else '체결'}\n"
                 f"{code} {h['qty']}주 × {telegram.fmt_currency(h['price'], market)} = {_cur}\n"
                 f"평단 {_avg_s} → {telegram.fmt_pnl(_pnl)}\n"
                 f"사유: {reason}"
@@ -1439,7 +1410,7 @@ def _rotation_session(market, user_config):
             time.sleep(3)
         holdings, cash, equity, degraded = _rotation_account(broker, market, exch_of)
         per_slot = equity / max(1, n_slots)
-        # [v7.0.2] 실제 주문 단가. US 매수는 현재가 +1% 지정가(toss_api.TossOverseas.buy_market_order)에
+        # [v7.0.2] 실제 주문 단가. US 매수는 현재가 +1% 지정가(brokers.compat.TossOverseas.buy_market_order)에
         # 수수료가 붙는다. 현재가로만 판정하면 현금이 [가격, 가격×1.0125) 일 때 1주 주문이
         # 매 세션 '주문가능금액 초과'로 거부된다.
         unit_mult = 1.01 * 1.0025 if market == 'US' else 1.003
@@ -1484,19 +1455,21 @@ def _rotation_session(market, user_config):
                 qty = qty2
                 res = (broker.buy_market_order(code, qty, exch or 'NAS') if market == 'US'
                        else broker.buy_market_order(code, qty))
-            ok, note = _confirm_order(broker, res, code) if res and res.get('rt_cd') == '0' else (False, '')
-            if ok:
-                logger.info(f"[{code}] ✅ 로테이션 매수 ({qty}주{', ' + note if note else ''})")
+            if res and res.get('rt_cd') == '0':
+                qty = int(res.get('filled_qty') or qty)          # 부분체결이면 체결분만
+                price = safe_float(res.get('avg_price')) or price
+                logger.info(f"[{code}] ✅ 로테이션 매수 ({qty}주, {res.get('msg1')})")
                 bought.append(code)
                 cash -= qty * unit
                 _amt = telegram.fmt_currency(qty * price, market)
                 send_alert(
-                    f"🟢 [{market}] 매수 체결\n"
+                    f"{'🧪' if res.get('shadow') else '🟢'} [{market}] 매수 "
+                    f"{'(SHADOW — 주문 미전송)' if res.get('shadow') else '체결'}\n"
                     f"{code} {qty}주 × {telegram.fmt_currency(price, market)} = {_amt}\n"
                     f"슬롯 목표 {telegram.fmt_currency(per_slot, market)}"
                 )
             else:
-                err = note or (res or {}).get('msg1') or 'no response'
+                err = (res or {}).get('msg1') or 'no response'
                 logger.error(f"[{code}] 로테이션 매수 주문 실패: {err}")
                 buy_fail.append(code)
                 fail_reason[code] = f"주문 실패: {err}"
@@ -1564,14 +1537,14 @@ def _rotation_session(market, user_config):
                         stop_sold.append(code)
                         _loss_amt = _cur(h['qty'] * h['price'])
                         send_alert(
-                            f"🛑 [{market}] 종가 손절\n"
+                            f"🛑 [{market}] 종가 손절{' (SHADOW — 주문 미전송)' if r.get('shadow') else ''}\n"
                             f"{code} {h['qty']}주 ({pnl:.1f}%)\n"
                             f"금액: {_loss_amt}"
                         )
 
     # --- 6-1) [v7.0.3] 장 마감 포트폴리오 요약 ---
     try:
-        _final_h, _final_cash, _final_eq, _ = _rotation_account(kis, market, exch_of)
+        _final_h, _final_cash, _final_eq, _ = _rotation_account(broker, market, exch_of)
         _cash_pct = (_final_cash / _final_eq * 100) if _final_eq > 0 else 100
         _close_lines = [f"📊 [{market}] 장 마감 포트폴리오", "━━━━━━━━━━━━"]
         _close_lines.append(f"총 평가: {_cur(_final_eq)}")
@@ -2862,8 +2835,7 @@ def job():
     try:
         tickers_to_sub = list(monitoring_targets.keys())
         logger.info(f"🚀 [WS] Starting {market} Real-Time WebSocket stream for {tickers_to_sub}...")
-        ws_client = TossWebSocket(tickers_to_sub, ws_price_callback, market=market)
-        ws_client.start_background()
+        ws_client = LiveFeed(market, tickers_to_sub, ws_price_callback).start()
     except Exception as ws_err:
         logger.error(f"❌ [WS] Failed to initialize WebSocket: {ws_err}. Falling back to REST polling.")
 

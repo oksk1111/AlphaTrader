@@ -8,8 +8,7 @@ import subprocess
 import signal
 import json
 from datetime import datetime, timedelta
-from modules.toss_api import TossOverseas
-from modules.toss_api import TossDomestic
+from modules.brokers.compat import TossOverseas, TossDomestic
 from modules.profit_tracker import (
     take_asset_snapshot, get_monthly_summary, get_asset_history,
     fetch_all_trades, fetch_kr_realized_profit, fetch_us_realized_profit

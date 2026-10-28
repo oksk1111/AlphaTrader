@@ -4,7 +4,7 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from modules.toss_api import TossOverseas, TossDomestic, usd_krw
+from modules.brokers.compat import TossOverseas, TossDomestic, usd_krw
 from modules.logger import logger
 
 BASE_DIR = Path(__file__).resolve().parent.parent

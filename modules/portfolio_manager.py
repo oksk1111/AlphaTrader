@@ -4,8 +4,7 @@ import logging
 import datetime
 import pytz
 from typing import List, Dict
-from modules.toss_api import TossDomestic
-from modules.toss_api import TossOverseas
+from modules.brokers.compat import TossDomestic, TossOverseas
 
 try:
     # 위험조정 점수 산정에 ATR% 사용 (없으면 모멘텀만으로 폴백)

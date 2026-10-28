@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+from modules.brokers import toss_stream
 from modules.brokers.base import Broker
 from modules.brokers.models import (
     AccountSnapshot, Bar, BrokerError, ExecutionMode, Holding, Market,
@@ -38,6 +39,28 @@ _ORDER_STATE = {
     "REPLACE_REJECTED": OrderState.REJECTED,
     "REPLACED": OrderState.CANCELED,
 }
+
+
+# [v8.0] 그룹별 초당 한도 (문서 한도보다 낮게 — 봇·대시보드·수집기가 같은 클라이언트 한도를
+# 나눠 쓴다). 429 를 미리 피하는 용도다. 429 자체는 여전히 재시도하지 않고 호출자에게 올린다.
+_GROUP_TPS = (("/oauth2", 2), ("/api/v1/accounts", 1), ("/api/v1/holdings", 4),
+              ("/api/v1/buying-power", 2), ("/api/v1/sellable-quantity", 2),
+              ("/api/v1/orders", 5), ("/api/v1/candles", 15), ("/api/v1/prices", 12), ("", 4))
+_RATE: Dict[str, List[float]] = {}
+_RATE_LOCK = threading.Lock()
+
+
+def _throttle(path: str) -> None:
+    prefix, tps = next((p, t) for p, t in _GROUP_TPS if path.startswith(p))
+    with _RATE_LOCK:
+        now = time.monotonic()
+        stamps = [t for t in _RATE.get(prefix, []) if now - t < 1.0]
+        if len(stamps) >= tps:
+            time.sleep(max(0.0, 1.0 - (now - stamps[0])) + 0.01)
+            now = time.monotonic()
+            stamps = [t for t in stamps if now - t < 1.0]
+        stamps.append(now)
+        _RATE[prefix] = stamps
 
 
 def _float(value: Any, default: float = 0.0) -> float:
@@ -171,6 +194,7 @@ class TossBroker(Broker):
     def _request(self, method: str, path: str, *, account: bool = False,
                  params: Dict[str, Any] = None, body: Dict[str, Any] = None,
                  retry_auth: bool = True) -> Dict[str, Any]:
+        _throttle(path)
         try:
             response = self.session.request(
                 method, self.base_url + path, headers=self._headers(account),
@@ -245,6 +269,9 @@ class TossBroker(Broker):
         )
 
     def quote(self, symbol: str, market: Market) -> Quote:
+        live = toss_stream.live_price(symbol)       # 3초 이내 체결가가 있으면 REST 생략
+        if live:
+            return Quote(symbol=symbol, market=market, currency="", price=live)
         rows = self._request("GET", "/api/v1/prices",
                              params={"symbols": symbol}).get("result") or []
         row = next((item for item in rows if item.get("symbol") == symbol), None)
@@ -328,11 +355,19 @@ class TossBroker(Broker):
         # 접수 응답은 상태를 포함하지 않는다. 취소 여부를 결정하기 전에 최소 한 번은
         # 주문 상세를 읽어 실제 pending/partial/filled 상태를 확인한다.
         latest = self.order(ack.order_id)
+        next_poll = time.monotonic() + max(0.1, poll_sec)
         while time.monotonic() < deadline:
             if latest.state in (OrderState.FILLED, OrderState.CANCELED, OrderState.REJECTED):
                 return latest
-            time.sleep(max(0.1, poll_sec))
-            latest = self.order(ack.order_id)
+            # [v8.0] 웹소켓 personal:order 이벤트가 있으면 폴링 주기를 기다리지 않는다.
+            event = toss_stream.ORDER_EVENTS.get(ack.order_id)
+            if event and event.get("status") in ("FILLED", "CANCELED", "REJECTED"):
+                return self._parse_order(event)
+            if time.monotonic() >= next_poll:
+                latest = self.order(ack.order_id)
+                next_poll = time.monotonic() + max(0.1, poll_sec)
+            else:
+                time.sleep(0.02)
         if latest.state in (OrderState.PENDING, OrderState.PARTIAL_FILLED, OrderState.ACCEPTED):
             try:
                 return self.cancel_order(ack.order_id)

@@ -9,7 +9,7 @@ def calculate_target_price(today_open, ohlc_data, k=0.5):
     
     # ohlc_data[0] is assumed to be Yesterday (most recent closed candle)
     # Keys: 'high', 'low' (Check if API returns 'high' or 'ovrs_nmix_hgpr')
-    # OHLC rows (toss_api 호환 모양): keys are 'high', 'low'
+    # OHLC rows (brokers.compat 호환 모양): keys are 'high', 'low'
     
     try:
         yesterday = ohlc_data[0]

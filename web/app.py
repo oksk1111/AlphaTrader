@@ -1141,7 +1141,7 @@ def get_toss_stream_status():
         return data
     except Exception:
         return {
-            "broker": os.getenv("MARKET_DATA_BROKER", "toss"),
+            "broker": "toss",
             "execution_mode": os.getenv("EXECUTION_MODE", "shadow"),
             "connected": False,
             "healthy": False,
@@ -1198,7 +1198,7 @@ async def api_status(request: Request):
             "session_outcome": _hb.get("session_outcome") or {},
             "us_done": _hb.get("us_done"),
             "kr_done": _hb.get("kr_done"),
-            "execution_broker": os.getenv("BROKER", "kis"),
+            "execution_broker": "toss",
             "market_data_broker": stream_status.get("broker"),
             "execution_mode": stream_status.get("execution_mode"),
             "stream_connected": stream_status.get("connected"),

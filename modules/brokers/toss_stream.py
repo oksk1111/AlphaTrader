@@ -20,6 +20,42 @@ from modules.brokers.models import Market, OrderState
 
 
 WS_URL = "wss://openapi-ws.tossinvest.com/ws/v1"
+_WS_MAJOR = int(str(getattr(websockets, "__version__", "0")).split(".")[0] or 0)
+
+# [v8.0] 수신부가 채우는 최신 캐시. 주문은 하지 않는다 — TossBroker.quote() 와
+# submit_and_wait() 가 REST 왕복 전에 먼저 본다 (주문 직전 시세 조회·체결 폴링 지연 제거).
+LIVE_PRICES: Dict[str, Tuple[float, float]] = {}     # symbol -> (price, monotonic)
+ORDER_EVENTS: Dict[str, Dict[str, Any]] = {}         # orderId -> 최신 주문 스냅샷
+LIVE_MAX_AGE_SEC = 3.0
+
+
+def remember(event: "MarketEvent") -> None:
+    if event.kind == "trade" and event.symbol:
+        try:
+            price = float(event.data.get("price") or 0)
+        except (TypeError, ValueError):
+            return
+        if price > 0:
+            LIVE_PRICES[event.symbol] = (price, time.monotonic())
+    elif event.kind == "order":
+        order = event.data.get("order") or {}
+        if order.get("orderId"):
+            ORDER_EVENTS[order["orderId"]] = order
+            if len(ORDER_EVENTS) > 500:
+                for key in list(ORDER_EVENTS)[:100]:
+                    ORDER_EVENTS.pop(key, None)
+
+
+def live_price(symbol: str, max_age_sec: float = LIVE_MAX_AGE_SEC) -> Optional[float]:
+    hit = LIVE_PRICES.get(symbol)
+    return hit[0] if hit and time.monotonic() - hit[1] <= max_age_sec else None
+
+
+def _connect(token: str):
+    headers = {"Authorization": f"Bearer {token}"}
+    # websockets 14+ 는 additional_headers, 그 이전(서버 Python 3.8)은 extra_headers.
+    key = "additional_headers" if _WS_MAJOR >= 14 else "extra_headers"
+    return websockets.connect(WS_URL, ping_interval=None, close_timeout=5, **{key: headers})
 _ORDER_EVENT_STATE = {
     "PENDING": OrderState.PENDING,
     "PARTIAL_FILL": OrderState.PARTIAL_FILLED,
@@ -169,10 +205,7 @@ class TossStream:
         while not self._stop.is_set():
             try:
                 token = self.token_provider()
-                async with websockets.connect(
-                    WS_URL, extra_headers={"Authorization": f"Bearer {token}"},
-                    ping_interval=None, close_timeout=5,
-                ) as websocket:
+                async with _connect(token) as websocket:
                     self.connected = True
                     attempt = 0
                     declaration = subscription_declaration(self.symbols, self.account_seq)
@@ -200,6 +233,7 @@ class TossStream:
                             if event.data.get("code") == "server-shutdown":
                                 break
                         else:
+                            remember(event)
                             self._put(event)
             except Exception as exc:
                 logging.error("Toss WS disconnected: %s", exc)

@@ -1,4 +1,4 @@
-from modules.toss_api import TossDomestic
+from modules.brokers.compat import TossDomestic
 from modules.logger import logger
 
 class MarketScanner:
