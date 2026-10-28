@@ -524,3 +524,52 @@ class TestConfig:
         scan = src.split("def run_scanner", 1)[1].split("def update_dynamic_portfolio", 1)[0]
         assert "_rotation_active()" in scan
         assert "not opro_triggered_today and _rotation_active()" in src
+
+
+# ---------------------------------------------------------------------------
+# [v8.0] 방어자산 슬롯 — 주식 ETF 로 못 채운 슬롯은 추세가 살아 있는 채권·금으로
+# ---------------------------------------------------------------------------
+class TestDefensiveSlot:
+    BOND, GOLD = "148070", "132030"
+
+    def _cfg(self, **over):
+        return _cfg(defensive=[self.BOND, self.GOLD], **over)
+
+    def test_pure_function_needs_own_uptrend(self):
+        from modules.momentum_rotation import defensive_targets
+        picks = defensive_targets({self.BOND: _series(100, .0005), self.GOLD: _series(100, .002),
+                                   "FALLING": _series(100, -.001)}, 2)
+        assert picks == [self.GOLD, self.BOND]          # R120 순, 하락 추세는 제외
+        assert defensive_targets({self.BOND: _series(100, -.001)}, 1) == []   # → 현금
+        assert defensive_targets({self.GOLD: _series(100, .002)}, 0) == []
+
+    def test_risk_off_buys_defensive_only(self, rb, monkeypatch):
+        series = dict(UNIVERSE, BENCH=_series(10000, -.003),
+                      **{self.BOND: _series(100000, .0005), self.GOLD: _series(20000, .002)})
+        fake = FakeKR(series, holdings={"A": (10, 10000)}, cash=500_000)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
+        rb.run_rotation_session("KR", self._cfg())
+        assert ("A", 10) in fake.sells
+        bought = {c for c, _ in fake.buys}
+        assert bought and bought <= {self.BOND, self.GOLD}, "risk-off 에는 방어자산만 산다"
+
+    def test_defensive_holding_is_not_liquidated_as_outside_universe(self, rb, monkeypatch):
+        series = dict(UNIVERSE, BENCH=_series(10000, -.003), **{self.GOLD: _series(20000, .002)})
+        fake = FakeKR(series, holdings={self.GOLD: (20, 20000)}, cash=0)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
+        rb.run_rotation_session("KR", self._cfg())
+        assert not fake.sells
+
+    def test_defensive_sold_when_its_trend_breaks(self, rb, monkeypatch):
+        series = dict(UNIVERSE, BENCH=_series(10000, -.003), **{self.GOLD: _series(20000, -.002)})
+        fake = FakeKR(series, holdings={self.GOLD: (20, 30000)}, cash=0)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
+        rb.run_rotation_session("KR", self._cfg(close_stop_pct=None))
+        assert (self.GOLD, 20) in fake.sells
+
+    def test_operational_config_and_backtest_share_the_rule(self):
+        cfg = json.load(open(os.path.join(REPO, "user_config.json"), encoding="utf-8"))
+        assert cfg["momentum_rotation"]["kr"]["defensive"] == [self.BOND, self.GOLD]
+        assert "defensive" not in cfg["momentum_rotation"]["us"], "US 는 검증 미통과 — 넣지 않는다"
+        src = open(os.path.join(REPO, "scripts", "backtest_real.py"), encoding="utf-8").read()
+        assert "defensive_targets(" in src and 'rc.get("defensive")' in src

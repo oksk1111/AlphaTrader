@@ -249,3 +249,24 @@ def plan_rotation(features: Iterable[Features], holdings: Iterable[str],
         if t not in targets:
             targets.append(t)
     return RotationPlan(True, slots, targets, keep, sell, ranking)
+
+
+# ---------------------------------------------------------------------------
+# [v8.0] 방어자산 슬롯 — "금리·경기 국면에 따라 다른 자산을 든다"
+# ---------------------------------------------------------------------------
+def defensive_targets(closes_of: Dict[str, Sequence[float]], free_slots: int) -> List[str]:
+    """주식 ETF 로 못 채운 슬롯(risk-off 또는 추세통과 종목 부족)을 채울 방어자산.
+
+    방어자산도 **자기 추세가 살아 있을 때만** 든다 (close > MA120 이고 R120 > 0).
+    금리 상승기의 채권처럼 방어자산이 함께 무너지는 국면이면 현금이 남는다.
+    R120 이 높은 순. 실데이터 근거: docs/주식 자동 매매 기획.md 문서 1-D.
+    """
+    ok = []
+    for code, closes in closes_of.items():
+        closes = [float(c) for c in closes if c and float(c) > 0]
+        r = _ret(closes, MOM_LONG)
+        ma = _sma(closes, MOM_LONG)
+        if r is not None and ma is not None and closes[-1] > ma and r > 0:
+            ok.append((code, r))
+    ok.sort(key=lambda x: x[1], reverse=True)
+    return [c for c, _ in ok[:max(0, int(free_slots))]]

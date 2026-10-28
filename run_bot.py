@@ -1257,7 +1257,7 @@ def run_rotation_session(market, user_config):
     실시간 체결가로, 체결 여부는 주문 이벤트로 즉시 확인한다.
     """
     mcfg = ((user_config.get('momentum_rotation') or {}).get(market.lower())) or {}
-    _start_ws(market, [c for c, _ in _rotation_universe(mcfg, market)])
+    _start_ws(market, [c for c, _ in _rotation_universe(mcfg, market)] + list(mcfg.get('defensive') or []))
     try:
         _rotation_session(market, user_config)
     finally:
@@ -1266,7 +1266,7 @@ def run_rotation_session(market, user_config):
 
 def _rotation_session(market, user_config):
     from modules.momentum_rotation import (
-        compute_features, market_risk_on, plan_rotation, fillable_slots,
+        compute_features, market_risk_on, plan_rotation, fillable_slots, defensive_targets,
     )
 
     cfg = user_config.get('momentum_rotation') or {}
@@ -1281,6 +1281,7 @@ def _rotation_session(market, user_config):
     entry_delay = float(cfg.get('entry_delay_min', 10))
     close_check = float(cfg.get('close_check_before_min', 20))
     bench = mcfg.get('benchmark', '069500' if market == 'KR' else 'SPY')
+    defensive = [str(c) for c in mcfg.get('defensive') or []]
 
     broker = TossOverseas() if market == 'US' else TossDomestic()
     started_at = datetime.datetime.now().astimezone().isoformat(timespec='seconds')
@@ -1307,7 +1308,7 @@ def _rotation_session(market, user_config):
     holdings, cash, equity, degraded = _rotation_account(broker, market, exch_of)
     logger.info(f"[{market}] 계좌: 현금 {cash:,.2f} / 평가 {equity:,.2f} / 보유 {list(holdings)}")
     if ws_client:
-        ws_client.update_tickers(list(dict.fromkeys(uni_codes + list(holdings))))
+        ws_client.update_tickers(list(dict.fromkeys(uni_codes + defensive + list(holdings))))
 
     def _history(code, exch):
         touch_heartbeat(market=market, source='scan', ticker=code)
@@ -1316,7 +1317,7 @@ def _rotation_session(market, user_config):
         return _completed_closes(rows or [], market)
 
     closes_of = {}
-    for code in dict.fromkeys(uni_codes + list(holdings)):
+    for code in dict.fromkeys(uni_codes + defensive + list(holdings)):
         exch = exch_of.get(code) or (holdings.get(code) or {}).get('exchange')
         closes_of[code] = _history(code, exch)
     bench_closes = closes_of.get(bench) or _history(bench, _resolve_us_exchange(bench) if market == 'US' else None)
@@ -1358,7 +1359,7 @@ def _rotation_session(market, user_config):
 
     ranked_codes = [c for c in uni_codes]
     held_in_uni = [c for c in holdings if c in uni_codes]
-    outside = [c for c in holdings if c not in uni_codes]
+    outside = [c for c in holdings if c not in uni_codes and c not in defensive]
     feats = [compute_features(c, closes_of.get(c) or []) for c in ranked_codes]
     n_slots = fillable_slots(equity, min_slot, slots_max)
     plan = plan_rotation(feats, held_in_uni, risk_on, n_slots, sell_buffer)
@@ -1384,6 +1385,17 @@ def _rotation_session(market, user_config):
             targets = list(plan.targets)
         else:
             targets = [t for t in plan.targets if t in holdings]
+
+    # [v8.0] 주식 ETF 로 못 채운 슬롯(risk-off·추세통과 부족)은 자기 추세가 살아 있는
+    # 방어자산(채권·금)으로 채운다. 방어자산마저 하락 추세면 현금. 판단 시점은 주식 슬롯과
+    # 같다 (리밸런싱일 또는 risk-off 일).
+    if defensive and (rebalance_due or not risk_on):
+        dtargets = defensive_targets({c: closes_of.get(c) or [] for c in defensive},
+                                     n_slots - len(targets))
+        sells += [(c, "방어자산 해제 (추세이탈/주식 슬롯 복귀)")
+                  for c in holdings if c in defensive and c not in dtargets]
+        targets = list(targets) + dtargets
+        logger.info(f"[{market}] 방어자산 슬롯: {dtargets or '없음(현금)'}")
 
     # --- 4) 매도 먼저 ---
     sold = []
@@ -1415,7 +1427,9 @@ def _rotation_session(market, user_config):
     if rebalance_due:
         # 리밸런싱일에만 기존 보유 목표의 비중 부족분을 보충한다 (이관된 1주짜리 등).
         to_buy += [t for t in targets if t in holdings and t not in sold]
-    if to_buy and risk_on:
+    if not risk_on:
+        to_buy = [t for t in to_buy if t in defensive]   # risk-off 에는 방어자산만 산다
+    if to_buy:
         if failed_history:
             for code in dict.fromkeys(to_buy):
                 buy_fail.append(code)

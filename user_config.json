@@ -133,6 +133,8 @@
                 "487230"
             ],
             "benchmark": "069500",
+            "_defensive_comment": "v8.0: 주식 ETF 로 못 채운 슬롯(risk-off·추세통과 부족)을 추세가 살아 있는 방어자산으로. KOSEF 국고채10년 + KODEX 골드선물(H). 근거: 기획서 문서 1-D (train 2017-21 / test 2022-26, 시작연도 6개).",
+            "defensive": ["148070", "132030"],
             "slots": 2,
             "sell_buffer": 3,
             "rebalance_days": 10,

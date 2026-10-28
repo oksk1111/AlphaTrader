@@ -11,7 +11,9 @@ verify_strategy_loop.py 는 합성 GBM 가격 + 단일 종목이다. 그래서 �
   2. **실제 시장의 추세 지속성** — GBM 은 모멘텀이 0 이다(정의상 무작위 보행).
      모멘텀 전략은 GBM 에서 절대 이길 수 없고, 실제 시장에서만 검증 가능하다.
 
-이 스크립트는 yfinance 실제 일봉(수정주가)으로 여러 종목 포트폴리오를 돌린다.
+이 스크립트는 실제 일봉(수정주가)으로 여러 종목 포트폴리오를 돌린다.
+데이터: 토스증권 캔들 API (TOSS_CLIENT_ID 가 있고 허용 IP 에서 실행할 때, 일봉은 기간 제한 없음).
+        그 외 환경(로컬 연구 PC 등)에서는 yfinance 로 받는다. 둘 다 data_cache/ 에 캐시.
 
   · 현행(v6.1 근사) : 전 후보에 대해 매일 decision_engine.evaluate_buy() → DCA 사이징
                       (run_bot.calculate_dca_quantity 와 같은 규칙) + 일중 고/저가로
@@ -25,6 +27,8 @@ verify_strategy_loop.py 는 합성 GBM 가격 + 단일 종목이다. 그래서 �
     python scripts/backtest_real.py                 # KR + US, 전체 변형
     python scripts/backtest_real.py --market KR --start 2016-01-01
     python scripts/backtest_real.py --json out.json # 결과 저장
+    python scripts/backtest_real.py --robustness    # [v8.0] 운영설정 과적합 점검:
+                                                    #   train 2017-21 / test 2022- / 시작연도 6개
 
 ⚠️ 생존편향: 유니버스는 '지금 봇이 들고 있는 후보 목록'이다. 과거에 상장폐지된
    ETF 는 없다. 절대 수익률보다 **같은 유니버스 안에서의 상대 비교**를 보라.
@@ -47,7 +51,7 @@ import pandas as pd  # noqa: E402
 
 from modules.decision_engine import TickerContext, PortfolioContext, evaluate_buy  # noqa: E402
 from modules.momentum_rotation import (  # noqa: E402
-    compute_features, market_risk_on, plan_rotation, fillable_slots,
+    compute_features, market_risk_on, plan_rotation, fillable_slots, defensive_targets,
 )
 
 CACHE_DIR = os.path.join(ROOT, "data_cache")
@@ -96,8 +100,33 @@ def yf_symbol(code: str, market: str) -> str:
     return f"{code}.KS" if market == "KR" else code
 
 
-def load_prices(codes: List[str], market: str, start: str, refresh: bool = False) -> Dict[str, pd.DataFrame]:
+def _download_toss(code: str, market: str) -> Optional[pd.DataFrame]:
+    from modules.toss_api import TossDomestic, TossOverseas
+    rows = (TossOverseas() if market == "US" else TossDomestic()).get_daily_history(
+        code, bars=3500, max_pages=20)
+    if not rows:
+        return None
+    df = pd.DataFrame(rows).rename(columns=str.capitalize)
+    df.index = pd.to_datetime(df.pop("Date"), format="%Y%m%d")
+    return df[["Open", "High", "Low", "Close"]]
+
+
+def _download_yf(code: str, market: str) -> Optional[pd.DataFrame]:
     import yfinance as yf
+    raw = yf.download(yf_symbol(code, market), start="2014-01-01", progress=False,
+                      auto_adjust=True, threads=False)
+    if raw is None or raw.empty:
+        return None
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.get_level_values(0)
+    return raw[["Open", "High", "Low", "Close"]].dropna()
+
+
+def load_prices(codes: List[str], market: str, start: str, refresh: bool = False,
+                source: str = "auto") -> Dict[str, pd.DataFrame]:
+    if source == "auto":
+        source = "toss" if os.getenv("TOSS_CLIENT_ID") else "yfinance"
+    fetch = _download_toss if source == "toss" else _download_yf
     os.makedirs(CACHE_DIR, exist_ok=True)
     out: Dict[str, pd.DataFrame] = {}
     for code in codes:
@@ -107,17 +136,13 @@ def load_prices(codes: List[str], market: str, start: str, refresh: bool = False
             df = pd.read_csv(path, index_col=0, parse_dates=True)
         else:
             try:
-                raw = yf.download(yf_symbol(code, market), start="2014-01-01", progress=False,
-                                  auto_adjust=True, threads=False)
+                df = fetch(code, market)
             except Exception as e:  # 네트워크/심볼 오류는 해당 종목만 제외
                 print(f"  [skip] {code}: {e}")
                 continue
-            if raw is None or raw.empty:
+            if df is None or df.empty:
                 print(f"  [skip] {code}: no data")
                 continue
-            if isinstance(raw.columns, pd.MultiIndex):
-                raw.columns = raw.columns.get_level_values(0)
-            df = raw[["Open", "High", "Low", "Close"]].dropna()
             df.to_csv(path)
         df = df[df["Close"] > 0]
         out[code] = df
@@ -329,7 +354,11 @@ def run_current(data, market, start, capital, universe: List[str], stocks: set, 
 def run_rotation(data, market, start, capital, universe: List[str], stocks: set, bench: str,
                  slots: int = 2, buffer: int = 3, rebalance_days: int = 20,
                  market_filter: bool = True, close_stop_pct: Optional[float] = None,
-                 daily_risk_check: bool = True) -> Dict:
+                 daily_risk_check: bool = True, defensive: Optional[List[str]] = None,
+                 end: Optional[str] = None) -> Dict:
+    defensive = [c for c in (defensive or []) if c in data]
+    if end:
+        data = {k: v[v.index < pd.Timestamp(end)] for k, v in data.items()}
     idx, panel = build_panel(data, bench)
     book = Book(cash=capital, market=market, stocks=stocks)
     min_slot = 50.0 if market == "US" else 200_000.0
@@ -339,9 +368,9 @@ def run_rotation(data, market, start, capital, universe: List[str], stocks: set,
     last_rebal = -10 ** 9
 
     for i in range(start_i, len(idx)):
-        opx = {c: float(panel[c]["Open"].iloc[i]) for c in universe
+        opx = {c: float(panel[c]["Open"].iloc[i]) for c in universe + defensive
                if c in panel and not pd.isna(panel[c]["Open"].iloc[i])}
-        px = {c: float(panel[c]["Close"].iloc[i]) for c in universe
+        px = {c: float(panel[c]["Close"].iloc[i]) for c in universe + defensive
               if c in panel and not pd.isna(panel[c]["Close"].iloc[i])}
         # --- t 일 시가: 전일 결정 체결 ---
         if pending:
@@ -367,11 +396,12 @@ def run_rotation(data, market, start, capital, universe: List[str], stocks: set,
             for c, p in book.pos.items():
                 if c in px and (px[c] / p.avg - 1) * 100 <= close_stop_pct:
                     stop_sells.append((c, "종가손절"))
-        risk_exit = daily_risk_check and market_filter and not risk_on and book.pos
+        # 봇과 동일: risk-off 동안은 매일 판단한다 (방어자산 편입·해제 포함)
+        risk_exit = daily_risk_check and market_filter and not risk_on and (book.pos or defensive)
         if rebalance_due or risk_exit or stop_sells:
             feats = [compute_features(c, _closes_upto(panel[c], i)) for c in universe if c in px]
             n_slots = fillable_slots(eq, min_slot, slots)
-            plan = plan_rotation(feats, list(book.pos), risk_on, n_slots, buffer)
+            plan = plan_rotation(feats, [c for c in book.pos if c not in defensive], risk_on, n_slots, buffer)
             # 봇(run_rotation_session)과 동일: 리밸런싱일이 아니면 risk-off 청산과
             # 종가손절만 한다. 순위/추세 이탈 매도는 리밸런싱일에만.
             sells = list(plan.sell) if (rebalance_due or not risk_on) else []
@@ -380,6 +410,11 @@ def run_rotation(data, market, start, capital, universe: List[str], stocks: set,
                     sells.append(s)
             targets = plan.targets if rebalance_due else [t for t in plan.targets if t in book.pos]
             targets = [t for t in targets if t not in [s[0] for s in stop_sells]]
+            if defensive and (rebalance_due or not risk_on):   # 봇 _rotation_session 과 같은 규칙
+                dt = defensive_targets({d: _closes_upto(panel[d], i) for d in defensive if d in px},
+                                       n_slots - len(targets))
+                sells += [(d, "방어자산 해제") for d in book.pos if d in defensive and d not in dt]
+                targets = targets + dt
             if rebalance_due:
                 last_rebal = i
             if sells or any(t not in book.pos for t in targets):
@@ -409,7 +444,7 @@ def _load_rotation(market: str) -> Dict:
         return (json.load(f).get("momentum_rotation") or {}).get(market.lower(), {})
 
 
-def run_operational(data, market, start, capital, universe) -> Dict:
+def run_operational(data, market, start, capital, universe, end=None, defensive=True) -> Dict:
     """운영 설정(user_config.json momentum_rotation) 그대로 돌린다.
 
     AGENTS 규칙 8: 검증 스크립트에 값을 복사해 두면 운영 설정을 바꿔도 검증은
@@ -421,16 +456,17 @@ def run_operational(data, market, start, capital, universe) -> Dict:
                         int(rc.get("slots", 2)), int(rc.get("sell_buffer", 3)),
                         int(rc.get("rebalance_days", 10)),
                         market_filter=bool(rc.get("market_filter", market == "KR")),
-                        close_stop_pct=rc.get("close_stop_pct"))
+                        close_stop_pct=rc.get("close_stop_pct"),
+                        defensive=rc.get("defensive") if defensive else None, end=end)
 
 
-def run_market(market: str, start: str, refresh: bool) -> Dict[str, Dict]:
+def run_market(market: str, start: str, refresh: bool, source: str = "auto") -> Dict[str, Dict]:
     risk = _load_risk()
     if market == "KR":
         operational = _operational_universe("KR")
         etfs = list(dict.fromkeys(operational + list(KR_ETFS)))
         stocks, bench, capital = list(KR_STOCKS), KR_BENCH, 2_700_000.0
-        data = load_prices(etfs + stocks, "KR", start, refresh)
+        data = load_prices(etfs + stocks + _load_rotation("KR").get("defensive", []), "KR", start, refresh, source)
         if bench not in data:
             raise RuntimeError(
                 f"KR 백테스트 벤치마크 {bench} 데이터가 없습니다. "
@@ -443,7 +479,8 @@ def run_market(market: str, start: str, refresh: bool) -> Dict[str, Dict]:
             "B&H KODEX200": lambda: run_buy_hold(data, start, capital, bench, market),
             "현행 v6.1 (전 후보 DCA+장중손절)": lambda: run_current(data, market, start, capital, cur_univ, set(stocks), bench, risk),
             "현행 v6.1 ETF만": lambda: run_current(data, market, start, capital, etfs, set(), bench, risk),
-            "★ v7.0 운영설정 (user_config)": lambda: run_operational(data, market, start, capital, etfs),
+            "★ 운영설정 (user_config)": lambda: run_operational(data, market, start, capital, etfs),
+            "운영설정 − 방어자산 (v7.0)": lambda: run_operational(data, market, start, capital, etfs, defensive=False),
             "로테이션 top2 R20 +시장필터": lambda: run_rotation(data, market, start, capital, etfs, set(), bench, 2, 3, 20),
             "로테이션 top2 R10 +시장필터": lambda: run_rotation(data, market, start, capital, etfs, set(), bench, 2, 3, 10),
             "로테이션 top3 R20 +시장필터": lambda: run_rotation(data, market, start, capital, etfs, set(), bench, 3, 4, 20),
@@ -454,7 +491,7 @@ def run_market(market: str, start: str, refresh: bool) -> Dict[str, Dict]:
         operational = _operational_universe("US")
         u1 = list(dict.fromkeys(operational + list(US_1X)))
         u3, bench, capital = list(US_3X), US_BENCH, 2000.0
-        data = load_prices(u1 + u3, "US", start, refresh)
+        data = load_prices(u1 + u3 + _load_rotation("US").get("defensive", []), "US", start, refresh, source)
         if bench not in data:
             raise RuntimeError(
                 f"US 백테스트 벤치마크 {bench} 데이터가 없습니다. "
@@ -465,7 +502,7 @@ def run_market(market: str, start: str, refresh: bool) -> Dict[str, Dict]:
         variants = {
             "B&H SPY": lambda: run_buy_hold(data, start, capital, bench, market),
             "현행 v6.1 (3x+1x DCA+장중손절)": lambda: run_current(data, market, start, capital, cur_univ, set(), bench, risk),
-            "★ v7.0 운영설정 (user_config)": lambda: run_operational(data, market, start, capital, u1),
+            "★ 운영설정 (user_config)": lambda: run_operational(data, market, start, capital, u1),
             "로테이션 1x top2 R10 필터없음": lambda: run_rotation(data, market, start, capital, u1, set(), bench, 2, 3, 10, market_filter=False),
             "로테이션 1x top2 R20 +시장필터": lambda: run_rotation(data, market, start, capital, u1, set(), bench, 2, 3, 20),
             "로테이션 1x top1 R20 +시장필터": lambda: run_rotation(data, market, start, capital, u1, set(), bench, 1, 2, 20),
@@ -476,6 +513,28 @@ def run_market(market: str, start: str, refresh: bool) -> Dict[str, Dict]:
     for name, fn in variants.items():
         results[name] = fn()
     return results
+
+
+def robustness(market: str, refresh: bool, source: str) -> None:
+    """[v8.0] 과적합 점검 — 고른 기간(train)과 안 본 기간(test), 시작 시점 6개.
+
+    한 구간 최고값이 아니라 **안 본 구간에서도, 어느 시점에 시작해도** 무너지지 않는지를 본다
+    (AGENTS v7.0 규칙 2). 운영설정과 '방어자산 없는 v7.0'을 나란히 찍는다.
+    """
+    rc = _load_rotation(market)
+    uni = list(KR_ETFS) if market == "KR" else list(US_1X)
+    cap = 2_700_000.0 if market == "KR" else 2000.0
+    data = load_prices(uni + rc.get("defensive", []), market, "2017-01-01", refresh, source)
+    uni = [c for c in uni if c in data]
+    windows = [("train 2017-21", "2017-01-01", "2022-01-01"), ("test 2022-", "2022-01-01", None)]
+    windows += [(f"start {y}", f"{y}-01-01", None) for y in range(2017, 2023)]
+    print(f"\n=== {market} robustness (운영설정 vs 방어자산 없음) ===")
+    print(f"{'구간':<16}{'운영 CAGR':>10}{'MDD':>8}{'Sharpe':>8}   {'v7.0 CAGR':>10}{'MDD':>8}{'Sharpe':>8}")
+    for name, s, e in windows:
+        a = run_operational(data, market, s, cap, uni, end=e)
+        b = run_operational(data, market, s, cap, uni, end=e, defensive=False)
+        print(f"{name:<16}{a['cagr_pct']:>9.1f}%{a['mdd_pct']:>7.1f}%{a['sharpe']:>8.2f}   "
+              f"{b['cagr_pct']:>9.1f}%{b['mdd_pct']:>7.1f}%{b['sharpe']:>8.2f}")
 
 
 def print_table(market: str, start: str, results: Dict[str, Dict]) -> None:
@@ -503,10 +562,18 @@ def main() -> int:
     ap.add_argument("--start", default="2017-01-01")
     ap.add_argument("--refresh", action="store_true", help="캐시 무시하고 다시 다운로드")
     ap.add_argument("--json", help="결과를 JSON 으로 저장")
+    ap.add_argument("--source", choices=["auto", "toss", "yfinance"], default="auto",
+                    help="일봉 출처 (auto = TOSS_CLIENT_ID 있으면 토스)")
+    ap.add_argument("--robustness", action="store_true", help="운영설정 train/test·시작연도 점검")
     args = ap.parse_args()
+    markets = ["KR", "US"] if args.market == "ALL" else [args.market]
+    if args.robustness:
+        for mk in markets:
+            robustness(mk, args.refresh, args.source)
+        return 0
     out = {}
-    for mk in (["KR", "US"] if args.market == "ALL" else [args.market]):
-        res = run_market(mk, args.start, args.refresh)
+    for mk in markets:
+        res = run_market(mk, args.start, args.refresh, args.source)
         print_table(mk, args.start, res)
         out[mk] = res
     if args.json:
