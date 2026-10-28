@@ -67,6 +67,8 @@ class TossBroker(Broker):
         if self.execution_mode == ExecutionMode.PAPER:
             raise ValueError("Toss 공식 문서에는 모의투자 서버가 없습니다. shadow 또는 live를 사용하세요")
         self.base_url = os.getenv("TOSS_BASE_URL", BASE_URL).rstrip("/")
+        if self.execution_mode == ExecutionMode.LIVE and self.base_url != BASE_URL:
+            raise ValueError("live 주문은 공식 Toss API URL에서만 허용합니다")
         self.session = session or requests.Session()
         self.access_token: Optional[str] = None
         self.token_expiry = 0.0

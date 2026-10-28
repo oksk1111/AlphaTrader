@@ -42,6 +42,12 @@ def broker(session, mode="shadow"):
     return b
 
 
+def test_live_mode_rejects_nonofficial_base_url(monkeypatch):
+    monkeypatch.setenv("TOSS_BASE_URL", "https://example.test")
+    with pytest.raises(ValueError):
+        TossBroker("client", "secret", "1", "live", Session())
+
+
 def test_paper_mode_is_rejected_because_toss_has_no_documented_sandbox():
     with pytest.raises(ValueError):
         TossBroker("client", "secret", "1", "paper", Session())
