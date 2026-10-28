@@ -296,6 +296,34 @@ class TossBroker(Broker):
         result = self._request("GET", f"/api/v1/orders/{order_id}", account=True).get("result") or {}
         return self._parse_order(result)
 
+    def submit_and_wait(self, order: OrderRequest, timeout_sec: float = 15.0,
+                        poll_sec: float = 0.5) -> OrderAck:
+        """주문 접수와 체결을 구분하고 terminal 상태까지 제한 시간 내 확인한다.
+
+        shadow는 실제 주문이 없으므로 ACCEPTED를 그대로 반환한다. live에서 제한 시간이
+        끝났거나 부분체결이면 잔량을 취소해 다음 세션의 중복 주문을 막고 최종 상태를 읽는다.
+        """
+        ack = self.submit_order(order)
+        if self.execution_mode == ExecutionMode.SHADOW:
+            return ack
+        deadline = time.monotonic() + max(0.0, timeout_sec)
+        # 접수 응답은 상태를 포함하지 않는다. 취소 여부를 결정하기 전에 최소 한 번은
+        # 주문 상세를 읽어 실제 pending/partial/filled 상태를 확인한다.
+        latest = self.order(ack.order_id)
+        while time.monotonic() < deadline:
+            if latest.state in (OrderState.FILLED, OrderState.CANCELED, OrderState.REJECTED):
+                return latest
+            time.sleep(max(0.1, poll_sec))
+            latest = self.order(ack.order_id)
+        if latest.state in (OrderState.PENDING, OrderState.PARTIAL_FILLED, OrderState.ACCEPTED):
+            try:
+                return self.cancel_order(ack.order_id)
+            except BrokerError as exc:
+                if exc.code == "already-filled":
+                    return self.order(ack.order_id)
+                raise
+        return latest
+
     def cancel_order(self, order_id: str) -> OrderAck:
         if self.execution_mode == ExecutionMode.SHADOW:
             return OrderAck(order_id=order_id, client_order_id=None,

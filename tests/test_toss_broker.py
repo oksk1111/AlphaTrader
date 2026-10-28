@@ -126,6 +126,44 @@ def test_live_order_is_accepted_not_falsely_filled():
     }
 
 
+def test_submit_and_wait_returns_only_confirmed_fill():
+    s = Session()
+    s.queue(
+        Response({"result": {"orderId": "order-1", "clientOrderId": "client-1"}}),
+        Response({"result": {"orderId": "order-1", "symbol": "005930", "status": "PENDING",
+                              "execution": {"filledQuantity": "0"}}}),
+        Response({"result": {"orderId": "order-1", "symbol": "005930", "status": "FILLED",
+                              "execution": {"filledQuantity": "1", "averageFilledPrice": "70000"}}}),
+    )
+    b = broker(s, "live")
+    ack = b.submit_and_wait(OrderRequest(
+        symbol="005930", market=Market.KR, side=OrderSide.BUY,
+        order_type=OrderType.LIMIT, quantity=1, price=70000,
+        client_order_id="client-1",
+    ), timeout_sec=1, poll_sec=.01)
+    assert ack.state == OrderState.FILLED
+    assert ack.filled_quantity == 1
+
+
+def test_submit_and_wait_cancels_unfilled_order_on_timeout(monkeypatch):
+    s = Session()
+    s.queue(
+        Response({"result": {"orderId": "order-1", "clientOrderId": "client-1"}}),
+        Response({"result": {"orderId": "order-1", "symbol": "XLK", "status": "PENDING",
+                              "execution": {"filledQuantity": "0"}}}),
+        Response({"result": {}}),
+        Response({"result": {"orderId": "order-1", "symbol": "XLK", "status": "CANCELED",
+                              "execution": {"filledQuantity": "0"}}}),
+    )
+    b = broker(s, "live")
+    ack = b.submit_and_wait(OrderRequest(
+        symbol="XLK", market=Market.US, side=OrderSide.BUY,
+        order_type=OrderType.LIMIT, quantity=1, price=200,
+        client_order_id="client-1",
+    ), timeout_sec=0)
+    assert ack.state == OrderState.CANCELED
+
+
 def test_order_detail_distinguishes_partial_and_filled():
     for status, expected in [("PARTIAL_FILLED", OrderState.PARTIAL_FILLED),
                              ("FILLED", OrderState.FILLED)]:
