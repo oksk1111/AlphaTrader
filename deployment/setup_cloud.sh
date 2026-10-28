@@ -32,9 +32,9 @@ if [ ! -f ".env" ]; then
     echo "⚠️  .env file not found!"
     echo "Creating template .env..."
     cat <<EOT >> .env
-KIS_APP_KEY=your_app_key_here
-KIS_APP_SECRET=your_app_secret_here
-KIS_ACCOUNT_NO=your_account_no_here
+TOSS_CLIENT_ID=your_toss_client_id
+TOSS_CLIENT_SECRET=your_toss_client_secret
+TOSS_ACCOUNT_SEQ=
 GEMINI_API_KEY=your_gemini_key_here
 DISCORD_WEBHOOK_URL=optional_webhook_url
 EOT

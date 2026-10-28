@@ -33,9 +33,9 @@ jobs:
         run: python -c "import ast, io; ast.parse(io.open('run_bot.py', encoding='utf-8').read())"
 
       - name: Unit & integration tests
-        # 외부 KIS API 를 실제로 호출하는 두 테스트는 CI 에 자격증명이 없으므로 제외.
+        # 실제 토스 API 를 호출하는 테스트는 CI 에 자격증명이 없으므로 제외.
         run: |
-          pytest tests/ -q             --ignore=tests/test_find_etfs.py             --ignore=tests/test_portfolio_manager.py
+          pytest tests/ -q --ignore=tests/test_portfolio_manager.py
 
       - name: v6.0 회귀 테스트 (5대 사고 원인)
         run: pytest tests/test_v60_strategy.py tests/test_v60_integration.py -q
@@ -56,6 +56,11 @@ jobs:
         # (21종목 희석 + 3x 레버리지 + 장중 꼬리 손절)였다. 로테이션 판단·배선,
         # 레버리지/개별주 재유입, 시장 간 자금 공유, 대시보드 로그 소스를 잠근다.
         run: pytest tests/test_v70_rotation.py -q
+
+      - name: v8.0 회귀 테스트 (토스증권 어댑터 + 웹소켓 체결 확인)
+        # 없음/실패 구분, KR 총평가 = 주식 + 예수금, US +1% 지정가, 거부 주문을 성공으로
+        # 세지 않는가, 토큰을 봇·대시보드가 서로 revoke 하지 않는가.
+        run: pytest tests/test_v80_toss.py -q
 
       - name: 전략 검증 루프 (국면 + 청산품질 + 소액계좌)
         # 종료코드 0 = 합격. 실패 조건:
@@ -85,12 +90,14 @@ jobs:
           TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
           TOSS_ACCOUNT_SEQ: ${{ secrets.TOSS_ACCOUNT_SEQ }}
           LOGIN_PASSWORD: ${{ secrets.LOGIN_PASSWORD }}
+          # shadow(기본) | live — Settings > Secrets and variables > Actions > Variables
+          EXECUTION_MODE: ${{ vars.EXECUTION_MODE }}
         with:
           host: ${{ secrets.ORACLE_HOST }}
           username: ${{ secrets.ORACLE_USERNAME }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
           port: 22
-          envs: TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,TOSS_CLIENT_ID,TOSS_CLIENT_SECRET,TOSS_ACCOUNT_SEQ,LOGIN_PASSWORD
+          envs: TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,TOSS_CLIENT_ID,TOSS_CLIENT_SECRET,TOSS_ACCOUNT_SEQ,LOGIN_PASSWORD,EXECUTION_MODE
           script: |
             echo "🚀 Starting deployment via GitHub Actions..."
             REPO_DIR="$HOME/AlphaTrader"
@@ -114,23 +121,30 @@ jobs:
             git reset --hard origin/main
             
             # 2. Update deployment-managed environment variables.
-            # Secret values come only from GitHub Secrets and are never committed.
+            #    값이 있는 시크릿만 덮어쓴다 — 시크릿 등록 전에 배포돼도 서버 .env 를 비우지 않는다.
+            #    v8.0: 한국투자증권 제거 → KIS_* / BROKER / MARKET_DATA_BROKER 줄은 지운다.
+            #    EXECUTION_MODE 는 저장소 변수(vars)에서, 없으면 shadow (주문 미전송).
             echo "🔧 (Step 2/3) Updating configuration..."
             touch .env
-            grep -Ev '^(TELEGRAM_|TOSS_|LOGIN_PASSWORD=|BROKER=|MARKET_DATA_BROKER=|EXECUTION_MODE=)' .env > .env.tmp || true
+            grep -Ev '^(KIS_|BROKER=|MARKET_DATA_BROKER=|EXECUTION_MODE=)' .env > .env.tmp || true
             mv .env.tmp .env
-            {
-              echo "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN"
-              echo "TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID"
-              echo "TOSS_CLIENT_ID=$TOSS_CLIENT_ID"
-              echo "TOSS_CLIENT_SECRET=$TOSS_CLIENT_SECRET"
-              echo "TOSS_ACCOUNT_SEQ=$TOSS_ACCOUNT_SEQ"
-              echo "LOGIN_PASSWORD=$LOGIN_PASSWORD"
-              echo "BROKER=kis"
-              echo "MARKET_DATA_BROKER=toss"
-              echo "EXECUTION_MODE=shadow"
-            } >> .env
+            set_env() {
+              if [ -n "$2" ]; then
+                grep -v "^$1=" .env > .env.tmp || true
+                mv .env.tmp .env
+                echo "$1=$2" >> .env
+              fi
+            }
+            set_env TELEGRAM_BOT_TOKEN "$TELEGRAM_BOT_TOKEN"
+            set_env TELEGRAM_CHAT_ID "$TELEGRAM_CHAT_ID"
+            set_env TOSS_CLIENT_ID "$TOSS_CLIENT_ID"
+            set_env TOSS_CLIENT_SECRET "$TOSS_CLIENT_SECRET"
+            set_env TOSS_ACCOUNT_SEQ "$TOSS_ACCOUNT_SEQ"
+            set_env LOGIN_PASSWORD "$LOGIN_PASSWORD"
+            echo "EXECUTION_MODE=${EXECUTION_MODE:-shadow}" >> .env
             chmod 600 .env
+            grep -q "^TOSS_CLIENT_ID=." .env || echo "⚠️ TOSS_CLIENT_ID 미설정 — GitHub Secrets 에 등록하세요 (봇이 시세·주문을 못 합니다)"
+            echo "ℹ️ EXECUTION_MODE=${EXECUTION_MODE:-shadow}"
             
             # 3. Execute Deployment Script
             echo "🔄 (Step 3/3) Running local deploy script..."

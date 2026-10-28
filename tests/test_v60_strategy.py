@@ -256,7 +256,7 @@ class TestHealthMonitor:
         self._dry(8)
         d = health_monitor.diagnose("US")
         assert "주문가능금액" in d.dominant_reason
-        assert "예수금" in d.remedy
+        assert "환전" in d.remedy
 
     def test_streak_resets_after_a_fill(self):
         self._dry(8)

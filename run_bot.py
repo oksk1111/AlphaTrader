@@ -7,8 +7,8 @@ import json
 import os
 import traceback
 import pytz
-from modules.kis_api import KisOverseas
-from modules.kis_domestic import KisDomestic
+from modules.brokers.compat import TossOverseas, TossDomestic, ACCOUNT_RESTRICTED_CODES, LiveFeed
+from config import TOSS_CLIENT_ID
 from modules.gemini_analyst import GeminiAnalyst
 from modules.logger import logger
 from modules.telegram_notifier import TelegramNotifier
@@ -457,7 +457,7 @@ US_EXCHANGE_MAP = {
 }
 
 def _resolve_us_exchange(symbol, default='NAS'):
-    """심볼 → KIS 해외 거래소 코드 (NAS/AMS 등). 모르면 기본값(NAS) 반환."""
+    """심볼 → 거래소 코드 (NAS/AMS 등, 표시·호환용 — 토스 주문은 심볼만 쓴다). 모르면 NAS."""
     if not symbol:
         return default
     return US_EXCHANGE_MAP.get(symbol.upper(), default)
@@ -725,8 +725,8 @@ def calculate_dca_quantity(available_cash, current_price, num_targets=1, dca_set
 
     return max(qty, 0)
 
-# 원↔달러 환산율. 통합증거금 환산·총자산 원화환산에 공용으로 쓴다.
-# (v5.x 는 1350/1450 을 코드 곳곳에 흩뿌려 두어 값이 서로 어긋났다.)
+# 원↔달러 환산율 — DCA 경로의 총자산 원화환산(사이징 상한) 전용. 주문 자금에는 쓰지 않는다.
+# 표시용 실시간 환율은 modules.brokers.compat.usd_krw() (토스 환율 API).
 USD_KRW_RATE = float(os.getenv('USD_KRW_RATE', '1400'))
 
 # === [v6.0] 점수 기반 판단 파라미터 ===
@@ -772,12 +772,12 @@ def current_session(market=None):
     return market_clock.session_info(market)
 
 
-def _lookup_price(kis_client, ticker, market, exchange):
+def _lookup_price(broker, ticker, market, exchange):
     """journal 기록용 현재가 조회 (실패 시 0.0)."""
     try:
         if market == 'US':
-            return float(kis_client.get_current_price(ticker, exchange or 'NAS') or 0.0)
-        return float(kis_client.get_current_price(ticker) or 0.0)
+            return float(broker.get_current_price(ticker, exchange or 'NAS') or 0.0)
+        return float(broker.get_current_price(ticker) or 0.0)
     except Exception:
         return 0.0
 
@@ -947,7 +947,7 @@ def scale_loss_threshold(base_pct, ticker):
     return base_pct * ((1.0 + f) / 2.0)
 
 
-def safe_sell(kis_client, market, ticker, qty_hint, exchange=None,
+def safe_sell(broker, market, ticker, qty_hint, exchange=None,
               reason="sell", allow_limit_fallback=True, monitor_data=None):
     """매도 주문 안전 실행기.
 
@@ -970,9 +970,9 @@ def safe_sell(kis_client, market, ticker, qty_hint, exchange=None,
         return {'success': False, 'sold_qty': 0, 'phase': 'deferred',
                 'error': f'market {market} closed'}
 
-    # 1) 실제 보유 수량 재조회 (KIS API mismatch 방지)
+    # 1) 실제 매도가능 수량 재조회 (캐시 수량과 브로커 수량 불일치 방지)
     try:
-        actual_qty = kis_client.get_holding_qty(ticker)
+        actual_qty = broker.get_holding_qty(ticker)
     except Exception as _e:
         logger.warning(f"[{ticker}] get_holding_qty 실패 ({_e}) → 캐시 수량 사용")
         actual_qty = qty_hint
@@ -1004,17 +1004,18 @@ def safe_sell(kis_client, market, ticker, qty_hint, exchange=None,
     for attempt in range(SELL_MARKET_RETRY):
         try:
             if market == 'US':
-                res = kis_client.sell_market_order(ticker, effective_qty, exchange or 'NAS')
+                res = broker.sell_market_order(ticker, effective_qty, exchange or 'NAS')
             else:
-                res = kis_client.sell_market_order(ticker, effective_qty)
+                res = broker.sell_market_order(ticker, effective_qty)
             if res and res.get('rt_cd') == '0':
-                logger.info(f"[{ticker}] ✅ {reason} 시장가 매도 성공 ({effective_qty}주)")
+                # [v8.0] rt_cd '0' = 체결(또는 shadow). 접수 후 거부·취소는 어댑터가 '1' 로 돌려준다.
+                logger.info(f"[{ticker}] ✅ {reason} 시장가 매도 ({effective_qty}주, {res.get('msg1')})")
                 _journal_record(market, ticker, reason,
-                                exit_price=_lookup_price(kis_client, ticker, market, exchange),
+                                exit_price=_lookup_price(broker, ticker, market, exchange),
                                 sold_qty=effective_qty, phase='market',
                                 monitor_data=monitor_data)
-                return {'success': True, 'sold_qty': effective_qty,
-                        'phase': 'market', 'error': None}
+                return {'success': True, 'sold_qty': effective_qty, 'phase': 'market',
+                        'error': None, 'shadow': bool(res.get('shadow'))}
             last_err = (res or {}).get('msg1') or 'no response'
             logger.warning(f"[{ticker}] {reason} 시장가 시도 {attempt+1} 실패: {last_err}")
         except Exception as e:
@@ -1025,11 +1026,11 @@ def safe_sell(kis_client, market, ticker, qty_hint, exchange=None,
     # 3) 지정가 fallback (KR 전용 - US는 sell_market_order가 이미 limit 기반)
     if allow_limit_fallback and market == 'KR':
         try:
-            curr = kis_client.get_current_price(ticker)
+            curr = broker.get_current_price(ticker)
             if curr and curr > 0:
                 limit_price = curr * (1.0 - SELL_LIMIT_DISCOUNT_PCT / 100.0)
                 for attempt in range(SELL_LIMIT_RETRY):
-                    res = kis_client.sell_limit_order(ticker, effective_qty, limit_price)
+                    res = broker.sell_limit_order(ticker, effective_qty, limit_price)
                     if res and res.get('rt_cd') == '0':
                         logger.info(
                             f"[{ticker}] ✅ {reason} 지정가 fallback 성공 "
@@ -1121,7 +1122,7 @@ def _rotation_universe(mcfg, market):
     return out
 
 
-def _rotation_account(kis, market, exch_of=None):
+def _rotation_account(broker, market, exch_of=None):
     """(holdings{code: {qty, avg, price, value, exchange}}, cash, equity, degraded).
 
     degraded = 조회에 실패한 US 거래소 목록. 비어 있지 않으면 일부 보유가 안 보일 수
@@ -1131,9 +1132,9 @@ def _rotation_account(kis, market, exch_of=None):
     시장별 자금만 본다 (위 5번). 조회 실패는 예외로 올린다 — 잔고를 모르는
     상태에서 주문을 내면 안 된다.
     """
-    bal = kis.get_balance()
+    bal = broker.get_balance()
     if not bal:
-        # [v7.0.1] KisOverseas.get_balance() 는 이제 보유 0 이면 {'output1': []} 를,
+        # [v7.0.1] TossOverseas.get_balance() 는 이제 보유 0 이면 {'output1': []} 를,
         # 전 거래소 조회 실패일 때만 None 을 준다. 예전엔 보유 0 도 None 이라
         # 2026-10-01 배포 이후 US 세션이 매일 여기서 크래시 → 5회 재시도 → 포기했다.
         raise RuntimeError(f"[{market}] 잔고 조회 실패 (응답 없음)")
@@ -1165,7 +1166,7 @@ def _rotation_account(kis, market, exch_of=None):
         # D+2 예수금(prvs_rcdl_excc_amt)이 결제 예정분을 반영한 실제 원화 여력이다.
         cash = safe_float(o2.get('prvs_rcdl_excc_amt') or o2.get('dnca_tot_amt') or 0)
     else:
-        fb = kis.get_foreign_balance()
+        fb = broker.get_foreign_balance()
         if fb is None:
             # [v7.0.2] 실패를 현금 0 으로 읽으면 '주문가능금액 부족'으로 기록돼 원인이 가려진다.
             raise RuntimeError("[US] 외화예수금 조회 실패 (응답 없음)")
@@ -1195,10 +1196,47 @@ def _rotation_wait(market, cond, label, poll_sec=30):
         time.sleep(poll_sec)
 
 
+def _start_ws(market, codes):
+    """토스 실시간 스트림 (체결 틱·호가·주문 이벤트). 자격증명이 없으면(테스트 등) 시작하지 않는다."""
+    global ws_client
+    _stop_ws()
+    if not TOSS_CLIENT_ID:
+        return None
+    try:
+        ws_client = LiveFeed(market, codes, ws_price_callback).start()
+    except Exception as e:
+        logger.error(f"❌ [WS] 시작 실패 → REST 로 진행: {e}")
+        ws_client = None
+    return ws_client
+
+
+def _stop_ws():
+    global ws_client
+    if ws_client:
+        try:
+            ws_client.stop()
+        except Exception as e:
+            logger.error(f"❌ [WS] 종료 실패: {e}")
+        ws_client = None
+
+
 def run_rotation_session(market, user_config):
-    """[v7.0] 모멘텀 로테이션 1세션. job() 에서 strategy == 'momentum_rotation' 일 때 호출."""
+    """[v7.0] 모멘텀 로테이션 1세션. job() 에서 strategy == 'momentum_rotation' 일 때 호출.
+
+    [v8.0] 세션 동안 실시간 스트림을 연다 — 판단은 여전히 완성된 일봉(v7.0 규칙 5)이지만,
+    주문 단가는 실시간 체결가로, 체결 여부는 주문 이벤트로 즉시 확인한다 (TossBroker 가 캐시를 먼저 본다).
+    """
+    mcfg = ((user_config.get('momentum_rotation') or {}).get(market.lower())) or {}
+    _start_ws(market, [c for c, _ in _rotation_universe(mcfg, market)] + list(mcfg.get('defensive') or []))
+    try:
+        _rotation_session(market, user_config)
+    finally:
+        _stop_ws()
+
+
+def _rotation_session(market, user_config):
     from modules.momentum_rotation import (
-        compute_features, market_risk_on, plan_rotation, fillable_slots,
+        compute_features, market_risk_on, plan_rotation, fillable_slots, defensive_targets,
     )
 
     cfg = user_config.get('momentum_rotation') or {}
@@ -1213,8 +1251,9 @@ def run_rotation_session(market, user_config):
     entry_delay = float(cfg.get('entry_delay_min', 10))
     close_check = float(cfg.get('close_check_before_min', 20))
     bench = mcfg.get('benchmark', '069500' if market == 'KR' else 'SPY')
+    defensive = [str(c) for c in mcfg.get('defensive') or []]
 
-    kis = KisOverseas() if market == 'US' else KisDomestic()
+    broker = TossOverseas() if market == 'US' else TossDomestic()
     started_at = datetime.datetime.now().astimezone().isoformat(timespec='seconds')
     skey = market_clock.session_key(market)
     universe = _rotation_universe(mcfg, market)
@@ -1236,17 +1275,19 @@ def run_rotation_session(market, user_config):
 
     # --- 2) 계좌 + 일봉 ---
     touch_heartbeat(force=True, market=market, source='session-prep')
-    holdings, cash, equity, degraded = _rotation_account(kis, market, exch_of)
+    holdings, cash, equity, degraded = _rotation_account(broker, market, exch_of)
     logger.info(f"[{market}] 계좌: 현금 {cash:,.2f} / 평가 {equity:,.2f} / 보유 {list(holdings)}")
+    if ws_client:
+        ws_client.update_tickers(list(dict.fromkeys(uni_codes + defensive + list(holdings))))
 
     def _history(code, exch):
         touch_heartbeat(market=market, source='scan', ticker=code)
-        rows = (kis.get_daily_history(code, exchange=exch or 'NAS') if market == 'US'
-                else kis.get_daily_history(code))
+        rows = (broker.get_daily_history(code, exchange=exch or 'NAS') if market == 'US'
+                else broker.get_daily_history(code))
         return _completed_closes(rows or [], market)
 
     closes_of = {}
-    for code in dict.fromkeys(uni_codes + list(holdings)):
+    for code in dict.fromkeys(uni_codes + defensive + list(holdings)):
         exch = exch_of.get(code) or (holdings.get(code) or {}).get('exchange')
         closes_of[code] = _history(code, exch)
     bench_closes = closes_of.get(bench) or _history(bench, _resolve_us_exchange(bench) if market == 'US' else None)
@@ -1288,7 +1329,7 @@ def run_rotation_session(market, user_config):
 
     ranked_codes = [c for c in uni_codes]
     held_in_uni = [c for c in holdings if c in uni_codes]
-    outside = [c for c in holdings if c not in uni_codes]
+    outside = [c for c in holdings if c not in uni_codes and c not in defensive]
     feats = [compute_features(c, closes_of.get(c) or []) for c in ranked_codes]
     n_slots = fillable_slots(equity, min_slot, slots_max)
     plan = plan_rotation(feats, held_in_uni, risk_on, n_slots, sell_buffer)
@@ -1315,6 +1356,17 @@ def run_rotation_session(market, user_config):
         else:
             targets = [t for t in plan.targets if t in holdings]
 
+    # [v8.0] 주식 ETF 로 못 채운 슬롯(risk-off·추세통과 부족)은 자기 추세가 살아 있는
+    # 방어자산(채권·금)으로 채운다. 방어자산마저 하락 추세면 현금. 판단 시점은 주식 슬롯과
+    # 같다 (리밸런싱일 또는 risk-off 일).
+    if defensive and (rebalance_due or not risk_on):
+        dtargets = defensive_targets({c: closes_of.get(c) or [] for c in defensive},
+                                     n_slots - len(targets))
+        sells += [(c, "방어자산 해제 (추세이탈/주식 슬롯 복귀)")
+                  for c in holdings if c in defensive and c not in dtargets]
+        targets = list(targets) + dtargets
+        logger.info(f"[{market}] 방어자산 슬롯: {dtargets or '없음(현금)'}")
+
     # --- 4) 매도 먼저 ---
     sold = []
     for code, reason in sells:
@@ -1323,14 +1375,15 @@ def run_rotation_session(market, user_config):
             continue
         touch_heartbeat(market=market, source='evaluate', ticker=code)
         logger.info(f"[{code}] 로테이션 매도: {h['qty']}주 — {reason}")
-        r = safe_sell(kis, market, code, h['qty'], h.get('exchange'), reason=f"rotation:{reason}")
+        r = safe_sell(broker, market, code, h['qty'], h.get('exchange'), reason=f"rotation:{reason}")
         if r.get('success'):
             sold.append(code)
             _pnl = (h['price'] / h['avg'] - 1) * 100 if h['avg'] > 0 else 0
             _cur = telegram.fmt_currency(h['price'] * h['qty'], market)
             _avg_s = telegram.fmt_currency(h['avg'], market)
             send_alert(
-                f"🔴 [{market}] 매도 체결\n"
+                f"{'🧪' if r.get('shadow') else '🔴'} [{market}] 매도 "
+                f"{'(SHADOW — 주문 미전송)' if r.get('shadow') else '체결'}\n"
                 f"{code} {h['qty']}주 × {telegram.fmt_currency(h['price'], market)} = {_cur}\n"
                 f"평단 {_avg_s} → {telegram.fmt_pnl(_pnl)}\n"
                 f"사유: {reason}"
@@ -1345,7 +1398,9 @@ def run_rotation_session(market, user_config):
     if rebalance_due:
         # 리밸런싱일에만 기존 보유 목표의 비중 부족분을 보충한다 (이관된 1주짜리 등).
         to_buy += [t for t in targets if t in holdings and t not in sold]
-    if to_buy and risk_on:
+    if not risk_on:
+        to_buy = [t for t in to_buy if t in defensive]   # risk-off 에는 방어자산만 산다
+    if to_buy:
         if failed_history:
             for code in dict.fromkeys(to_buy):
                 buy_fail.append(code)
@@ -1353,9 +1408,9 @@ def run_rotation_session(market, user_config):
             to_buy = []
         if sold:
             time.sleep(3)
-        holdings, cash, equity, degraded = _rotation_account(kis, market, exch_of)
+        holdings, cash, equity, degraded = _rotation_account(broker, market, exch_of)
         per_slot = equity / max(1, n_slots)
-        # [v7.0.2] 실제 주문 단가. US 매수는 현재가 +1% 지정가(kis_api.buy_market_order)에
+        # [v7.0.2] 실제 주문 단가. US 매수는 현재가 +1% 지정가(brokers.compat.TossOverseas.buy_market_order)에
         # 수수료가 붙는다. 현재가로만 판정하면 현금이 [가격, 가격×1.0125) 일 때 1주 주문이
         # 매 세션 '주문가능금액 초과'로 거부된다.
         unit_mult = 1.01 * 1.0025 if market == 'US' else 1.003
@@ -1367,8 +1422,8 @@ def run_rotation_session(market, user_config):
                 fail_reason[code] = f"잔고 일부 조회 실패 {degraded} — 중복매수 방지로 보류"
                 continue
             touch_heartbeat(market=market, source='evaluate', ticker=code)
-            price = (kis.get_current_price(code, exch or 'NAS') if market == 'US'
-                     else kis.get_current_price(code))
+            price = (broker.get_current_price(code, exch or 'NAS') if market == 'US'
+                     else broker.get_current_price(code))
             price = safe_float(price)
             if price <= 0:
                 logger.warning(f"[{code}] 현재가 조회 실패 → 이번 세션 매수 보류")
@@ -1391,22 +1446,25 @@ def run_rotation_session(market, user_config):
                 fail_reason[code] = f"주문가능금액 부족 (현금 {cash:,.2f} < 1주 {unit:,.2f})"
                 continue
             logger.info(f"[{code}] 로테이션 매수: {qty}주 @ {price:,.2f} (슬롯 목표 {per_slot:,.0f}, 보유 {have:,.0f})")
-            res = (kis.buy_market_order(code, qty, exch or 'NAS') if market == 'US'
-                   else kis.buy_market_order(code, qty))
+            res = (broker.buy_market_order(code, qty, exch or 'NAS') if market == 'US'
+                   else broker.buy_market_order(code, qty))
             if not (res and res.get('rt_cd') == '0') and qty > 1:
                 # 시장가 체결 여유분/수수료로 '주문가능금액 초과'가 나는 경우 한 번 줄여서 재시도
                 qty2 = max(1, int(qty * 0.9))
                 logger.warning(f"[{code}] 매수 거부({(res or {}).get('msg1')}) → {qty2}주로 재시도")
                 qty = qty2
-                res = (kis.buy_market_order(code, qty, exch or 'NAS') if market == 'US'
-                       else kis.buy_market_order(code, qty))
+                res = (broker.buy_market_order(code, qty, exch or 'NAS') if market == 'US'
+                       else broker.buy_market_order(code, qty))
             if res and res.get('rt_cd') == '0':
-                logger.info(f"[{code}] ✅ 로테이션 매수 성공 ({qty}주)")
+                qty = int(res.get('filled_qty') or qty)          # 부분체결이면 체결분만
+                price = safe_float(res.get('avg_price')) or price
+                logger.info(f"[{code}] ✅ 로테이션 매수 ({qty}주, {res.get('msg1')})")
                 bought.append(code)
                 cash -= qty * unit
                 _amt = telegram.fmt_currency(qty * price, market)
                 send_alert(
-                    f"🟢 [{market}] 매수 체결\n"
+                    f"{'🧪' if res.get('shadow') else '🟢'} [{market}] 매수 "
+                    f"{'(SHADOW — 주문 미전송)' if res.get('shadow') else '체결'}\n"
                     f"{code} {qty}주 × {telegram.fmt_currency(price, market)} = {_amt}\n"
                     f"슬롯 목표 {telegram.fmt_currency(per_slot, market)}"
                 )
@@ -1466,7 +1524,7 @@ def run_rotation_session(market, user_config):
     if close_stop is not None:
         sess = _rotation_wait(market, lambda s: s.minutes_to_close <= close_check, 'close-watch')
         if sess.is_open:
-            holdings, cash, equity, _deg = _rotation_account(kis, market, exch_of)
+            holdings, cash, equity, _deg = _rotation_account(broker, market, exch_of)
             for code, h in holdings.items():
                 if h['avg'] <= 0:
                     continue
@@ -1474,19 +1532,19 @@ def run_rotation_session(market, user_config):
                 if pnl <= float(close_stop):
                     touch_heartbeat(market=market, source='evaluate', ticker=code)
                     logger.warning(f"[{code}] 🛑 종가 기준 손절 {pnl:.1f}% <= {close_stop}%")
-                    r = safe_sell(kis, market, code, h['qty'], h.get('exchange'), reason='rotation:close_stop')
+                    r = safe_sell(broker, market, code, h['qty'], h.get('exchange'), reason='rotation:close_stop')
                     if r.get('success'):
                         stop_sold.append(code)
                         _loss_amt = _cur(h['qty'] * h['price'])
                         send_alert(
-                            f"🛑 [{market}] 종가 손절\n"
+                            f"🛑 [{market}] 종가 손절{' (SHADOW — 주문 미전송)' if r.get('shadow') else ''}\n"
                             f"{code} {h['qty']}주 ({pnl:.1f}%)\n"
                             f"금액: {_loss_amt}"
                         )
 
     # --- 6-1) [v7.0.3] 장 마감 포트폴리오 요약 ---
     try:
-        _final_h, _final_cash, _final_eq, _ = _rotation_account(kis, market, exch_of)
+        _final_h, _final_cash, _final_eq, _ = _rotation_account(broker, market, exch_of)
         _cash_pct = (_final_cash / _final_eq * 100) if _final_eq > 0 else 100
         _close_lines = [f"📊 [{market}] 장 마감 포트폴리오", "━━━━━━━━━━━━"]
         _close_lines.append(f"총 평가: {_cur(_final_eq)}")
@@ -1583,10 +1641,10 @@ def job():
     # Select Market Context
     if market == 'US':
         logger.info(f"🇺🇸 Starting US Trading Session ({STRATEGY_MODE.upper()}) for {TARGET_TICKERS_US}")
-        kis = KisOverseas()
+        broker = TossOverseas()
         tickers = TARGET_TICKERS_US
     else:
-        kis = KisDomestic()
+        broker = TossDomestic()
         # Merge Static and Dynamic Targets for KR
         # DYNAMIC_TARGETS are found by the scanner
         current_dynamic_targets = [t for t in DYNAMIC_TARGETS if t.get('exchange') == 'KR']
@@ -1710,11 +1768,11 @@ def job():
         """장중 재평가를 위한 최신 가격/일봉/이동평균 갱신"""
         try:
             if market == 'US':
-                ohlc = kis.get_daily_ohlc(ticker, exchange)
-                current_price = kis.get_current_price(ticker, exchange)
+                ohlc = broker.get_daily_ohlc(ticker, exchange)
+                current_price = broker.get_current_price(ticker, exchange)
             else:
-                ohlc = kis.get_daily_ohlc(ticker)
-                current_price = kis.get_current_price(ticker)
+                ohlc = broker.get_daily_ohlc(ticker)
+                current_price = broker.get_current_price(ticker)
 
             if not ohlc or not current_price:
                 return None, None, None, None
@@ -1873,10 +1931,10 @@ def job():
         currency = "$" if market == 'US' else "₩"
         if market == 'US':
             logger.info(f"[{ticker}] DCA Buy: {qty} shares at ${current_price:.2f}")
-            res = kis.buy_market_order(ticker, qty, exchange)
+            res = broker.buy_market_order(ticker, qty, exchange)
         else:
             logger.info(f"[{ticker}] DCA Buy: {qty} shares at {currency}{current_price:,.0f}")
-            res = kis.buy_market_order(ticker, qty)
+            res = broker.buy_market_order(ticker, qty)
 
         if res and res.get('rt_cd') == '0':
             logger.info(f"[{ticker}] ✅ DCA Buy Success! {qty} shares")
@@ -2052,9 +2110,9 @@ def job():
             f"[{ticker}] 🎯 ({tag}) 매수 실행: {qty}주 @ {currency}{current_price:,.2f} | {decision.summary()}"
         )
         if market == 'US':
-            res = kis.buy_market_order(ticker, qty, exchange)
+            res = broker.buy_market_order(ticker, qty, exchange)
         else:
-            res = kis.buy_market_order(ticker, qty)
+            res = broker.buy_market_order(ticker, qty)
 
         if res and res.get('rt_cd') == '0':
             session_buy_count += 1
@@ -2082,7 +2140,7 @@ def job():
             err_msg = res.get('msg1', 'unknown') if res else 'no response'
             logger.error(f"[{ticker}] ❌ 매수 실패: {err_msg}")
             record_skip_reason(ticker, f"주문 실패: {err_msg}")
-            if res and res.get('msg_cd') in ['APBK1680', 'APBK1681']:
+            if res and res.get('msg_cd') in ACCOUNT_RESTRICTED_CODES:
                 FAILED_TICKERS.add(ticker)
             base['status'] = 'bought' if int(base['buys'] or 0) > 0 else 'candidate'
             base['last_dca_attempt_at'] = datetime.datetime.now()
@@ -2148,65 +2206,20 @@ def job():
     available_cash = 0
     total_asset_krw = 0
     try:
-        balance = kis.get_balance()
+        balance = broker.get_balance()
         if market == 'US':
-            # ================================================================
-            # [v6.0] "US 몇 달째 거래 없음" 사고의 1차 원인이 정확히 이 블록이었다.
-            #
-            # modules/kis_api.get_foreign_balance() 는 계좌에 USD 통화 라인이 없으면
-            # 예외를 던지지 않고 {'debug_raw': ..., 'deposit': 0} 을 반환한다.
-            # v5.0 이 넣은 방어코드는 `'deposit' in foreign_bal` 로 판정했는데,
-            # 이 응답에는 deposit 키가 **존재**(값만 0)하므로 정상 분기를 타버린다.
-            # → available_cash = 0.0 이 조용히 확정되고
-            # → 이후 모든 US 티커가 "자금 부족 (현금 0 < 1주 N)" 으로 차단되며
-            # → 경고 알림은 단 한 번도 발송되지 않는다.
-            #
-            # 그리고 이건 비정상 상태가 아니다. 원화로 미국주식을 사는
-            # 통합증거금(원화주문) 계좌는 **정상적으로** USD 예수금이 0이다.
-            # 즉 설정이 멀쩡한 계좌에서도 봇은 영원히 아무것도 못 산다.
-            #
-            # v6.0: (1) 0 을 실패 신호로 취급하고 (2) 원화 예수금 → USD 환산으로
-            # 폴백하며 (3) 둘 다 0 일 때만 알림을 띄운다.
-            # ================================================================
-            foreign_bal = kis.get_foreign_balance()
-            usd_cash = safe_float((foreign_bal or {}).get('deposit', 0))
-            cash_source = 'USD 외화예수금'
-
-            if usd_cash <= 0:
-                krw_cash = 0.0
-                try:
-                    if balance and isinstance(balance.get('output2'), list) and balance['output2']:
-                        o2 = balance['output2'][0]
-                        krw_cash = safe_float(
-                            o2.get('ord_psbl_cash')       # 주문가능현금 (가장 정확)
-                            or o2.get('dnca_tot_amt')     # 예수금총금액
-                            or 0
-                        )
-                except Exception as _kb_e:
-                    logger.error(f"[US] 원화 예수금 폴백 조회 실패: {_kb_e}")
-
-                if krw_cash > 0:
-                    # 통합증거금(원화주문) 계좌. 보수적 환율로 환산하고, 환율/증거금
-                    # 오차를 흡수하기 위해 안전마진 5% 를 남긴다.
-                    usd_cash = (krw_cash / USD_KRW_RATE) * 0.95
-                    cash_source = f'원화 예수금 환산(통합증거금, ₩{krw_cash:,.0f})'
-                    logger.warning(
-                        f"[US] USD 외화예수금 0 → 원화 예수금 ₩{krw_cash:,.0f} 를 "
-                        f"${usd_cash:,.2f} 로 환산해 사용합니다 (통합증거금 가정)."
-                    )
-                else:
-                    logger.error(
-                        f"[US] USD 예수금과 원화 예수금이 모두 0입니다. "
-                        f"foreign_bal={foreign_bal}"
-                    )
-                    send_alert(
-                        "🚨 [US] 주문가능금액이 0으로 조회됩니다 (USD 예수금·원화 예수금 모두 0). 이 상태에서는 이번 세션의 모든 매수가 '자금 부족'으로 차단됩니다. 확인: KIS 외화 예수금 / 통합증거금(원화주문) 신청 여부 / API 토큰",
-                        is_error=True
-                    )
-
-            available_cash = usd_cash
+            # [v8.0] USD 매수가능금액만 쓴다. v6.0 의 '원화 예수금 → USD 환산' 폴백은
+            # 제거했다 — 토스 Open API 는 자동환전이 없어 그 주문은 전부 거부되고,
+            # AGENTS 규칙 4(시장 간 자금 분리)와도 어긋난다. 0 이면 알림으로 드러낸다.
+            foreign_bal = broker.get_foreign_balance()
+            if foreign_bal is None:
+                raise RuntimeError("[US] USD 매수가능금액 조회 실패 (현금 0 이 아니다)")
+            available_cash = safe_float(foreign_bal.get('deposit', 0))
+            if available_cash <= 0:
+                send_alert("🚨 [US] USD 매수가능금액이 0입니다. 토스 Open API 는 자동환전이 없으니 "
+                           "앱에서 달러로 환전해 두세요. 이번 세션 US 매수는 '자금 부족'으로 차단됩니다.",
+                           is_error=True)
             total_asset_krw = available_cash * USD_KRW_RATE
-            logger.info(f"[US] 주문가능금액 출처: {cash_source}")
         else:
             if balance and 'output2' in balance and balance['output2']:
                 if isinstance(balance['output2'], list) and len(balance['output2']) > 0:
@@ -2245,7 +2258,7 @@ def job():
             for h in balance['output1']:
                 # US 종목은 ovrs_pdno 필드를 사용
                 ticker_id = h.get('ovrs_pdno', '') or h.get('pdno', '')
-                # hldg_qty > 0 체크: KIS API는 최근 매도한 종목도 qty=0으로 output1에 포함시킴
+                # hldg_qty > 0 체크: 수량 0 행은 보유가 아니다
                 qty_check = int(safe_float(h.get('hldg_qty', h.get('ovrs_cblc_qty', '0')) or '0'))
                 if ticker_id and qty_check > 0:
                     current_holdings.append(ticker_id)
@@ -2275,7 +2288,7 @@ def job():
             # 자동 최적화 실행
             opt_result = optimizer.optimize(
                 market=market,
-                kis=kis,
+                broker=broker,
                 ai_sentiment=auto_sentiment,
                 total_asset_krw=total_asset_krw,
                 num_holdings=len(current_holdings),
@@ -2433,9 +2446,9 @@ def job():
 
             # A. Trend Check (20MA)
             if market == 'US':
-                ohlc = kis.get_daily_ohlc(ticker, exchange)
+                ohlc = broker.get_daily_ohlc(ticker, exchange)
             else:
-                ohlc = kis.get_daily_ohlc(ticker)
+                ohlc = broker.get_daily_ohlc(ticker)
             
             if not ohlc:
                 logger.error(f"[{ticker}] Failed to get OHLC. Skipping.")
@@ -2447,9 +2460,9 @@ def job():
             ma20 = calculate_ma(closes, 20)
         
             if market == 'US':
-                current_price = kis.get_current_price(ticker, exchange)
+                current_price = broker.get_current_price(ticker, exchange)
             else:
-                current_price = kis.get_current_price(ticker)
+                current_price = broker.get_current_price(ticker)
         
             if not current_price:
                  logger.error(f"[{ticker}] Failed to get Current Price. Skipping.")
@@ -2518,7 +2531,7 @@ def job():
                         if pnl_pct <= eff_stop_loss:
                             logger.warning(f"[{ticker}] 🛑 STOP LOSS! ({pnl_pct:.2f}% <= {eff_stop_loss}%). {holding_qty}주 매도.")
                             send_alert(f"🛑 [{ticker}] 손절매! {pnl_pct:.2f}%. {holding_qty}주 매도.")
-                            _sl = safe_sell(kis, market, ticker, holding_qty, exchange,
+                            _sl = safe_sell(broker, market, ticker, holding_qty, exchange,
                                             reason='손절매', monitor_data=monitoring_targets.get(ticker))
                             if _sl['phase'] == 'deferred':
                                 continue
@@ -2577,7 +2590,7 @@ def job():
                     except:
                         pass
 
-                    # 실제 보유 수량이 0이면 skip (KIS API가 매도 후에도 qty=0으로 반환하는 경우 대비)
+                    # 실제 보유 수량이 0이면 skip (매도 직후 qty=0 행 대비)
                     if holding_qty <= 0:
                         logger.info(f"[{ticker}] 보유 수량 0, 매도 스킵 (이미 매도된 종목)")
                         continue
@@ -2590,7 +2603,7 @@ def job():
                         if pnl_pct <= eff_stop_loss:
                             logger.warning(f"[{ticker}] 🛑 DCA STOP LOSS! ({pnl_pct:.2f}% <= {eff_stop_loss}%). 즉시 매도 {holding_qty}주.")
                             send_alert(f"🛑 [{ticker}] DCA 손절매 발동! {pnl_pct:.2f}%. {holding_qty}주 매도.")
-                            _dca_sl = safe_sell(kis, market, ticker, holding_qty, exchange,
+                            _dca_sl = safe_sell(broker, market, ticker, holding_qty, exchange,
                                                 reason='DCA손절매',
                                                 monitor_data=monitoring_targets.get(ticker))
                             if _dca_sl['phase'] == 'deferred':
@@ -2664,9 +2677,9 @@ def job():
                     sell_res = None
                     for _attempt in range(3):
                         if market == 'US':
-                            sell_res = kis.sell_market_order(ticker, holding_qty, exchange)
+                            sell_res = broker.sell_market_order(ticker, holding_qty, exchange)
                         else:
-                            sell_res = kis.sell_market_order(ticker, holding_qty)
+                            sell_res = broker.sell_market_order(ticker, holding_qty)
                         if sell_res and sell_res.get('rt_cd') == '0':
                             break
                         logger.warning(f"[{ticker}] Trend-break sell attempt {_attempt+1} failed: {sell_res}. Retrying...")
@@ -2744,7 +2757,7 @@ def job():
             today_open = 0.0
             if market == 'US':
                 try:
-                    _q = kis.get_quote(ticker, exchange)
+                    _q = broker.get_quote(ticker, exchange)
                     today_open = safe_float(_q.get('open')) if _q else 0.0
                 except Exception:
                     pass
@@ -2818,16 +2831,13 @@ def job():
         except Exception as ws_err:
             logger.error(f"❌ [WS] Error stopping previous websocket: {ws_err}")
 
-    # WebSocket Initialization for US Market
-    if market == 'US':
-        try:
-            from modules.kis_websocket import KisWebSocket
-            tickers_to_sub = list(monitoring_targets.keys())
-            logger.info(f"🚀 [WS] Starting US Real-Time WebSocket stream for {tickers_to_sub}...")
-            ws_client = KisWebSocket(tickers_to_sub, ws_price_callback)
-            ws_client.start_background()
-        except Exception as ws_err:
-            logger.error(f"❌ [WS] Failed to initialize WebSocket: {ws_err}. Falling back to REST polling.")
+    # [v8.0] 토스 웹소켓 — 체결 틱 + 주문 이벤트. KR 도 실시간 체결을 받는다.
+    try:
+        tickers_to_sub = list(monitoring_targets.keys())
+        logger.info(f"🚀 [WS] Starting {market} Real-Time WebSocket stream for {tickers_to_sub}...")
+        ws_client = LiveFeed(market, tickers_to_sub, ws_price_callback).start()
+    except Exception as ws_err:
+        logger.error(f"❌ [WS] Failed to initialize WebSocket: {ws_err}. Falling back to REST polling.")
 
     # 2. Watch Loop
     last_scan_time = datetime.datetime.now()
@@ -2898,13 +2908,13 @@ def job():
                 logger.info(f"🔄 [US] Mid-Session Re-check: {[t for t, _ in downtrend_tickers]}")
             for ticker, data in downtrend_tickers:
                 try:
-                    ohlc = kis.get_daily_ohlc(ticker, data['exchange'])
+                    ohlc = broker.get_daily_ohlc(ticker, data['exchange'])
                     if not ohlc:
                         continue
                     closes = [safe_float(x['clos']) for x in ohlc]
                     closes.reverse()
                     ma20 = calculate_ma(closes, 20)
-                    curr_p = kis.get_current_price(ticker, data['exchange'])
+                    curr_p = broker.get_current_price(ticker, data['exchange'])
                     if not curr_p:
                         continue
                     if not check_trend(curr_p, ma20):
@@ -2912,7 +2922,7 @@ def job():
                         data['last_recheck_at'] = datetime.datetime.now()
                         continue
                     # 추세 회복 → VBO 타겟 계산 후 monitoring으로 편입
-                    _q = kis.get_quote(ticker, data['exchange'])
+                    _q = broker.get_quote(ticker, data['exchange'])
                     today_open = safe_float(_q.get('open')) if _q else 0.0
                     if today_open <= 0:
                         today_open = safe_float(ohlc[0]['open'])
@@ -2951,7 +2961,7 @@ def job():
                     logger.info(f"✨ New Candidate Found: {ticker} ({item['name']}) - {item['reason']}")
                     
                     # Initialize Analysis for New Ticker
-                    ohlc = kis.get_daily_ohlc(ticker)
+                    ohlc = broker.get_daily_ohlc(ticker)
                     if not ohlc: continue
                     
                     closes = [safe_float(x['clos']) for x in ohlc]
@@ -2959,7 +2969,7 @@ def job():
                     ma20 = calculate_ma(closes, 20)
                     
                     # Get fresh current price
-                    curr_p = kis.get_current_price(ticker)
+                    curr_p = broker.get_current_price(ticker)
                     if not curr_p: curr_p = item['price']
                     
                     is_uptrend = check_trend(curr_p, ma20)
@@ -3008,7 +3018,7 @@ def job():
                         continue
 
                     _retry = safe_sell(
-                        kis, market, ticker, qty_hint, data.get('exchange'),
+                        broker, market, ticker, qty_hint, data.get('exchange'),
                         reason='손절매-재시도',
                         monitor_data=data,
                     )
@@ -3051,10 +3061,10 @@ def job():
                         if ws_p > 0:
                             curr = ws_p
                         else:
-                            quote = kis.get_quote(ticker, data.get('exchange'))
+                            quote = broker.get_quote(ticker, data.get('exchange'))
                             curr = safe_float(quote.get('last')) if quote else 0
                     else:
-                        curr = safe_float(kis.get_current_price(ticker))
+                        curr = safe_float(broker.get_current_price(ticker))
                         
                     if curr <= 0: continue
 
@@ -3118,7 +3128,7 @@ def job():
                             f"floor={data['breakeven_price']:.4f}. {qty}주 매도."
                         )
                         send_alert(f"🛡️ [{ticker}] 본전 스탑 발동! {qty}주 매도 (pnl≈{pnl_pct:.2f}%).")
-                        _be = safe_sell(kis, market, ticker, qty, data.get('exchange'),
+                        _be = safe_sell(broker, market, ticker, qty, data.get('exchange'),
                                         reason='breakeven_stop', monitor_data=data)
                         if _be['phase'] == 'deferred':
                             continue
@@ -3140,7 +3150,7 @@ def job():
                     if pnl_pct <= pos_stop_loss:
                         logger.warning(f"[{ticker}] 🛑 Stop Loss Triggered! ({pnl_pct:.2f}% <= {pos_stop_loss}%). Selling {qty} shares.")
                         send_alert(f"🛑 [{ticker}] 손절매 발동! {pnl_pct:.2f}%. {qty}주 매도.")
-                        _sl = safe_sell(kis, market, ticker, qty, data.get('exchange'),
+                        _sl = safe_sell(broker, market, ticker, qty, data.get('exchange'),
                                         reason='손절매',
                                         monitor_data=data)
                         if _sl['phase'] == 'deferred':
@@ -3187,7 +3197,7 @@ def job():
                             send_alert(
                                 f"📉 [{ticker}] 추세붕괴 손절! 20MA 하회 + 손실 {pnl_pct:.2f}%. {qty}주 매도."
                             )
-                            _te = safe_sell(kis, market, ticker, qty, data.get('exchange'),
+                            _te = safe_sell(broker, market, ticker, qty, data.get('exchange'),
                                             reason='추세붕괴손절', monitor_data=data)
                             if _te['phase'] == 'deferred':
                                 continue
@@ -3226,7 +3236,7 @@ def job():
                                 f"→ {partial_qty}/{qty}주 1차 청산 (나머지 trailing 유지)"
                             )
                             _ptp = safe_sell(
-                                kis, market, ticker, partial_qty, data.get('exchange'),
+                                broker, market, ticker, partial_qty, data.get('exchange'),
                                 reason='부분익절', monitor_data=data,
                             )
                             if _ptp['phase'] == 'deferred':
@@ -3264,7 +3274,7 @@ def job():
                         if drop_from_peak >= pos_trailing_drop:
                             logger.info(f"[{ticker}] 💰 Trailing Stop Triggered! (Peak: {peak_pnl_pct:.2f}%, Drop: {drop_from_peak:.2f}% >= {pos_trailing_drop}%). Selling {qty} shares.")
                             send_alert(f"💰 [{ticker}] 트레일링 스탑! 고점 대비 {drop_from_peak:.2f}% 하락. {qty}주 매도.")
-                            _tp = safe_sell(kis, market, ticker, qty, data.get('exchange'),
+                            _tp = safe_sell(broker, market, ticker, qty, data.get('exchange'),
                                             reason='트레일링스탑',
                                             monitor_data=data)
                             if _tp['phase'] == 'deferred':
@@ -3310,9 +3320,9 @@ def job():
                                 if not _sec_blocked and _buy_price > 0:
                                     if market == 'US':
                                         _ws_p = WS_PRICES.get(ticker, 0.0)
-                                        _curr = _ws_p if _ws_p > 0 else safe_float(kis.get_current_price(ticker, _exchange) or 0)
+                                        _curr = _ws_p if _ws_p > 0 else safe_float(broker.get_current_price(ticker, _exchange) or 0)
                                     else:
-                                        _curr = safe_float(kis.get_current_price(ticker) or 0)
+                                        _curr = safe_float(broker.get_current_price(ticker) or 0)
                                     if _curr > 0:
                                         _pnl = ((_curr - _buy_price) / _buy_price) * 100
                                         if _pnl < AGG_DCA_AVG_DOWN_TRIGGER and _pnl > STOP_LOSS_PCT:
@@ -3323,9 +3333,9 @@ def job():
                                                 _currency = "$" if market == 'US' else "₩"
                                                 logger.info(f"[{ticker}] 📉 물타기: {_qty}주 @ {_currency}{_curr:,.2f} (손익 {_pnl:.2f}%)")
                                                 if market == 'US':
-                                                    _res = kis.buy_market_order(ticker, _qty, _exchange)
+                                                    _res = broker.buy_market_order(ticker, _qty, _exchange)
                                                 else:
-                                                    _res = kis.buy_market_order(ticker, _qty)
+                                                    _res = broker.buy_market_order(ticker, _qty)
                                                 if _res and _res.get('rt_cd') == '0':
                                                     _old = data.get('buys', 0)
                                                     _total = _old + _qty
@@ -3360,9 +3370,9 @@ def job():
 
                 exchange = data.get('exchange')
                 if market == 'US':
-                    current_price = kis.get_current_price(ticker, exchange)
+                    current_price = broker.get_current_price(ticker, exchange)
                 else:
-                    current_price = kis.get_current_price(ticker)
+                    current_price = broker.get_current_price(ticker)
 
                 if not current_price:
                     continue
@@ -3372,9 +3382,9 @@ def job():
                 refreshed_ma5 = data.get('ma5')
                 try:
                     if market == 'US':
-                        refreshed_ohlc = kis.get_daily_ohlc(ticker, exchange)
+                        refreshed_ohlc = broker.get_daily_ohlc(ticker, exchange)
                     else:
-                        refreshed_ohlc = kis.get_daily_ohlc(ticker)
+                        refreshed_ohlc = broker.get_daily_ohlc(ticker)
                     if refreshed_ohlc:
                         closes = [safe_float(x['clos']) for x in refreshed_ohlc]
                         closes.reverse()
@@ -3433,9 +3443,9 @@ def job():
                         logger.info(f"[{ticker}] 🔄 Re-entry: MA20+MA5 모두 복귀 → 전량 {qty}주")
 
                     if market == 'US':
-                        res = kis.buy_market_order(ticker, qty, exchange)
+                        res = broker.buy_market_order(ticker, qty, exchange)
                     else:
-                        res = kis.buy_market_order(ticker, qty)
+                        res = broker.buy_market_order(ticker, qty)
 
                     if res and res.get('rt_cd') == '0':
                         logger.info(f"[{ticker}] ✅ Re-entry Buy Success! {qty}주 @ {current_price}")
@@ -3458,7 +3468,7 @@ def job():
                     else:
                         logger.error(f"[{ticker}] Re-entry Buy Failed: {res}")
                         record_skip_reason(ticker, f"재진입 주문 실패: {res.get('msg1', 'unknown') if res else 'unknown'}")
-                        if res and res.get('msg_cd') in ['APBK1680', 'APBK1681']:
+                        if res and res.get('msg_cd') in ACCOUNT_RESTRICTED_CODES:
                             monitoring_targets[ticker]['status'] = 'failed'
                             FAILED_TICKERS.add(ticker)
                 else:
@@ -3500,16 +3510,16 @@ def job():
                         current_vol = 0.0
                     else:
                         # Price broke out! Fetch full quote (last + tvol) to confirm price & volume spike before trading
-                        quote = kis.get_quote(ticker, exchange)
+                        quote = broker.get_quote(ticker, exchange)
                         current_price = safe_float(quote.get('last')) if quote else ws_p
                         current_vol = safe_float(quote.get('tvol')) if quote else 0.0
                 else:
                     # Fallback to REST polling if WebSocket price is unavailable
-                    quote = kis.get_quote(ticker, exchange)
+                    quote = broker.get_quote(ticker, exchange)
                     current_price = safe_float(quote.get('last')) if quote else 0.0
                     current_vol = safe_float(quote.get('tvol')) if quote else 0.0
             else:
-                current_price = kis.get_current_price(ticker)
+                current_price = broker.get_current_price(ticker)
                 # KR API might need separate call for volume if get_current_price doesn't return it
                 # For simplicity/speed in KR, we might skip volume or need to impl get_quote for KR
                 current_vol = 0 # KR Volume Check pending implementation
@@ -3574,9 +3584,9 @@ def job():
                     logger.info(f"[{ticker}] AI Approved. Buying {qty} shares (Signal: {signal_strength:.2f})...")
                     
                     if market == 'US':
-                        res = kis.buy_market_order(ticker, qty, exchange)
+                        res = broker.buy_market_order(ticker, qty, exchange)
                     else:
-                        res = kis.buy_market_order(ticker, qty)
+                        res = broker.buy_market_order(ticker, qty)
                         
                     # Result checking
                     is_success = False
@@ -3596,8 +3606,8 @@ def job():
                         retry_counts[ticker] = retry_counts.get(ticker, 0) + 1
                         
                         # Prevent infinite loop on account errors
-                        # APBK1680: ETF Education / APBK1681: Basic Deposit Requirement
-                        if res and res.get('msg_cd') in ['APBK1680', 'APBK1681']:
+                        # account-restricted / prerequisite-required (앱에서 위험고지·약관 미완료)
+                        if res and res.get('msg_cd') in ACCOUNT_RESTRICTED_CODES:
                             err_msg = res.get('msg1')
                             logger.critical(f"[{ticker}] STOPPING: Account Restriction Detected ({res.get('msg_cd')}). Message: {err_msg}")
                             data['status'] = 'failed'

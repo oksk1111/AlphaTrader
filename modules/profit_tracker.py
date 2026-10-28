@@ -6,7 +6,7 @@
 - 평가손익: 현재 보유 중인 종목의 미실현 손익
 - 월별 스냅샷: 매월 자산 현황을 기록하여 누적 수익률 추적
 
-KIS API 사용:
+토스증권 API 사용 (KIS 호환 응답 모양):
 - 국내: TTTC8001R (주식일별주문체결조회)
 - 해외: TTTS3035R (해외주식 주문체결내역)
 """
@@ -41,13 +41,13 @@ def _save_json(filepath, data):
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 
-def fetch_kr_realized_profit(kis_kr, start_date, end_date):
+def fetch_kr_realized_profit(broker_kr, start_date, end_date):
     """
     KR 시장 실현손익 조회
     체결된 매도 주문에서 손익을 계산합니다.
     
     Args:
-        kis_kr: KisDomestic 인스턴스
+        broker_kr: TossDomestic 인스턴스
         start_date: YYYYMMDD
         end_date: YYYYMMDD
     Returns:
@@ -55,7 +55,7 @@ def fetch_kr_realized_profit(kis_kr, start_date, end_date):
     """
     try:
         # 매도 체결 내역만 조회
-        res = kis_kr.get_executed_orders(start_date, end_date, sell_buy="01")
+        res = broker_kr.get_executed_orders(start_date, end_date, sell_buy="01")
         
         if not res or res.get('rt_cd') != '0':
             error_msg = res.get('msg1', 'Unknown error') if res else 'No response'
@@ -94,13 +94,13 @@ def fetch_kr_realized_profit(kis_kr, start_date, end_date):
         return {"realized_profit": 0, "trades": [], "error": str(e)}
 
 
-def fetch_us_realized_profit(kis_us, start_date, end_date):
+def fetch_us_realized_profit(broker_us, start_date, end_date):
     """
     US 시장 실현손익 조회
     체결된 매도 주문에서 손익을 계산합니다.
     
     Args:
-        kis_us: KisOverseas 인스턴스
+        broker_us: TossOverseas 인스턴스
         start_date: YYYYMMDD
         end_date: YYYYMMDD
     Returns:
@@ -108,7 +108,7 @@ def fetch_us_realized_profit(kis_us, start_date, end_date):
     """
     try:
         # 매도 체결 내역만 조회
-        res = kis_us.get_executed_orders(start_date, end_date, sell_buy="01")
+        res = broker_us.get_executed_orders(start_date, end_date, sell_buy="01")
         
         if not res or res.get('rt_cd') != '0':
             error_msg = res.get('msg1', 'Unknown error') if res else 'No response'
@@ -146,13 +146,13 @@ def fetch_us_realized_profit(kis_us, start_date, end_date):
         return {"realized_profit": 0, "trades": [], "error": str(e)}
 
 
-def fetch_all_trades(kis_kr, kis_us, start_date, end_date):
+def fetch_all_trades(broker_kr, broker_us, start_date, end_date):
     """
     전체 체결내역 조회 (매수 + 매도)
     
     Args:
-        kis_kr: KisDomestic 인스턴스
-        kis_us: KisOverseas 인스턴스
+        broker_kr: TossDomestic 인스턴스
+        broker_us: TossOverseas 인스턴스
         start_date: YYYYMMDD
         end_date: YYYYMMDD
     Returns:
@@ -162,7 +162,7 @@ def fetch_all_trades(kis_kr, kis_us, start_date, end_date):
     us_trades = []
     
     try:
-        kr_res = kis_kr.get_executed_orders(start_date, end_date, sell_buy="00")
+        kr_res = broker_kr.get_executed_orders(start_date, end_date, sell_buy="00")
         if kr_res and kr_res.get('rt_cd') == '0':
             for item in kr_res.get('output1', []):
                 qty = int(item.get('tot_ccld_qty', '0') or '0')
@@ -183,7 +183,7 @@ def fetch_all_trades(kis_kr, kis_us, start_date, end_date):
     time.sleep(0.5)  # Rate limit
     
     try:
-        us_res = kis_us.get_executed_orders(start_date, end_date, sell_buy="00")
+        us_res = broker_us.get_executed_orders(start_date, end_date, sell_buy="00")
         if us_res and us_res.get('rt_cd') == '0':
             for item in us_res.get('output', us_res.get('output1', [])):
                 qty = int(float(item.get('ft_ccld_qty', item.get('ccld_qty', '0')) or '0'))
@@ -205,7 +205,7 @@ def fetch_all_trades(kis_kr, kis_us, start_date, end_date):
     return {"kr_trades": kr_trades, "us_trades": us_trades}
 
 
-def take_asset_snapshot(kis_kr, kis_us):
+def take_asset_snapshot(broker_kr, broker_us):
     """
     현재 자산 현황 스냅샷 저장 (일별)
     
@@ -230,11 +230,13 @@ def take_asset_snapshot(kis_kr, kis_us):
         "total_krw": 0
     }
     
-    usd_krw = 1450.0  # 기본 환율
+    from modules.brokers.compat import usd_krw as _usd_krw
+    usd_krw = _usd_krw()  # 토스 환율 API
+    snapshot["usd_krw"] = usd_krw
     
     # KR 자산
     try:
-        kr_bal = kis_kr.get_balance()
+        kr_bal = broker_kr.get_balance()
         if kr_bal and kr_bal.get('rt_cd') == '0' and 'output2' in kr_bal:
             summary = kr_bal['output2'][0] if kr_bal['output2'] else {}
             snapshot["kr"]["deposit"] = int(summary.get('dnca_tot_amt', '0') or '0')
@@ -251,11 +253,11 @@ def take_asset_snapshot(kis_kr, kis_us):
     
     # US 자산
     try:
-        us_fb = kis_us.get_foreign_balance()
+        us_fb = broker_us.get_foreign_balance()
         if us_fb and 'deposit' in us_fb:
             snapshot["us"]["deposit_usd"] = float(us_fb['deposit'])
         
-        us_bal = kis_us.get_balance()
+        us_bal = broker_us.get_balance()
         if us_bal and 'output1' in us_bal:
             total_eval = 0
             total_profit = 0
@@ -329,7 +331,7 @@ def get_monthly_summary():
 def kr_account_total(kr: dict) -> int:
     """KR 계좌 총액.
 
-    [v7.0] KIS 잔고 output2 의 tot_evlu_amt(총평가금액)는 **예수금을 이미 포함**한다
+    [v7.0] 잔고 output2 의 tot_evlu_amt(총평가금액)는 **예수금을 이미 포함**한다
     (2026-09-11 스냅샷: 보유 0종목에서 deposit == eval_total == 2,715,678).
     그런데 이전 구현은 deposit + eval_total 로 더해 예수금을 두 번 셌다. 9/30 실제
     KR 자산은 약 203만원인데 대시보드는 371만원으로 표시했다 — 수익/손실 판단을
@@ -360,7 +362,7 @@ def get_asset_history():
         result.append({
             "date": date_str,
             # 과거 스냅샷의 total_krw 는 예수금 이중계산 값이므로 구성요소로 재계산한다.
-            "total_krw": int(kr_total + us_total_usd * 1450.0),
+            "total_krw": int(kr_total + us_total_usd * snap.get("usd_krw", 1450.0)),
             "kr_total": kr_total,
             "kr_profit": kr.get("eval_profit", 0),
             "us_total_usd": us.get("deposit_usd", 0) + us.get("eval_total_usd", 0),
@@ -371,22 +373,22 @@ def get_asset_history():
 
 
 if __name__ == "__main__":
-    from modules.kis_api import KisOverseas
-    from modules.kis_domestic import KisDomestic
+    from modules.brokers.compat import TossOverseas
+    from modules.brokers.compat import TossDomestic
     
-    kis_us = KisOverseas()
-    kis_kr = KisDomestic()
+    broker_us = TossOverseas()
+    broker_kr = TossDomestic()
     
     # 자산 스냅샷 테스트
     print("=== 자산 스냅샷 ===")
-    snap = take_asset_snapshot(kis_kr, kis_us)
+    snap = take_asset_snapshot(broker_kr, broker_us)
     print(json.dumps(snap, indent=2, ensure_ascii=False))
     
     # 최근 30일 체결내역 테스트
     print("\n=== 최근 30일 체결내역 ===")
     today = datetime.now().strftime("%Y%m%d")
     thirty_ago = (datetime.now() - timedelta(days=30)).strftime("%Y%m%d")
-    trades = fetch_all_trades(kis_kr, kis_us, thirty_ago, today)
+    trades = fetch_all_trades(broker_kr, broker_us, thirty_ago, today)
     print(f"KR trades: {len(trades['kr_trades'])}")
     print(f"US trades: {len(trades['us_trades'])}")
     for t in trades['kr_trades']:

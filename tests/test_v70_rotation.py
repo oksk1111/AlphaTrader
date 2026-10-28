@@ -12,7 +12,7 @@ v7.0 은 참고 저장소 두 곳의 구조를 옮겼다:
 
 층별로:
   1. 순수 판단 (modules/momentum_rotation)
-  2. 배선 (run_bot.run_rotation_session — 가짜 KIS 로 실제 주문 경로까지)
+  2. 배선 (run_bot.run_rotation_session — 가짜 브로커로 실제 주문 경로까지)
   3. 관측 (대시보드 로그 소스 / 총자산 이중계산)
   4. 검증 루프가 운영 설정을 읽는가
 """
@@ -142,7 +142,7 @@ def _rows(closes, include_today=True):
 
 
 class FakeKR:
-    """주문을 기록만 하는 KisDomestic 대역."""
+    """주문을 기록만 하는 TossDomestic 대역."""
 
     def __init__(self, series, holdings=None, cash=2_000_000):
         self.series = series                 # code -> closes
@@ -224,7 +224,7 @@ class TestSessionWiring:
 
     def test_first_session_buys_top_two(self, rb, monkeypatch):
         fake = FakeKR(dict(UNIVERSE), cash=2_000_000)
-        monkeypatch.setattr(rb, "KisDomestic", lambda: fake)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
         rb.run_rotation_session("KR", _cfg())
         assert [c for c, _ in fake.buys] == ["A", "B"]
         assert fake.cash >= 0, "현금을 초과해 주문하면 안 된다"
@@ -233,14 +233,14 @@ class TestSessionWiring:
         """v6.1 DCA 가 남긴 유니버스 밖 종목(개별주 등)은 첫 리밸런싱에서 정리."""
         series = dict(UNIVERSE, OLD=_series(5000, .004))
         fake = FakeKR(series, holdings={"OLD": (10, 5000)}, cash=1_500_000)
-        monkeypatch.setattr(rb, "KisDomestic", lambda: fake)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
         rb.run_rotation_session("KR", _cfg())
         assert ("OLD", 10) in fake.sells
         assert {c for c, _ in fake.buys} == {"A", "B"}
 
     def test_no_new_buys_between_rebalances(self, rb, monkeypatch):
         fake = FakeKR(dict(UNIVERSE), cash=2_000_000)
-        monkeypatch.setattr(rb, "KisDomestic", lambda: fake)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
         rb.run_rotation_session("KR", _cfg())
         n = len(fake.buys)
         # 다음 영업일로 세션 키만 바꾼다
@@ -259,7 +259,7 @@ class TestSessionWiring:
         fake = FakeKR(dict(UNIVERSE), cash=2_000_000)
         real_buy = fake.buy_market_order
         fake.buy_market_order = lambda c, q, e=None: {"rt_cd": "1", "msg1": "주문가능금액을 초과"} if c == "B" else real_buy(c, q)
-        monkeypatch.setattr(rb, "KisDomestic", lambda: fake)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
         rb.run_rotation_session("KR", _cfg())
         assert [c for c, _ in fake.buys] == ["A"]
         state = json.load(open(rb.ROTATION_STATE_FILE, encoding="utf-8"))
@@ -277,7 +277,7 @@ class TestSessionWiring:
     def test_risk_off_liquidates_and_state_records_it(self, rb, monkeypatch):
         series = dict(UNIVERSE, BENCH=_series(10000, -.003))
         fake = FakeKR(series, holdings={"A": (10, 10000)}, cash=500_000)
-        monkeypatch.setattr(rb, "KisDomestic", lambda: fake)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
         rb.run_rotation_session("KR", _cfg())
         assert ("A", 10) in fake.sells and not fake.buys
         state = json.load(open(rb.ROTATION_STATE_FILE, encoding="utf-8"))
@@ -286,7 +286,7 @@ class TestSessionWiring:
     def test_close_stop_uses_closing_basis(self, rb, monkeypatch):
         """-15% 아래로 마감 직전에 있으면 판다 (장중 꼬리가 아니라 폐장 20분 전 가격)."""
         fake = FakeKR(dict(UNIVERSE), holdings={"A": (10, UNIVERSE["A"][-1] / 0.80)}, cash=0)
-        monkeypatch.setattr(rb, "KisDomestic", lambda: fake)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
         rb.run_rotation_session("KR", _cfg(rebalance_days=10 ** 9))
         assert ("A", 10) in fake.sells
 
@@ -298,7 +298,7 @@ class TestSessionWiring:
         fake = FakeKR({"SPY": _series(500, .002), "QQQ": _series(400, .003),
                        "SMH": _series(200, .004)}, cash=5_000_000)
         fake.get_foreign_balance = lambda: {"deposit": 0}
-        monkeypatch.setattr(rb, "KisOverseas", lambda: fake)
+        monkeypatch.setattr(rb, "TossOverseas", lambda: fake)
         cfg = {"momentum_rotation": {"us": {
             "universe": [{"symbol": "SPY", "exchange": "AMS"}, {"symbol": "QQQ", "exchange": "NAS"},
                          {"symbol": "SMH", "exchange": "NAS"}],
@@ -313,7 +313,7 @@ class TestSessionWiring:
         fake = FakeKR(dict(UNIVERSE), cash=2_000_000)
         original = fake.get_daily_history
         fake.get_daily_history = lambda code, **kwargs: [] if code == "B" else original(code, **kwargs)
-        monkeypatch.setattr(rb, "KisDomestic", lambda: fake)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
         rb.run_rotation_session("KR", _cfg())
         assert fake.buys == []
 
@@ -321,13 +321,13 @@ class TestSessionWiring:
         fake = FakeKR(dict(UNIVERSE), cash=2_000_000)
         original = fake.get_daily_history
         fake.get_daily_history = lambda code, **kwargs: [] if code == "BENCH" else original(code, **kwargs)
-        monkeypatch.setattr(rb, "KisDomestic", lambda: fake)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
         with pytest.raises(RuntimeError, match="벤치마크"):
             rb.run_rotation_session("KR", _cfg())
 
     def test_us_empty_holdings_is_not_a_crash(self, rb):
         """2026-10-01 배포 이후 US 세션이 매일 '잔고 조회 실패'로 크래시했다.
-        KisOverseas.get_balance() 가 보유 0 을 None(=실패)으로 반환했기 때문."""
+        해외 잔고 조회가 보유 0 을 None(=실패)으로 반환했기 때문 (→ test_v80_toss 가 어댑터에서 잠근다)."""
         fake = FakeKR({"SPY": _series(500, .002)}, cash=0)
         fake.get_balance = lambda: {"output1": [], "_failed_exchanges": []}
         fake.get_foreign_balance = lambda: {"deposit": 1000.0}
@@ -372,31 +372,6 @@ class TestSessionWiring:
         holdings = rb._rotation_account(fake, "US", {"SPY": "AMS"})[0]
         assert holdings["SPY"]["exchange"] == "AMS"
 
-    def test_kis_overseas_balance_distinguishes_empty_from_failure(self, monkeypatch):
-        # 다른 테스트가 sys.modules['modules.kis_api'] 를 스텁으로 바꿔 끼우므로 실제 파일을 직접 로드한다.
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("_real_kis_api", os.path.join(REPO, "modules", "kis_api.py"))
-        kis_api = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(kis_api)
-
-        class Resp:
-            def __init__(self, body):
-                self.body, self.status_code, self.text = body, 200, ""
-            def raise_for_status(self):
-                pass
-            def json(self):
-                return self.body
-
-        k = kis_api.KisOverseas.__new__(kis_api.KisOverseas)
-        k.url, k.acc_no_prefix, k.acc_no_suffix = "https://x", "1", "01"
-        monkeypatch.setattr(k, "_get_headers", lambda tr: {}, raising=False)
-
-        monkeypatch.setattr(kis_api.requests, "get", lambda *a, **kw: Resp({"rt_cd": "0", "output1": []}))
-        assert k.get_balance() == {"output1": [], "_failed_exchanges": []}
-
-        monkeypatch.setattr(kis_api.requests, "get", lambda *a, **kw: Resp({"rt_cd": "1", "msg1": "err"}))
-        assert k.get_balance() is None
-
     # ---- [v7.0.2] Fable 재검토에서 나온 버그들 ----
     def test_safe_sell_does_not_report_flat_when_lookup_fails(self, rb):
         """잔고 조회 실패(None)를 '이미 청산됨 = 성공'으로 읽으면 손절 주문이 안 나간다."""
@@ -408,7 +383,7 @@ class TestSessionWiring:
         assert not r2["success"] and r2["phase"] == "failed"
 
     def _us(self, rb, monkeypatch, fake, slots=2):
-        monkeypatch.setattr(rb, "KisOverseas", lambda: fake)
+        monkeypatch.setattr(rb, "TossOverseas", lambda: fake)
         cfg = {"momentum_rotation": {"us": {
             "universe": [{"symbol": "SPY", "exchange": "AMS"}, {"symbol": "QQQ", "exchange": "NAS"},
                          {"symbol": "SMH", "exchange": "NAS"}],
@@ -549,3 +524,52 @@ class TestConfig:
         scan = src.split("def run_scanner", 1)[1].split("def update_dynamic_portfolio", 1)[0]
         assert "_rotation_active()" in scan
         assert "not opro_triggered_today and _rotation_active()" in src
+
+
+# ---------------------------------------------------------------------------
+# [v8.0] 방어자산 슬롯 — 주식 ETF 로 못 채운 슬롯은 추세가 살아 있는 채권·금으로
+# ---------------------------------------------------------------------------
+class TestDefensiveSlot:
+    BOND, GOLD = "148070", "132030"
+
+    def _cfg(self, **over):
+        return _cfg(defensive=[self.BOND, self.GOLD], **over)
+
+    def test_pure_function_needs_own_uptrend(self):
+        from modules.momentum_rotation import defensive_targets
+        picks = defensive_targets({self.BOND: _series(100, .0005), self.GOLD: _series(100, .002),
+                                   "FALLING": _series(100, -.001)}, 2)
+        assert picks == [self.GOLD, self.BOND]          # R120 순, 하락 추세는 제외
+        assert defensive_targets({self.BOND: _series(100, -.001)}, 1) == []   # → 현금
+        assert defensive_targets({self.GOLD: _series(100, .002)}, 0) == []
+
+    def test_risk_off_buys_defensive_only(self, rb, monkeypatch):
+        series = dict(UNIVERSE, BENCH=_series(10000, -.003),
+                      **{self.BOND: _series(100000, .0005), self.GOLD: _series(20000, .002)})
+        fake = FakeKR(series, holdings={"A": (10, 10000)}, cash=500_000)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
+        rb.run_rotation_session("KR", self._cfg())
+        assert ("A", 10) in fake.sells
+        bought = {c for c, _ in fake.buys}
+        assert bought and bought <= {self.BOND, self.GOLD}, "risk-off 에는 방어자산만 산다"
+
+    def test_defensive_holding_is_not_liquidated_as_outside_universe(self, rb, monkeypatch):
+        series = dict(UNIVERSE, BENCH=_series(10000, -.003), **{self.GOLD: _series(20000, .002)})
+        fake = FakeKR(series, holdings={self.GOLD: (20, 20000)}, cash=0)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
+        rb.run_rotation_session("KR", self._cfg())
+        assert not fake.sells
+
+    def test_defensive_sold_when_its_trend_breaks(self, rb, monkeypatch):
+        series = dict(UNIVERSE, BENCH=_series(10000, -.003), **{self.GOLD: _series(20000, -.002)})
+        fake = FakeKR(series, holdings={self.GOLD: (20, 30000)}, cash=0)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
+        rb.run_rotation_session("KR", self._cfg(close_stop_pct=None))
+        assert (self.GOLD, 20) in fake.sells
+
+    def test_operational_config_and_backtest_share_the_rule(self):
+        cfg = json.load(open(os.path.join(REPO, "user_config.json"), encoding="utf-8"))
+        assert cfg["momentum_rotation"]["kr"]["defensive"] == [self.BOND, self.GOLD]
+        assert "defensive" not in cfg["momentum_rotation"]["us"], "US 는 검증 미통과 — 넣지 않는다"
+        src = open(os.path.join(REPO, "scripts", "backtest_real.py"), encoding="utf-8").read()
+        assert "defensive_targets(" in src and 'rc.get("defensive")' in src

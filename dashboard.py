@@ -8,8 +8,7 @@ import subprocess
 import signal
 import json
 from datetime import datetime, timedelta
-from modules.kis_api import KisOverseas
-from modules.kis_domestic import KisDomestic
+from modules.brokers.compat import TossOverseas, TossDomestic
 from modules.profit_tracker import (
     take_asset_snapshot, get_monthly_summary, get_asset_history,
     fetch_all_trades, fetch_kr_realized_profit, fetch_us_realized_profit
@@ -106,20 +105,20 @@ st.title("📈 Alpha Trader Dashboard")
 
 # --- Initialize API ---
 @st.cache_resource
-def get_kis_client_us():
-    return KisOverseas()
+def get_client_us():
+    return TossOverseas()
 
 @st.cache_resource
-def get_kis_client_kr():
-    return KisDomestic()
+def get_client_kr():
+    return TossDomestic()
 
 try:
-    kis_us = get_kis_client_us()
-    kis_kr = get_kis_client_kr()
+    broker_us = get_client_us()
+    broker_kr = get_client_kr()
     api_status = "🟢 API Connected (US & KR)"
 except Exception as e:
-    kis_us = None
-    kis_kr = None
+    broker_us = None
+    broker_kr = None
     api_status = f"🔴 API Error: {str(e)}"
 
 # --- Sidebar ---
@@ -436,9 +435,9 @@ with tab2:
 
     # --- US Account ---
     st.subheader("🇺🇸 US Account")
-    if kis_us:
-        balance_us = kis_us.get_balance()
-        foreign_balance = kis_us.get_foreign_balance()
+    if broker_us:
+        balance_us = broker_us.get_balance()
+        foreign_balance = broker_us.get_foreign_balance()
         
         # --- Prepare Data ---
         deposit_usd = "N/A"
@@ -499,8 +498,8 @@ with tab2:
 
     # --- KR Account ---
     st.subheader("🇰🇷 KR Account")
-    if kis_kr:
-        balance_kr = kis_kr.get_balance()
+    if broker_kr:
+        balance_kr = broker_kr.get_balance()
         
         if balance_kr and 'output2' in balance_kr:
             # KR Balance Summary
@@ -546,13 +545,13 @@ with tab3:
     st.caption("실현손익(매도 완료) + 평가손익(보유 중)을 통합하여 실제 수익률을 표시합니다.")
     
     # --- 자산 스냅샷 ---
-    if kis_kr and kis_us:
+    if broker_kr and broker_us:
         # 스냅샷 저장 버튼
         snap_col1, snap_col2 = st.columns([1, 3])
         with snap_col1:
             if st.button("📸 자산 스냅샷 저장", help="현재 자산 현황을 기록합니다. 일 1회 권장."):
                 with st.spinner("자산 현황 조회 중..."):
-                    snap = take_asset_snapshot(kis_kr, kis_us)
+                    snap = take_asset_snapshot(broker_kr, broker_us)
                     if snap:
                         st.success(f"스냅샷 저장 완료! 총자산: {snap.get('total_krw', 0):,}원")
         
@@ -564,7 +563,7 @@ with tab3:
         kr_deposit = 0
         kr_total_asset = 0
         try:
-            kr_bal = kis_kr.get_balance()
+            kr_bal = broker_kr.get_balance()
             if kr_bal and kr_bal.get('rt_cd') == '0' and 'output2' in kr_bal and kr_bal['output2']:
                 kr_summary = kr_bal['output2'][0]
                 kr_deposit = int(kr_summary.get('dnca_tot_amt', '0') or '0')
@@ -578,11 +577,11 @@ with tab3:
         us_deposit = 0.0
         us_total_asset = 0.0
         try:
-            us_fb = kis_us.get_foreign_balance()
+            us_fb = broker_us.get_foreign_balance()
             if us_fb and 'deposit' in us_fb:
                 us_deposit = float(us_fb['deposit'])
             
-            us_bal = kis_us.get_balance()
+            us_bal = broker_us.get_balance()
             if us_bal and 'output1' in us_bal:
                 for h in us_bal['output1']:
                     qty = int(float(h.get('ovrs_cblc_qty', h.get('ord_psbl_qty', '0')) or '0'))
@@ -659,7 +658,7 @@ with tab3:
         
         if st.button("🔍 체결 내역 조회"):
             with st.spinner(f"체결 내역 조회 중... ({start_str} ~ {end_str})"):
-                trades_data = fetch_all_trades(kis_kr, kis_us, start_str, end_str)
+                trades_data = fetch_all_trades(broker_kr, broker_us, start_str, end_str)
                 
                 # KR 체결 내역
                 if trades_data["kr_trades"]:

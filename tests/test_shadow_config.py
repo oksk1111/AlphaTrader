@@ -12,7 +12,7 @@ def config():
 
 def test_intraday_strategy_is_shadow_only_by_default():
     cfg = config()
-    assert cfg["broker"]["execution_provider"] == "kis"
+    assert cfg["broker"]["execution_provider"] == "toss"   # v8.0: 한국투자증권 제거
     assert cfg["broker"]["market_data_provider"] == "toss"
     assert cfg["broker"]["execution_mode"] == "shadow"
     assert cfg["intraday_strategy"]["enabled"] is True

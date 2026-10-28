@@ -71,13 +71,13 @@ class AutoStrategyOptimizer:
         with open(self.config_file, "w") as f:
             json.dump(config, f, indent=4, ensure_ascii=False)
 
-    def analyze_market_signals(self, market, kis, ohlc_data_map=None):
+    def analyze_market_signals(self, market, broker, ohlc_data_map=None):
         """
         시장 기술적 지표를 분석하여 종합 시그널을 생성합니다.
         
         Args:
             market: 'US' or 'KR'
-            kis: KIS API 인스턴스
+            broker: TossOverseas / TossDomestic 인스턴스
             ohlc_data_map: {ticker: ohlc_list} 형태의 사전 분석된 데이터 (선택)
         
         Returns:
@@ -115,11 +115,11 @@ class AutoStrategyOptimizer:
                 if isinstance(t_obj, dict):
                     ticker = t_obj['symbol']
                     exchange = t_obj['exchange']
-                    ohlc = kis.get_daily_ohlc(ticker, exchange) if not ohlc_data_map else ohlc_data_map.get(ticker)
+                    ohlc = broker.get_daily_ohlc(ticker, exchange) if not ohlc_data_map else ohlc_data_map.get(ticker)
                 else:
                     ticker = t_obj
                     exchange = None
-                    ohlc = kis.get_daily_ohlc(ticker) if not ohlc_data_map else ohlc_data_map.get(ticker)
+                    ohlc = broker.get_daily_ohlc(ticker) if not ohlc_data_map else ohlc_data_map.get(ticker)
                 
                 if not ohlc or len(ohlc) < 10:
                     continue
@@ -472,7 +472,7 @@ class AutoStrategyOptimizer:
             }
         }
 
-    def optimize(self, market, kis, ai_sentiment=None, total_asset_krw=0, 
+    def optimize(self, market, broker, ai_sentiment=None, total_asset_krw=0, 
                  num_holdings=0, leverage_threshold=10_000_000):
         """
         전체 최적화 파이프라인을 실행합니다.
@@ -481,7 +481,7 @@ class AutoStrategyOptimizer:
         
         Args:
             market: 'US' or 'KR'
-            kis: KIS API 인스턴스
+            broker: TossOverseas / TossDomestic 인스턴스
             ai_sentiment: MultiLLM 분석 결과 (없으면 기술적 분석만 사용)
             total_asset_krw: 원화 환산 총자산
             num_holdings: 보유 종목 수
@@ -499,7 +499,7 @@ class AutoStrategyOptimizer:
         logger.info(f"[AutoStrategy] 🔍 {market} 시장 자동 전략 최적화 시작...")
         
         # 1. 기술적 지표 분석
-        tech_signals = self.analyze_market_signals(market, kis)
+        tech_signals = self.analyze_market_signals(market, broker)
         logger.info(f"[AutoStrategy] 기술 분석: trend={tech_signals['trend_score']}, "
                      f"vol={tech_signals['volatility_score']}, mom={tech_signals['momentum_score']}, "
                      f"risk={tech_signals['risk_score']}")

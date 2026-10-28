@@ -23,7 +23,7 @@ def rb():
 
 
 def _ohlc(prices):
-    """KIS 일봉 형식(최신이 index 0)으로 변환."""
+    """브로커 일봉 형식(최신이 index 0)으로 변환."""
     out = []
     for i, p in enumerate(reversed(prices)):
         out.append({"clos": str(p), "open": str(p * 0.999),
@@ -33,7 +33,7 @@ def _ohlc(prices):
 
 
 class FakeKis:
-    """주문을 실제로 내지 않고 기록만 하는 KIS 대역."""
+    """주문을 실제로 내지 않고 기록만 하는 브로커 대역."""
 
     def __init__(self, price=100.0, trend="up"):
         self.orders = []
@@ -72,17 +72,14 @@ class FakeKis:
 class TestCashResolution:
     """원인 ①: USD 예수금 0 이 조용히 전 종목을 차단하던 문제."""
 
-    def test_usd_zero_falls_back_to_krw_integrated_margin(self, rb):
-        """deposit=0 이면 원화 예수금을 환산해 써야 한다.
-        v5.1 은 'deposit' 키가 존재한다는 이유로 0 을 그대로 채택했고,
-        경고조차 내지 않았다."""
-        kis = FakeKis()
-        fb = kis.get_foreign_balance()
-        assert "deposit" in fb and fb["deposit"] == 0, "사고 상황 재현 전제"
-
-        krw = float(kis.get_balance()["output2"][0]["ord_psbl_cash"])
-        expected_usd = (krw / rb.USD_KRW_RATE) * 0.95
-        assert expected_usd > 1000, "환산 결과가 유의미한 매수 여력이어야 한다"
+    def test_usd_zero_does_not_borrow_krw(self, rb):
+        """[v8.0] USD 0 이면 원화를 환산해 쓰지 않는다 — 토스 Open API 는 자동환전이 없어
+        그 주문은 전부 거부되고, AGENTS 규칙 4(시장 간 자금 분리) 위반이다.
+        대신 알림으로 드러낸다 (v5.1 처럼 조용히 0 으로 끝나지 않게)."""
+        import inspect
+        body = inspect.getsource(rb.job)
+        assert "/ USD_KRW_RATE" not in body
+        assert "USD 매수가능금액이 0입니다" in body
 
     def test_usd_krw_rate_is_single_source(self, rb):
         assert rb.USD_KRW_RATE > 0

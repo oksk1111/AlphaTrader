@@ -4,8 +4,7 @@ import logging
 import datetime
 import pytz
 from typing import List, Dict
-from modules.kis_domestic import KisDomestic
-from modules.kis_api import KisOverseas
+from modules.brokers.compat import TossDomestic, TossOverseas
 
 try:
     # 위험조정 점수 산정에 ATR% 사용 (없으면 모멘텀만으로 폴백)
@@ -37,7 +36,7 @@ KR_WEIGHT_OVERRIDES = {
     "0041D0": 0.25,  # KODEX 미국AI소프트웨어TOP10
 }
 
-# 후보군 풀 (Pool) - KIS API 검색의 한계를 보완하기 위한 고품질/장기 우상향/미래산업 ETF 사전 리스트
+# 후보군 풀 (Pool) - API 검색의 한계를 보완하기 위한 고품질/장기 우상향/미래산업 ETF 사전 리스트
 # 주기적으로 이 풀에서 상위 N개를 선택하여 실제 매매 포트폴리오로 승격
 # 각 항목: code -> (name, category)
 ETF_CANDIDATES = {
@@ -86,7 +85,7 @@ ETF_CANDIDATES = {
     "US_STOCK_LARGECAP": {},
 }
 
-# US 종목 거래소 매핑 (NAS=NASDAQ, AMS=NYSE/AMEX 통합 KIS 코드)
+# US 종목 거래소 매핑 (NAS=NASDAQ, AMS=NYSE/AMEX — 표시·호환용)
 US_EXCHANGE_MAP = {
     'TQQQ': 'NAS', 'SOXL': 'AMS', 'NVDL': 'NAS', 'TECL': 'AMS', 'FNGU': 'AMS',
     'UPRO': 'AMS', 'QQQ': 'NAS', 'SMH': 'NAS', 'SPY': 'AMS', 'SOXX': 'NAS', 'XLK': 'AMS',
@@ -94,8 +93,8 @@ US_EXCHANGE_MAP = {
 
 class PortfolioManager:
     def __init__(self):
-        self.kis_kr = KisDomestic()
-        self.kis_us = KisOverseas()
+        self.broker_kr = TossDomestic()
+        self.broker_us = TossOverseas()
         
     def get_momemtum_score(self, ohlc_data: List[Dict]) -> float:
         """최근 20일 데이터 기반으로 20일 수익률과 최대 낙폭을 계산하여 모멘텀 스코어 산출"""
@@ -199,7 +198,7 @@ class PortfolioManager:
         for code, meta in kr_pool.items():
             name, category = meta if isinstance(meta, tuple) else (str(meta), "ETF")
             try:
-                ohlc = self.kis_kr.get_daily_ohlc(code)
+                ohlc = self.broker_kr.get_daily_ohlc(code)
             except Exception as e:
                 logger.warning(f"[Eval/KR] {code} OHLC fetch failed: {e}")
                 continue
@@ -221,7 +220,7 @@ class PortfolioManager:
             name, category = meta if isinstance(meta, tuple) else (str(meta), "ETF")
             exchange = US_EXCHANGE_MAP.get(symbol, 'NAS')
             try:
-                ohlc = self.kis_us.get_daily_ohlc(symbol, exchange=exchange)
+                ohlc = self.broker_us.get_daily_ohlc(symbol, exchange=exchange)
             except Exception as e:
                 logger.warning(f"[Eval/US] {symbol} OHLC fetch failed: {e}")
                 continue

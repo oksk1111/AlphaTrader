@@ -24,8 +24,6 @@ class WeightSizingTests(unittest.TestCase):
         import types
         for name in (
             'modules.telegram_notifier',
-            'modules.kis_api',
-            'modules.kis_domestic',
             'modules.gemini_analyst',
             'modules.market_scanner',
             'modules.multi_llm',
@@ -36,8 +34,6 @@ class WeightSizingTests(unittest.TestCase):
             stub = types.ModuleType(name)
             # 흔히 참조되는 심볼들에 기본 더미 제공
             stub.TelegramNotifier = type('TelegramNotifier', (), {'__init__': lambda self, *a, **kw: None})
-            stub.KisOverseas = type('KisOverseas', (), {})
-            stub.KisDomestic = type('KisDomestic', (), {})
             stub.GeminiAnalyst = type('GeminiAnalyst', (), {})
             stub.scanner = None
             stub.MultiLLMAnalyst = type('MultiLLMAnalyst', (), {})

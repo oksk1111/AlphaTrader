@@ -4,13 +4,11 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from modules.kis_api import KisOverseas
-from modules.kis_domestic import KisDomestic
+from modules.brokers.compat import TossOverseas, TossDomestic, usd_krw
 from modules.logger import logger
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CACHE_FILE = BASE_DIR / "database/account_cache.json"
-USD_KRW_RATE = 1450.0
 
 def _safe_float(value, default=0.0):
     """빈 문자열이나 None을 안전하게 float로 변환"""
@@ -48,9 +46,9 @@ def save_cache(data):
 def update_us_account():
     """US 계좌 정보 수집 및 캐싱"""
     try:
-        kis = KisOverseas()
-        foreign_bal = kis.get_foreign_balance()
-        balance = kis.get_balance()
+        broker = TossOverseas()
+        foreign_bal = broker.get_foreign_balance()
+        balance = broker.get_balance()
         
         # Check if we got valid data - don't overwrite cache with zeros
         # [v7.0.2] get_balance() 는 보유 0 이면 빈 dict(truthy)를 준다. 그래서 외화예수금
@@ -59,18 +57,19 @@ def update_us_account():
             logger.warning("[US Account] API returned no data, keeping existing cache")
             return None
         
+        fx = usd_krw()   # 토스 환율 API (실패 시 마지막 값/기본값)
         result = {
             "deposit_usd": 0.0, "deposit_krw": 0,
             "profit_usd": 0.0, "profit_krw": 0,
             "total_asset_usd": 0.0, "total_asset_krw": 0,
-            "exchange_rate": USD_KRW_RATE,
+            "exchange_rate": fx,
             "holdings": []
         }
         
         # 외화 예수금
         if foreign_bal and 'deposit' in foreign_bal:
             result["deposit_usd"] = _safe_float(foreign_bal['deposit'])
-            result["deposit_krw"] = int(result["deposit_usd"] * USD_KRW_RATE)
+            result["deposit_krw"] = int(result["deposit_usd"] * fx)
         
         # 보유 종목 집계
         total_eval_usd = 0.0
@@ -113,9 +112,9 @@ def update_us_account():
                 })
         
         result["profit_usd"] = round(total_profit_usd, 2)
-        result["profit_krw"] = int(total_profit_usd * USD_KRW_RATE)
+        result["profit_krw"] = int(total_profit_usd * fx)
         result["total_asset_usd"] = round(result["deposit_usd"] + total_eval_usd, 2)
-        result["total_asset_krw"] = int(result["total_asset_usd"] * USD_KRW_RATE)
+        result["total_asset_krw"] = int(result["total_asset_usd"] * fx)
         
         # Only save if we have meaningful data (deposit or holdings)
         if result["deposit_usd"] > 0 or len(result["holdings"]) > 0:
@@ -132,8 +131,8 @@ def update_us_account():
 def update_kr_account():
     """KR 계좌 정보 수집 및 캐싱"""
     try:
-        kis = KisDomestic()
-        balance = kis.get_balance()
+        broker = TossDomestic()
+        balance = broker.get_balance()
         
         # Check if we got valid data
         if not balance:
@@ -186,10 +185,10 @@ def update_all_accounts():
     # 자산 스냅샷도 자동으로 기록 (일 1회)
     try:
         from modules.profit_tracker import take_asset_snapshot
-        kis_us = KisOverseas()
-        kis_kr = KisDomestic()
+        broker_us = TossOverseas()
+        broker_kr = TossDomestic()
         time.sleep(1)
-        take_asset_snapshot(kis_kr, kis_us)
+        take_asset_snapshot(broker_kr, broker_us)
     except Exception as e:
         logger.warning(f"[AccountManager] 자산 스냅샷 자동 기록 실패 (무시): {e}")
 
