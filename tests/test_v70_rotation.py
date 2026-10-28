@@ -108,9 +108,14 @@ class TestMarketFilter:
     def test_downtrend_is_risk_off(self):
         assert not mr.market_risk_on(_series(100, -0.002))
 
-    def test_insufficient_data_fails_open(self):
-        """데이터 조회 실패가 곧 전면 매수 중단이면 v5.x 의 조용한 영구 정지가 재현된다."""
+    def test_short_but_valid_history_fails_open(self):
+        """신규 상장처럼 정상 응답이 짧은 경우에는 시장필터가 영구 정지하지 않는다."""
         assert mr.market_risk_on([100.0] * 50)
+
+    def test_empty_benchmark_is_failure_not_risk_state(self):
+        """일봉 조회 실패를 RISK-ON/OFF로 오인하면 원인이 숨는다."""
+        with pytest.raises(ValueError):
+            mr.market_risk_on([])
 
 
 class TestSlots:
@@ -303,6 +308,22 @@ class TestSessionWiring:
         rec = health_monitor._recent("US", 1)[-1]
         assert rec["buys"] == 0 and rec["candidates"] > 0
         assert any("주문가능금액" in k for k in rec["block_reasons"])
+
+    def test_history_failure_blocks_buys_instead_of_looking_like_risk_off(self, rb, monkeypatch):
+        fake = FakeKR(dict(UNIVERSE), cash=2_000_000)
+        original = fake.get_daily_history
+        fake.get_daily_history = lambda code, **kwargs: [] if code == "B" else original(code, **kwargs)
+        monkeypatch.setattr(rb, "KisDomestic", lambda: fake)
+        rb.run_rotation_session("KR", _cfg())
+        assert fake.buys == []
+
+    def test_benchmark_history_failure_crashes_for_recovery(self, rb, monkeypatch):
+        fake = FakeKR(dict(UNIVERSE), cash=2_000_000)
+        original = fake.get_daily_history
+        fake.get_daily_history = lambda code, **kwargs: [] if code == "BENCH" else original(code, **kwargs)
+        monkeypatch.setattr(rb, "KisDomestic", lambda: fake)
+        with pytest.raises(RuntimeError, match="벤치마크"):
+            rb.run_rotation_session("KR", _cfg())
 
     def test_us_empty_holdings_is_not_a_crash(self, rb):
         """2026-10-01 배포 이후 US 세션이 매일 '잔고 조회 실패'로 크래시했다.

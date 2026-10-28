@@ -47,6 +47,9 @@ jobs:
         # 죽어 있었다. 계기판이 거짓말하면 전략을 아무리 고쳐도 소용이 없다.
         run: pytest tests/test_v61_observability.py -q
 
+      - name: Toss shadow 회귀 테스트
+        run: pytest tests/test_toss_broker.py tests/test_toss_stream.py tests/test_intraday_strategy.py tests/test_market_data_store.py tests/test_walk_forward_intraday.py tests/test_shadow_config.py -q
+
       - name: v7.0 회귀 테스트 (모멘텀 로테이션 + 관측 2차)
         # 2026-10-01 실데이터 백테스트: v6.1 구조는 KR CAGR +4.7%/MDD -46.7%,
         # US CAGR -12.4%/MDD -79.5%. 문제는 타이밍이 아니라 '무엇을 들고 있나'
@@ -78,12 +81,16 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
+          TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
+          TOSS_ACCOUNT_SEQ: ${{ secrets.TOSS_ACCOUNT_SEQ }}
+          LOGIN_PASSWORD: ${{ secrets.LOGIN_PASSWORD }}
         with:
           host: ${{ secrets.ORACLE_HOST }}
           username: ${{ secrets.ORACLE_USERNAME }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
           port: 22
-          envs: TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          envs: TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,TOSS_CLIENT_ID,TOSS_CLIENT_SECRET,TOSS_ACCOUNT_SEQ,LOGIN_PASSWORD
           script: |
             echo "🚀 Starting deployment via GitHub Actions..."
             REPO_DIR="$HOME/AlphaTrader"
@@ -106,14 +113,24 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
             
-            # 2. Update Environment Variables (Telegram)
+            # 2. Update deployment-managed environment variables.
+            # Secret values come only from GitHub Secrets and are never committed.
             echo "🔧 (Step 2/3) Updating configuration..."
-            if [ -f .env ]; then
-              grep -v "TELEGRAM_" .env > .env.tmp || true
-              mv .env.tmp .env
-            fi
-            echo "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN" >> .env
-            echo "TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID" >> .env
+            touch .env
+            grep -Ev '^(TELEGRAM_|TOSS_|LOGIN_PASSWORD=|BROKER=|MARKET_DATA_BROKER=|EXECUTION_MODE=)' .env > .env.tmp || true
+            mv .env.tmp .env
+            {
+              echo "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN"
+              echo "TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID"
+              echo "TOSS_CLIENT_ID=$TOSS_CLIENT_ID"
+              echo "TOSS_CLIENT_SECRET=$TOSS_CLIENT_SECRET"
+              echo "TOSS_ACCOUNT_SEQ=$TOSS_ACCOUNT_SEQ"
+              echo "LOGIN_PASSWORD=$LOGIN_PASSWORD"
+              echo "BROKER=kis"
+              echo "MARKET_DATA_BROKER=toss"
+              echo "EXECUTION_MODE=shadow"
+            } >> .env
+            chmod 600 .env
             
             # 3. Execute Deployment Script
             echo "🔄 (Step 3/3) Running local deploy script..."

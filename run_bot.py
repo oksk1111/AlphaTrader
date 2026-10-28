@@ -1250,12 +1250,21 @@ def run_rotation_session(market, user_config):
         exch = exch_of.get(code) or (holdings.get(code) or {}).get('exchange')
         closes_of[code] = _history(code, exch)
     bench_closes = closes_of.get(bench) or _history(bench, _resolve_us_exchange(bench) if market == 'US' else None)
-    short = [c for c in uni_codes if len(closes_of.get(c) or []) < 121]
+    failed_history = [c for c in uni_codes if not closes_of.get(c)]
+    short = [c for c in uni_codes if closes_of.get(c) and len(closes_of[c]) < 121]
+    if failed_history:
+        # 조회 실패를 신규상장(짧은 히스토리)과 섞으면 전 종목이 순위에서 빠져도
+        # 정상 RISK-OFF 세션처럼 보인다. 매수만 명시적으로 보류하고 이유를 알린다.
+        message = f"[{market}] 일봉 조회 실패 → 중복/오판 매수 방지로 이번 세션 매수 보류: {failed_history}"
+        logger.error(message)
+        send_alert(f"🚨 {message}", is_error=True)
     if short:
         # 신규 상장 ETF 는 121봉이 쌓이기 전까지 순위에서 자동 제외된다 (정상).
         logger.info(f"[{market}] 히스토리 121봉 미만 → 순위 제외: {short}")
-    if len(bench_closes) < 140:
-        logger.warning(f"[{market}] 벤치마크 {bench} 일봉 {len(bench_closes)}개 < 140 → 시장필터 fail-open(risk-on)")
+    if use_filter and not bench_closes:
+        raise RuntimeError(f"[{market}] 벤치마크 {bench} 일봉 조회 실패")
+    if use_filter and len(bench_closes) < 140:
+        logger.warning(f"[{market}] 벤치마크 {bench} 일봉 {len(bench_closes)}개 < 140 → 짧은 정상 이력으로 시장필터 fail-open")
 
     risk_on = market_risk_on(bench_closes) if use_filter else True
 
@@ -1337,6 +1346,11 @@ def run_rotation_session(market, user_config):
         # 리밸런싱일에만 기존 보유 목표의 비중 부족분을 보충한다 (이관된 1주짜리 등).
         to_buy += [t for t in targets if t in holdings and t not in sold]
     if to_buy and risk_on:
+        if failed_history:
+            for code in dict.fromkeys(to_buy):
+                buy_fail.append(code)
+                fail_reason[code] = f"일봉 조회 실패 {failed_history} — 신호 신뢰 불가로 매수 보류"
+            to_buy = []
         if sold:
             time.sleep(3)
         holdings, cash, equity, degraded = _rotation_account(kis, market, exch_of)

@@ -89,6 +89,7 @@ def run() -> None:
                                 try:
                                     daily_cache[key] = list(reversed(broker.bars(
                                         event.symbol, event.market, interval="1d", count=80)))
+                                    store.upsert_daily_bars(daily_cache[key])
                                 except Exception as exc:
                                     logger.warning("[TossShadow] %s 일봉 조회 실패: %s", event.symbol, exc)
                                     daily_cache[key] = []

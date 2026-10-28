@@ -171,10 +171,14 @@ def market_risk_on(index_closes: Sequence[float], ma: int = MARKET_MA,
                    slope: int = MARKET_SLOPE) -> bool:
     """지수 close ≥ MA(ma) 이고 MA 가 slope 거래일 전보다 높거나 같으면 risk-on.
 
-    데이터가 부족하면 **risk-on (fail-open)**. 데이터 조회 실패가 곧 전면 매수
-    중단이 되면 v5.x 의 "조용한 영구 정지"가 재현된다.
+    데이터가 정상 조회됐지만 짧으면(신규 상장 등) risk-on 으로 둔다. **빈 데이터는
+    조회 실패**이므로 여기서 risk-on 으로 바꾸지 않는다. 과거 fail-open은 일봉 API가
+    전 종목에서 실패해도 "순위 없음 + RISK-OFF"라는 모순된 조용한 세션을 만들었다.
+    호출자는 빈 벤치마크를 예외/명시적 매수 보류로 처리해야 한다.
     """
     closes = [float(c) for c in index_closes if c is not None and float(c) > 0]
+    if not closes:
+        raise ValueError("benchmark history is empty")
     if len(closes) < ma + slope:
         return True
     ma_now = sum(closes[-ma:]) / ma

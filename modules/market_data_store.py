@@ -54,6 +54,19 @@ class MarketDataStore:
                     PRIMARY KEY (market, symbol, minute)
                 );
 
+                CREATE TABLE IF NOT EXISTS daily_bars (
+                    market TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    trading_day TEXT NOT NULL,
+                    currency TEXT,
+                    open REAL NOT NULL,
+                    high REAL NOT NULL,
+                    low REAL NOT NULL,
+                    close REAL NOT NULL,
+                    volume REAL NOT NULL,
+                    PRIMARY KEY (market, symbol, trading_day)
+                );
+
                 CREATE TABLE IF NOT EXISTS shadow_signals (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at REAL NOT NULL,
@@ -114,6 +127,43 @@ class MarketDataStore:
                     (event.market.value, event.symbol, minute, currency,
                      price, price, price, price, volume),
                 )
+
+    def upsert_daily_bars(self, bars: Iterable[Bar]) -> None:
+        rows = []
+        for bar in bars:
+            if bar.interval != "1d":
+                continue
+            rows.append((
+                bar.market.value, bar.symbol, bar.timestamp[:10], bar.currency,
+                bar.open, bar.high, bar.low, bar.close, bar.volume,
+            ))
+        if not rows:
+            return
+        with self._lock, self._conn:
+            self._conn.executemany(
+                """INSERT INTO daily_bars
+                   (market, symbol, trading_day, currency, open, high, low, close, volume)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(market, symbol, trading_day) DO UPDATE SET
+                       currency=excluded.currency, open=excluded.open, high=excluded.high,
+                       low=excluded.low, close=excluded.close, volume=excluded.volume""",
+                rows,
+            )
+
+    def daily_bars(self, market: str, symbol: str, limit: int = 260) -> list:
+        rows = self._conn.execute(
+            """SELECT trading_day, currency, open, high, low, close, volume
+               FROM daily_bars WHERE market=? AND symbol=?
+               ORDER BY trading_day DESC LIMIT ?""",
+            (market, symbol, max(1, int(limit))),
+        ).fetchall()
+        rows.reverse()
+        return [Bar(
+            symbol=symbol, market=Market(market), timestamp=row[0],
+            currency=row[1] or ("KRW" if market == "KR" else "USD"),
+            open=row[2], high=row[3], low=row[4], close=row[5], volume=row[6],
+            interval="1d",
+        ) for row in rows]
 
     def record_signal(self, session_key: str, market: str, symbol: str,
                       action: str, score: float, size_multiplier: float,

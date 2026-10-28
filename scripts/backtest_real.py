@@ -431,6 +431,11 @@ def run_market(market: str, start: str, refresh: bool) -> Dict[str, Dict]:
         etfs = list(dict.fromkeys(operational + list(KR_ETFS)))
         stocks, bench, capital = list(KR_STOCKS), KR_BENCH, 2_700_000.0
         data = load_prices(etfs + stocks, "KR", start, refresh)
+        if bench not in data:
+            raise RuntimeError(
+                f"KR 백테스트 벤치마크 {bench} 데이터가 없습니다. "
+                "Yahoo rate limit/네트워크 또는 data_cache를 확인하세요."
+            )
         etfs = [c for c in etfs if c in data]
         stocks = [c for c in stocks if c in data]
         cur_univ = etfs + stocks
@@ -450,6 +455,11 @@ def run_market(market: str, start: str, refresh: bool) -> Dict[str, Dict]:
         u1 = list(dict.fromkeys(operational + list(US_1X)))
         u3, bench, capital = list(US_3X), US_BENCH, 2000.0
         data = load_prices(u1 + u3, "US", start, refresh)
+        if bench not in data:
+            raise RuntimeError(
+                f"US 백테스트 벤치마크 {bench} 데이터가 없습니다. "
+                "Yahoo rate limit/네트워크 또는 data_cache를 확인하세요."
+            )
         cur_univ = [c for c in u3 + u1 if c in data]
         u1 = [c for c in u1 if c in data]
         variants = {
