@@ -1,23 +1,51 @@
 # AGENTS.md — 개발 지침서
 
-## v8.0-shadow (2026-10-28) — Toss 전환 1단계: 실시간 수집, 실주문 금지
+## v8.0 (2026-10-29) — 토스증권 이관 + 웹소켓 집행 + 방어자산 슬롯
 
-- 1단계의 실주문 경로는 KIS를 유지하고 Toss는 `shadow` 시세 수집만 한다. 계기판은
-  execution provider(KIS)와 market-data provider(Toss)를 구분해 표시한다. Toss 공식
-  문서에는 모의투자 서버가 없으므로 `paper` 를 가정하지 않는다. 장중 전략의
-  `live_enabled` 는 20거래일 실시간 데이터 + walk-forward gate 통과 전까지 false 다.
-- Toss API 원본 필드는 전략/화면에서 직접 읽지 않고 `modules/brokers` 정규 모델을 쓴다.
-- 주문 접수(`ACCEPTED`)를 체결(`FILLED`)로 표시하지 않는다. 부분체결·취소·거부와
-  재접속 후 REST reconciliation 을 구분한다.
-- 웹소켓 수신부는 주문하지 않는다. bounded queue → 단일 소비 루프만 주문할 수 있다.
-- 실시간 시세가 stale 이면 신규 진입만 멈추고, 보유 청산은 REST fallback 으로 계속한다.
-- 장중 신호도 binary gate 로 만들지 않는다. 점수+size multiplier 로 쓰고 hard veto 는
-  해제 조건이 있는 데이터 stale/마감/계좌조회실패/주문·손실 한도/비정상 스프레드만 허용한다.
-- US 자동환전은 없다. USD buying power 와 KRW buying power 를 절대 합치지 않는다.
-- 3x ETF·개별주는 장중 유니버스에도 재도입하지 않는다.
+### 무슨 일이 있었나
 
----
+1. **한국투자증권(KIS) API 를 전부 제거하고 토스증권 Open API 로 옮겼다.** 시세·계좌·주문뿐
+   아니라 환율·종목명 같은 정보 조회도 토스로. `kis_api.py`·`kis_domestic.py`·`kis_websocket.py`·
+   `broker_base.py` 는 삭제됐다 — 되돌리는 스위치는 없다 (git 으로만).
+2. **웹소켓은 판단이 아니라 집행에 쓴다.** v7.0 판단은 완성된 일봉(규칙 5)이라 판단을 빠르게 해도
+   결과가 같다. 그래서 (a) 체결 틱으로 주문 직전 현재가 REST 왕복을 없애고, (b) `personal:order`
+   이벤트로 체결을 즉시 확인한다. KIS 시절에는 **주문 접수 = 성공**이었다 — 접수 후 거부돼도 성공으로 셌다.
+3. **퀀트 원칙 적용 (참고: 2025 WorldQuant IQC 우승자 정리 글).** 글에 공개된 알고리즘은 없다.
+   원칙(과적합 경계 · 안 본 기간 검증 · 비용 · 국면 구분 · 신호 조합)으로 후보 4개를 미리 정하고
+   채택 규칙을 결과 전에 정했다. 통과한 것은 **KR 방어자산 슬롯**(국고채10년·금, 자기 추세가 있을
+   때만) 하나 — test 2022- Sharpe 1.39→1.49, 시작연도 6개 모두 Sharpe 동등 이상.
+   근거 전체는 기획서 문서 1-D.
 
+### 구조
+
+- `modules/toss_api.py` — `TossOverseas` / `TossDomestic` 이 **KIS 시절 응답 모양**(`output1`,
+  `output2`, `rt_cd`, `dnca_tot_amt` …)을 그대로 돌려준다. 호출부 200여 곳은 클래스 이름만 바꿨다.
+- `modules/toss_websocket.py` — 로테이션 세션 동안 연결. `toss_api.LIVE_PRICES`(3초 신선도)와
+  `toss_api.ORDER_EVENTS` 를 채운다.
+- `run_bot._confirm_order()` — 주문 후 `wait_order()`(이벤트 우선, REST 보완). 거부·취소(체결 0)면 실패.
+- `momentum_rotation.defensive_targets()` — 빈 슬롯의 방어자산. 봇과 백테스트가 같은 함수.
+
+### v8.0 규칙
+
+1. **토큰을 프로세스마다 발급하지 마라.** 토스는 클라이언트당 유효 토큰이 1개라 새로 발급하면 이전
+   토큰이 즉시 무효다. 봇·대시보드는 `database/toss_token_cache.json` 을 파일 락으로 공유한다.
+   401 이면 먼저 파일의 토큰을 쓰고, 파일 토큰도 죽었을 때만 재발급한다 (`_recover_auth`).
+   **운영 중 로컬 PC 에서 같은 키로 토스 API 를 부르면 서버 봇이 끊긴다.**
+2. **주문 재전송은 같은 `clientOrderId` 로만.** 응답을 못 받은 주문을 새 키로 다시 내면 중복 주문이다.
+   `_place()` 가 한 주문 안의 재시도에 같은 키를 쓴다. 키 없이 재전송하는 경로를 만들지 마라.
+3. **접수는 체결이 아니다.** 주문 결과를 성공으로 셀 때는 `_confirm_order()` 를 거친다.
+   PENDING(DAY 주문 장중 유효)은 성공, REJECTED/CANCELED(체결 0)는 실패.
+4. **US 자금은 USD 매수가능금액뿐이다.** 토스 Open API 는 자동환전이 없다. 원화를 환산해
+   US 주문 여력으로 쓰는 코드를 다시 넣지 마라 (v7.0 규칙 4 와 같은 결론, 이제는 기술적으로도 불가).
+5. **어댑터 응답 모양을 바꾸지 마라.** KR 금액·수량은 정수 문자열이다 — 호출부가 `int(str)` 로 읽는다
+   (`int("2715678.0")` 은 예외). 보유 0 = `[]`, 실패 = `None` (v7.0.1 규칙 7).
+6. **판단은 여전히 완성된 일봉으로.** 웹소켓 가격을 순위·시장필터·종가손절 판단에 넣지 마라 —
+   백테스트(t 종가 판단 → t+1 시가 체결)와 운영이 달라진다 (v7.0 규칙 5).
+7. **전략 후보는 결과를 보기 전에 정하고, 채택 규칙도 먼저 정하라.** `backtest_real.py --robustness`
+   (train 2017-21 / test 2022- / 시작연도 6개)를 통과한 것만 넣는다. 규칙 문면을 간신히 넘는
+   잡음 수준 개선(US 앙상블 +0.02 Sharpe)은 넣지 않는다.
+8. **방어자산도 자기 추세가 있을 때만 든다** (close > MA120, R120 > 0). 금리 상승기 채권처럼
+   방어자산이 같이 무너지면 현금이다. US 방어자산은 시작연도 최소 Sharpe 가 낮아져 기각됐다.
 ## v7.0.3 (2026-10-07) — "조용한 세션"을 없앤다: 텔레그램 알림 강화
 
 ### 무슨 일이 있었나
@@ -54,6 +82,9 @@ v7.0.2 이후 봇은 매일 정상 구동하고 세션도 ok=true 로 완료되�
 12. **[v7.0.3] 거래가 없는 세션도 텔레그램으로 이유를 알려야 한다.** 사용자가
     알 수 없는 "조용한 성공"은 "조용한 실패"와 구분할 수 없다. `send_alert` 을
     거래 유무 조건 안에 넣지 마라.
+
+---
+
 
 ---
 
@@ -114,7 +145,7 @@ v6.x 의 DCA 경로(`decision_engine` / `evaluate_and_buy`)는 코드에 그대�
 4. **시장 간 자금을 섞지 마라.** 통합증거금 환산 폴백은 한 시장이 다른 시장의 돈을 소진시킨다.
 5. **로테이션 신호는 완성된 봉으로만.** 장중 조회 시 오늘 봉은 미완성이다 (`_completed_closes`).
    백테스트는 "t 종가 판단 → t+1 시가 체결" 이므로 운영도 같아야 한다.
-6. **KIS `tot_evlu_amt` 에 예수금을 더하지 마라.** 이미 포함돼 있다.
+6. **KR `tot_evlu_amt` 에 예수금을 더하지 마라.** 이미 포함돼 있다 (v8.0 토스 어댑터도 같은 의미로 채운다).
 7. **[v7.0.1] "없음"과 "실패"를 같은 값으로 반환하지 마라.** `KisOverseas.get_balance()` 가 보유 0 을
    `None` 으로 반환해 US 로테이션 세션이 10/1~10/5 매일 크래시했다. 반대로 `None` 을 "보유 0"으로
    읽으면 조회 실패 시 중복 매수한다. 이제 보유 0 = `{"output1": []}`, 실패 = `None`,
@@ -204,7 +235,7 @@ v6.0 을 9월 8일에 배포했다. 5대 사고 원인을 모두 고쳤고, CI �
 
 5. **감시 스크립트는 봇을 항상 살려둔다.** "장중에만 되살린다"는 설계는 틀렸다.
    개장 순간에 프로세스가 있을 보장이 사라진다. `job()` 은 CLOSED 면 즉시
-   반환하며 KIS 토큰도 발급하지 않으므로 장 밖에서 살려둘 비용이 없다.
+   반환하며 브로커 토큰도 발급하지 않으므로 장 밖에서 살려둘 비용이 없다.
 
 6. **`buy` 판정은 반드시 1주 이상으로 이어진다.** 현금이 1주를 감당하는데 0주를
    내면 판단 계층이 거짓말을 하는 것이다. 사이즈 배율은 **정수화 전에 금액에**
@@ -440,7 +471,7 @@ v5.0/v5.1은 "게이트를 전부 복원" → 몇 달째 한 주도 못 삼.
 
 ---
 
-## 프로젝트 철학 (v7.0)
+## 프로젝트 철학 (v8.0)
 
 **"멈춰 있는 전략은 안전한 것이 아니라 고장 난 것이다."**
 
@@ -471,6 +502,8 @@ v5.0/v5.1은 "게이트를 전부 복원" → 몇 달째 한 주도 못 삼.
 9. **[v7.0] "언제"보다 "무엇을"이 먼저다.** 네 번의 개편이 타이밍과 손절폭만 고쳤다.
    실데이터로 보니 21종목 희석 + 3x 레버리지 + 장중 꼬리 손절 구조 자체가 문제였다.
    소수의 강한 ETF 에 집중하고, 약세장에서는 현금으로 빠지고, 종가로만 판단한다.
+10. **[v8.0] 빠르게 판단하지 말고 빠르게 집행하라.** 판단은 일봉 종가, 집행(주문 단가·체결 확인)은
+    실시간. 그리고 **접수는 체결이 아니다.**
 
 ---
 
@@ -479,9 +512,11 @@ v5.0/v5.1은 "게이트를 전부 복원" → 몇 달째 한 주도 못 삼.
 | 항목 | 🇺🇸 US | 🇰🇷 KR |
 |------|--------|--------|
 | 개장 판정 | `America/New_York` 현지시각 (DST 자동) | `Asia/Seoul` 09:00~15:20 |
-| 주문가능금액 | USD 외화예수금 → 0이면 원화 예수금 환산(통합증거금) | `ord_psbl_cash` 우선 |
-| AI persona | `neutral` | `conservative` |
-| 레버리지 | 3X ETF 허용 (사이즈 ×0.7) | 예탁금 기준 safe/risky 분리 |
+| 주문가능금액 | 토스 USD 매수가능금액만 (자동환전 없음) | 토스 KRW 매수가능금액 (미수 미발생 기준) |
+| 유니버스 (v7.0) | SPY·QQQ·SMH (3x 없음) | ETF 17종 + 방어자산 2종 (v8.0) |
+| 시장필터 | 없음 | KODEX200 MA120 |
+| 매수 주문 | 현재가 +1% 지정가 | 시장가 |
+| AI persona (DCA 경로) | `neutral` | `conservative` |
 | 개별주 손절 | 공통 | ETF보다 완화 (`KR_STOCK_STOP_LOSS_PCT`) |
 
 ## 전략 구조
@@ -594,10 +629,11 @@ v6.0에서는 물타기가 별도 로직이 아니라 **같은 점수 판단의 
    전략/청산/사이징을 건드렸다면 필수. 종료코드 0이어야 한다. 노출도 단조성,
    캡처율, 회전손실, 소액계좌 사이징 중 하나라도 깨지면 실패한다.
 2. **`pytest tests/test_v60_strategy.py tests/test_v60_integration.py
-   tests/test_v61_observability.py tests/test_v70_rotation.py` 통과 확인** — 각각
-   판단·배선·관측·로테이션 계층의 회귀 테스트다.
+   tests/test_v61_observability.py tests/test_v70_rotation.py tests/test_v80_toss.py` 통과 확인** —
+   각각 판단·배선·관측·로테이션·브로커 어댑터 계층의 회귀 테스트다.
 2-1. **[v7.0] 로테이션/유니버스/리밸런싱을 건드렸다면 `python scripts/backtest_real.py`**
    결과(KR·US, 시작 시점 2개 이상)를 커밋 메시지나 PR 에 첨부한다.
+   [v8.0] 운영설정을 바꿨다면 `--robustness` 결과도 첨부한다.
 3. **매수가 실행되는지, "왜 실행되지 않았는지"도 확인** — 세션 로그의
    `자가진단:` 줄과 `skipped_buy_reasons` 를 본다.
 4. **연속 무매수 알림을 무시하지 마라** — 3세션이면 WARN, 7세션이면 CRITICAL이
@@ -612,13 +648,13 @@ v6.0에서는 물타기가 별도 로직이 아니라 **같은 점수 판단의 
 ### .env 필수 값
 
 ```env
-KIS_MOCK=False          # 실투자 필수
-KIS_APP_KEY=...
-KIS_APP_SECRET=...
-KIS_CANO=...
-KIS_ACNT_PRDT_CD=01
-GEMINI_API_KEY=...       # 섹터 뉴스 veto가 Gemini에 의존하므로 사실상 필수
+TOSS_CLIENT_ID=...       # 토스증권 WTS > 설정 > Open API. 서버 IP 를 허용 IP 에 등록할 것
+TOSS_CLIENT_SECRET=...
+TOSS_ACCOUNT_SEQ=        # 선택 — 비우면 첫 종합매매 계좌
+GEMINI_API_KEY=...       # DCA 경로의 섹터 뉴스 veto 용
 ```
+
+운영 서버에는 GitHub Secrets 가 배포 때 주입된다 (`docs/DEPLOY.md`). 모의투자 환경은 없다.
 
 ### user_config.json 핵심 설정 (v6.0)
 
@@ -678,12 +714,14 @@ pytest tests/ -q
 pytest tests/test_v60_strategy.py -v        # v6.0 5대 사고 원인 회귀
 pytest tests/test_v60_integration.py -v     # job() 배선 검증
 pytest tests/test_v61_observability.py -v   # v6.1 관측 계층 + 소액계좌 사이징
-pytest tests/test_v70_rotation.py -v        # v7.0 로테이션 판단·배선 + 관측 2차
+pytest tests/test_v70_rotation.py -v        # v7.0 로테이션 판단·배선 + 관측 2차 + v8.0 방어자산
+pytest tests/test_v80_toss.py -v            # v8.0 토스 어댑터 · 웹소켓 · 체결 확인 · 토큰 공유
 
-# 2-1. 실데이터 백테스트 (v7.0 — 로테이션/유니버스를 건드렸다면 필수, 네트워크 필요)
-pip install yfinance
+# 2-1. 실데이터 백테스트 (로테이션/유니버스를 건드렸다면 필수, 네트워크 필요)
+#      TOSS_CLIENT_ID 가 있으면 토스 일봉, 없으면 yfinance (--source 로 지정 가능)
 python scripts/backtest_real.py                      # KR + US, 2017~
 python scripts/backtest_real.py --market KR --start 2021-01-01
+python scripts/backtest_real.py --robustness         # [v8.0] train/test · 시작연도 6개
 
 # 3. 전략 검증 루프 (전략/청산/사이징을 건드렸다면 필수)
 #    시드 5개 평균으로 판정한다 — 단일 시드 통과는 운일 수 있다.
@@ -693,10 +731,7 @@ python scripts/verify_strategy_loop.py --sessions 80 --seed 7  --seeds 5 --quiet
 # 3-1. 청산 파라미터 스윕 (손절/트레일링을 바꿀 때)
 python scripts/verify_strategy_loop.py --seeds 5 --quiet        --stop -12 --trail-act 10 --trail-drop 6
 
-# 4. 모의투자 테스트 (선택)
-KIS_MOCK=True python3 run_bot.py
-
-# 5. 실투자 실행
+# 4. 실투자 실행 (토스는 모의투자 환경이 없다 — 첫 세션 로그의 [TOSS]/[TOSS-WS] 줄을 확인)
 python3 run_bot.py
 ```
 
@@ -722,14 +757,13 @@ run_bot.py (메인 봇)
 │   └── adaptive_volatility.py (적응형 전략 — 미사용)
 ├── modules/
 │   ├── logger.py ([v6.1] 자정 회전 + 프로세스별 파일 분리. 봇=trading.log, 대시보드=dashboard.log)
-│   ├── momentum_rotation.py ([v7.0] 듀얼 모멘텀 순위·버퍼·시장필터·슬롯 — 봇과 백테스트가 같은 함수를 쓴다)
+│   ├── momentum_rotation.py ([v7.0] 듀얼 모멘텀 순위·버퍼·시장필터·슬롯 + [v8.0] 방어자산 — 봇과 백테스트가 같은 함수)
 │   ├── market_clock.py ([v6.0] 유일한 시계. zoneinfo 기반 DST·휴장일·조기폐장)
 │   ├── decision_engine.py ([v6.0] 점수 기반 매수 판단 — buy/defer/veto)
 │   ├── risk_state.py ([v6.0] 고점 대비 낙폭 사다리 + cool-off 자동 해제)
 │   ├── health_monitor.py ([v6.0] 세션 누적 기록 + 연속 무매수 에스컬레이션)
-│   ├── kis_api.py (해외 주식 API)
-│   ├── kis_domestic.py (국내 주식 API)
-│   ├── kis_websocket.py (실시간 가격 스트리밍)
+│   ├── toss_api.py ([v8.0] 토스증권 REST 어댑터 — KIS 시절 응답 모양 유지, 토큰 공유, 체결 확인)
+│   ├── toss_websocket.py ([v8.0] 체결 틱 + personal:order 주문 이벤트)
 │   ├── multi_llm.py (AI 합의 — 시장 전반 + 섹터 특화 veto)
 │   ├── sector_news.py ([v5.0 신규] 종목→섹터 매핑, 섹터 뉴스 쿼리)
 │   ├── gemini_analyst.py (뉴스 수집 + 섹터 크래시 판별 — persona 무관 엄격 모드)
@@ -745,8 +779,10 @@ run_bot.py (메인 봇)
 │   └── strategy_health.json ([v6.0] 세션 누적 기록 — 연속 무매수 추적)
 ├── scripts/
 │   ├── verify_strategy_loop.py (전략 검증 루프 — CI 배포 게이트, 합성 GBM · DCA 경로)
-│   └── backtest_real.py ([v7.0] 실데이터 포트폴리오 백테스트 — 현행 vs 로테이션, 운영설정을 읽음)
+│   └── backtest_real.py ([v7.0] 실데이터 포트폴리오 백테스트 — 운영설정을 읽음, [v8.0] --robustness)
 ├── docs/
+│   ├── 주식 자동 매매 기획.md (기획서 · 버전별 근거 문서 1-A~1-D)
+│   ├── DEPLOY.md ([v8.0] CI/CD · GitHub Secrets · 서버 · 토스 에러 대응)
 │   └── baseknowledge.md ([v5.0 신규] 퀀트투자 입문자용 용어/개념 설명)
 └── web/ (FastAPI 대시보드)
 ```
@@ -866,8 +902,8 @@ python scripts/verify_strategy_loop.py --sessions 80 --seed 42 --seeds 5 --quiet
 ```
 🚨 [US] 12세션 연속 매수 0건 — 전략이 사실상 정지 상태입니다.
 · 지배적 차단 사유: 주문가능금액 부족 (현금 0 < 1주 512) (100.0%)
-· 조치: USD 예수금이 0일 가능성이 큽니다. KIS 계좌의 외화 예수금 또는
-  통합증거금(원화주문) 설정을 확인하세요.
+· 조치: USD 매수가능금액이 0일 가능성이 큽니다. 토스증권은 Open API 주문에
+  자동환전이 없으니 토스 앱에서 달러로 환전해 두세요.
 ```
 
 ### 그 외
