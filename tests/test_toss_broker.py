@@ -207,3 +207,15 @@ def test_order_request_rejects_invalid_amount_order():
     )
     with pytest.raises(ValueError):
         request.validate()
+
+
+def test_oauth2_string_error_surfaces_real_cause(monkeypatch, tmp_path):
+    """토큰 발급 실패는 OAuth2 형식 {"error": "access_denied"} — 문자열 error 를 dict 로 읽어
+    AttributeError 로 원인을 가리면 안 된다 (2026-10-29 실서버)."""
+    from modules.brokers import toss
+    monkeypatch.setattr(toss, "TOKEN_FILE", tmp_path / "token.json")
+    s = Session()
+    s.queue(Response({"error": "access_denied", "error_description": "IP not allowed"}, status=403))
+    with pytest.raises(BrokerError) as caught:
+        TossBroker("client", "secret", "1", "shadow", s).authenticate()
+    assert caught.value.code == "access_denied" and "IP not allowed" in str(caught.value)
