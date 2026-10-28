@@ -229,6 +229,11 @@ class TossBroker(Broker):
         except ValueError:
             payload = {}
         error = payload.get("error") or payload
+        if isinstance(error, str):
+            # 토큰 발급은 OAuth2 표준 형식 {"error": "access_denied", "error_description": ...}
+            # (403 = 허용 IP 미등록, 401 invalid_client = 자격증명 오류). 문자열을 dict 로 읽으면
+            # AttributeError 로 진짜 원인이 가려진다 (2026-10-29 배포 직후 실제로 그랬다).
+            error = {"code": error, "message": payload.get("error_description") or error}
         code = error.get("code") or f"http-{response.status_code}"
         message = error.get("message") or "토스 API 요청 실패"
         request_id = error.get("requestId") or response.headers.get("X-Request-Id")
