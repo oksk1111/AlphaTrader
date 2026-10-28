@@ -83,7 +83,7 @@ class TossBroker(Broker):
         self.client_id = client_id or os.getenv("TOSS_CLIENT_ID", "")
         self.client_secret = client_secret or os.getenv("TOSS_CLIENT_SECRET", "")
         self.account_seq = str(account_seq or os.getenv("TOSS_ACCOUNT_SEQ", "")).strip()
-        mode = (execution_mode or os.getenv("EXECUTION_MODE", "shadow")).strip().lower()
+        mode = (execution_mode or os.getenv("EXECUTION_MODE") or "shadow").strip().lower()
         try:
             self.execution_mode = ExecutionMode(mode)
         except ValueError as exc:

@@ -6,7 +6,7 @@ load_dotenv()
 # [v8.0] 증권사 = 토스증권 Open API (한국투자증권 API 는 제거됨).
 # EXECUTION_MODE: shadow = 판단·로그·알림은 전부 돌지만 주문은 전송하지 않는다 (기본).
 #                 live   = 실제 주문. 토스는 공식 모의투자 서버가 없으므로 paper 는 없다.
-EXECUTION_MODE = os.getenv("EXECUTION_MODE", "shadow").strip().lower()
+EXECUTION_MODE = (os.getenv("EXECUTION_MODE") or "shadow").strip().lower()  # 빈 값도 shadow
 
 TOSS_CLIENT_ID = os.getenv("TOSS_CLIENT_ID")
 TOSS_CLIENT_SECRET = os.getenv("TOSS_CLIENT_SECRET")
