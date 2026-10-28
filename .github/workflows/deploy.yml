@@ -141,7 +141,8 @@ jobs:
             set_env TOSS_CLIENT_SECRET "$TOSS_CLIENT_SECRET"
             set_env TOSS_ACCOUNT_SEQ "$TOSS_ACCOUNT_SEQ"
             set_env LOGIN_PASSWORD "$LOGIN_PASSWORD"
-            echo "EXECUTION_MODE=${EXECUTION_MODE:-shadow}" >> .env
+            export EXECUTION_MODE="${EXECUTION_MODE:-shadow}"   # 자식 프로세스(봇)가 빈 값을 물려받지 않게
+            echo "EXECUTION_MODE=$EXECUTION_MODE" >> .env
             chmod 600 .env
             grep -q "^TOSS_CLIENT_ID=." .env || echo "⚠️ TOSS_CLIENT_ID 미설정 — GitHub Secrets 에 등록하세요 (봇이 시세·주문을 못 합니다)"
             echo "ℹ️ EXECUTION_MODE=${EXECUTION_MODE:-shadow}"

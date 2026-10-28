@@ -225,3 +225,11 @@ class TestRealtimeFastPath:
         import inspect
         src = inspect.getsource(toss_stream._connect)
         assert "additional_headers" in src and "extra_headers" in src
+
+
+def test_empty_execution_mode_env_means_shadow(monkeypatch):
+    """2026-10-29 배포 직후 US 세션 크래시: 배포 셸이 EXECUTION_MODE="" 를 봇에 물려줬고
+    (load_dotenv 는 기존 환경변수를 덮지 않는다) TossBroker 가 빈 값을 거부했다. 빈 값 = shadow."""
+    from modules.brokers.toss import TossBroker
+    monkeypatch.setenv("EXECUTION_MODE", "")
+    assert TossBroker("c", "s", "1").execution_mode == ExecutionMode.SHADOW
