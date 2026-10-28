@@ -27,20 +27,14 @@ def check_volume_spike(current_vol, ohlc_data, window=5, threshold=1.5):
     
     Args:
         current_vol (float): Real-time volume
-        ohlc_data (list): List of daily OHLC dictionaries from KIS API
+        ohlc_data (list): List of daily OHLC dictionaries from the broker API (newest first)
         window (int): Lookback period (default 5 days)
         threshold (float): Factor to determine spike (1.5 = 150% of average)
     """
     if not ohlc_data or len(ohlc_data) < window + 1:
         return False
         
-    # KIS OHLC is typically descending (Index 0 comes first? No, verify with run_bot)
-    # run_bot reversed closes: closes = [x['clos'] for x in ohlc]; closes.reverse()
-    # This implies ohlc[0] is the LATEST (Today/Yesterday).
-    
-    # Extract volumes from past 'window' days, excluding index 0 (current incomplete day)
-    # Actually, KIS returns [Today, Yesterday, D-2...]
-    # We want average of [Yesterday...D-5]
+    # ohlc[0] 이 최신(오늘, 미완성) 봉이다. 평균은 [어제 … D-window] 로 낸다.
     
     try:
         past_volumes = [float(x['tvol']) if x.get('tvol') not in (None, '') else 0.0 for x in ohlc_data[1:window+1]]
@@ -65,7 +59,7 @@ def check_gap_down(current_price, ohlc_data, threshold_pct=3.0):
     
     Args:
         current_price (float): 현재가
-        ohlc_data (list): KIS OHLC 데이터 (index 0 = 최근)
+        ohlc_data (list): 브로커 OHLC 데이터 (index 0 = 최근)
         threshold_pct (float): 갭다운 기준 (기본 3%)
     
     Returns:
@@ -91,7 +85,7 @@ def check_consecutive_decline(ohlc_data, days=2, threshold_pct=3.0):
     연속 하락 감지: 최근 N일간 연속 하락하고 누적 하락률이 기준 이상인지 확인.
     
     Args:
-        ohlc_data (list): KIS OHLC 데이터 (index 0 = 최근)
+        ohlc_data (list): 브로커 OHLC 데이터 (index 0 = 최근)
         days (int): 확인할 연속 일수 (기본 2일)
         threshold_pct (float): 누적 하락률 기준 (기본 3%)
     
@@ -151,7 +145,7 @@ def calculate_atr_pct(ohlc_data, period=14):
     종목별 변동성에 맞춰 동적 손절폭/익절폭을 산정하기 위함.
 
     Args:
-        ohlc_data (list): KIS OHLC (index 0 = 최근). 각 row 에 'high','low','clos' 필요.
+        ohlc_data (list): 브로커 OHLC (index 0 = 최근). 각 row 에 'high','low','clos' 필요.
         period (int): ATR 산정 기간 (기본 14일)
 
     Returns:

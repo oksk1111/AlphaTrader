@@ -1,13 +1,13 @@
 """
 Walk-Forward Backtest Driver
 
-KIS API 또는 로컬 캐시에서 OHLC 를 로드해 v2.2 vs v2.3 파라미터 셋을 비교.
+토스증권 API 또는 로컬 캐시에서 OHLC 를 로드해 v2.2 vs v2.3 파라미터 셋을 비교.
 
 사용법:
     python -m scripts.run_walk_forward --tickers 005930,000660 --market KR --days 120
     python -m scripts.run_walk_forward --tickers TQQQ,SOXL --market US --days 120
 
-KIS 접속이 불가하거나 OHLC 가 비어있으면 해당 ticker 는 skip 후 안내만 출력한다.
+API 접속이 불가하거나 OHLC 가 비어있으면 해당 ticker 는 skip 후 안내만 출력한다.
 결과는 `database/walk_forward_<timestamp>.json` 에 저장된다.
 """
 
@@ -36,7 +36,7 @@ REPORT_DIR = BASE_DIR / "database" / "walk_forward_reports"
 
 
 def _normalize_ohlc(raw):
-    """KIS 응답을 [{open,high,low,close}, ...] 시간 오름차순으로 정규화."""
+    """브로커 응답을 [{open,high,low,close}, ...] 시간 오름차순으로 정규화."""
     out = []
     if not raw:
         return out
@@ -50,7 +50,7 @@ def _normalize_ohlc(raw):
                 out.append({"open": o, "high": h, "low": l, "close": c})
         except Exception:
             continue
-    # KIS daily 는 보통 최신 → 과거. 오름차순으로 뒤집기.
+    # 일봉은 최신 → 과거 순. 오름차순으로 뒤집기.
     if len(out) >= 2:
         out = out[::-1] if out[0].get("close") and out[-1].get("close") else out
     return out
@@ -58,9 +58,9 @@ def _normalize_ohlc(raw):
 
 def _fetch_ohlc_kr(ticker, days):
     try:
-        from modules.kis_domestic import KisDomestic
-        kis = KisDomestic()
-        raw = kis.get_daily_ohlc(ticker, days=days)
+        from modules.toss_api import TossDomestic
+        broker = TossDomestic()
+        raw = broker.get_daily_ohlc(ticker, days=days)
         return _normalize_ohlc(raw)
     except Exception as e:
         print(f"  [WARN] KR OHLC fetch 실패 ({ticker}): {e}")
@@ -69,9 +69,9 @@ def _fetch_ohlc_kr(ticker, days):
 
 def _fetch_ohlc_us(ticker, days, exchange="NAS"):
     try:
-        from modules.kis_api import KisOverseas
-        kis = KisOverseas()
-        raw = kis.get_daily_ohlc(ticker, exchange, days=days)
+        from modules.toss_api import TossOverseas
+        broker = TossOverseas()
+        raw = broker.get_daily_ohlc(ticker, exchange, days=days)
         return _normalize_ohlc(raw)
     except Exception as e:
         print(f"  [WARN] US OHLC fetch 실패 ({ticker}): {e}")

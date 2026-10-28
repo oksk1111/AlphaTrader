@@ -562,7 +562,7 @@ def build_asset_trend(asset_snapshots, combined_total_krw):
             from modules.profit_tracker import kr_account_total
             us = snapshot["us"]
             value = kr_account_total(snapshot["kr"]) + (
-                safe_float(us.get("deposit_usd")) + safe_float(us.get("eval_total_usd"))) * 1450.0
+                safe_float(us.get("deposit_usd")) + safe_float(us.get("eval_total_usd"))) * safe_float(snapshot.get("usd_krw"), 1450.0)
         points.append({
             "id": f"snapshot-{key}",
             "label": key[5:].replace("-", "/"),
@@ -992,7 +992,7 @@ def parse_ticker_data(parsed_lines):
     
     return ticker_data
 
-# 환율 설정
+# 환율 기본값 — 실제 값은 account_manager 가 토스 환율 API 로 채운 us.exchange_rate
 USD_KRW_RATE = 1450.0
 
 # 캐시 최대 유효 시간 (초) - 이보다 오래된 캐시는 자동 갱신 시도

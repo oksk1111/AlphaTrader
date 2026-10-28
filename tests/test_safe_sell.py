@@ -1,7 +1,7 @@
 """tests/test_safe_sell.py
 
-run_bot.safe_sell() 및 KIS 잔고 재조회 fallback 로직 단위 테스트.
-실제 KIS API 를 호출하지 않도록 모듈을 mocking 한다.
+run_bot.safe_sell() 및 잔고 재조회 fallback 로직 단위 테스트.
+실제 토스 API 를 호출하지 않도록 모듈을 mocking 한다.
 """
 import os
 import sys
@@ -13,17 +13,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, os.pardir))
 sys.path.insert(0, ROOT)
 
-# config 의존성을 우회하기 위해 환경변수 가짜 채움 (import 시 KIS 토큰 발급 시도 방지)
-os.environ.setdefault("KIS_BASE_URL", "https://openapivts.koreainvestment.com:29443")
-os.environ.setdefault("KIS_APP_KEY", "TEST")
-os.environ.setdefault("KIS_APP_SECRET", "TEST")
-os.environ.setdefault("KIS_CANO", "00000000")
-os.environ.setdefault("KIS_ACNT_PRDT_CD", "01")
 os.environ.setdefault("DISCORD_WEBHOOK_URL", "")
 
 
 class FakeKR:
-    """KIS 국내 매도 클라이언트 mock."""
+    """국내 매도 클라이언트 mock."""
 
     def __init__(self, holding=10, sell_responses=None, current_price=70000):
         self.holding = holding
@@ -55,8 +49,6 @@ def _import_safe_sell():
     """run_bot 모듈을 안전하게 import (외부 의존성 mocking)."""
     # 무거운 외부 의존성 mocking
     fake_modules = {
-        'modules.kis_api': MagicMock(),
-        'modules.kis_domestic': MagicMock(),
         'modules.gemini_analyst': MagicMock(),
         'modules.telegram_notifier': MagicMock(),
         'modules.account_manager': MagicMock(),
@@ -161,19 +153,9 @@ class TestSafeSell(unittest.TestCase):
         # 어떤 매도 주문도 발생하지 않아야 함
         self.assertEqual(fake.calls, [])
 
-    def test_kis_domestic_tick_size(self):
-        """KRX 호가단위 헬퍼 검증.
-
-        `_import_safe_sell()` 이 `sys.modules['modules.kis_domestic']` 를 MagicMock 으로
-        선점하므로 평범한 import 는 목을 돌려준다(그러면 어떤 값이든 통과해 테스트가
-        무의미해진다). 실제 파일을 직접 로드해 진짜 구현을 검증한다.
-        """
-        import importlib.util
-        _path = os.path.join(ROOT, 'modules', 'kis_domestic.py')
-        _spec = importlib.util.spec_from_file_location('_real_kis_domestic', _path)
-        _mod = importlib.util.module_from_spec(_spec)
-        _spec.loader.exec_module(_mod)
-        KisDomestic = _mod.KisDomestic
+    def test_domestic_tick_size(self):
+        """KRX 호가단위 헬퍼 검증 (지정가 fallback 이 호가단위 위반으로 거부되지 않게)."""
+        from modules.toss_api import TossDomestic
 
         cases = [
             (1500, 1),
@@ -185,7 +167,7 @@ class TestSafeSell(unittest.TestCase):
             (700000, 1000),
         ]
         for price, expected in cases:
-            self.assertEqual(KisDomestic._tick_size(price), expected,
+            self.assertEqual(TossDomestic._tick_size(price), expected,
                              msg=f"price={price}")
 
     def test_partial_tp_constants_present(self):

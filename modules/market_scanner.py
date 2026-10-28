@@ -1,9 +1,9 @@
-from modules.kis_domestic import KisDomestic
+from modules.toss_api import TossDomestic
 from modules.logger import logger
 
 class MarketScanner:
     def __init__(self):
-        self.kis = KisDomestic()
+        self.broker = TossDomestic()
         self.discovered_tickers = []  # List of discovered tickers: [{'code': '005930', 'reason': 'Volume Spike'}]
 
     def scan_volume_spikes(self, min_volume_increase_rate=200, min_price=1000):
@@ -13,7 +13,7 @@ class MarketScanner:
         - min_price: Minimum stock price to filter out penny stocks.
         """
         logger.info("📡 Scanning for Volume Spikes...")
-        rank_data = self.kis.get_volume_rank()
+        rank_data = self.broker.get_volume_rank()
         
         candidates = []
         if not rank_data:
@@ -61,7 +61,7 @@ class MarketScanner:
     def scan_top_gainers(self, min_gain=10, min_price=1000):
         """Scan for top gainers (>10% increase)"""
         logger.info("📡 Scanning for Top Gainers...")
-        rank_data = self.kis.get_fluctuation_rank()
+        rank_data = self.broker.get_fluctuation_rank()
         
         candidates = []
         if not rank_data: return []
@@ -96,7 +96,7 @@ class MarketScanner:
         - max_rank: How many top trading value stocks to check (e.g., Top 50).
         """
         logger.info(f"📡 Scanning for Blue Chip Surges (Top {max_rank} Value)...")
-        rank_data = self.kis.get_trading_value_rank()
+        rank_data = self.broker.get_trading_value_rank()
         
         candidates = []
         if not rank_data: return []

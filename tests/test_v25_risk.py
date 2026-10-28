@@ -17,9 +17,6 @@ fake_modules = {
     'schedule': MagicMock(),
     'pytz': MagicMock(),
     'requests': MagicMock(),
-    'modules.kis_api': MagicMock(),
-    'modules.kis_websocket': MagicMock(),
-    'modules.kis_domestic': MagicMock(),
     'modules.telegram_notifier': MagicMock(),
     'modules.market_scanner': MagicMock(),
     'modules.auto_strategy': MagicMock(),
@@ -150,7 +147,7 @@ class TestV25SlippageFee(unittest.TestCase):
 class TestV25ATR(unittest.TestCase):
     def test_atr_basic(self):
         from strategies.technical import calculate_atr_pct
-        # 15개 일봉 (index 0 = 최근). KIS 포맷 키 'high','low','clos'
+        # 15개 일봉 (index 0 = 최근). 브로커 OHLC 키 'high','low','clos'
         ohlc = []
         price = 100.0
         for _ in range(20):

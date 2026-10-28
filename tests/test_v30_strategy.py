@@ -16,9 +16,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # run_bot 의 무거운 의존성 차단
 _FAKE = {
     'schedule': MagicMock(),
-    'modules.kis_api': MagicMock(),
-    'modules.kis_websocket': MagicMock(),
-    'modules.kis_domestic': MagicMock(),
     'modules.telegram_notifier': MagicMock(),
     'modules.market_scanner': MagicMock(),
     'modules.auto_strategy': MagicMock(),
@@ -116,16 +113,13 @@ class TestCompositeScore(unittest.TestCase):
     """PortfolioManager.get_composite_score — 추세추종 복합 점수."""
 
     def setUp(self):
-        # portfolio_manager 는 KIS 클래스를 임포트 → 더미로 치환 후 임포트
-        for name in ('modules.kis_domestic', 'modules.kis_api'):
-            stub = types.ModuleType(name)
-            stub.KisDomestic = type('KisDomestic', (), {'__init__': lambda self, *a, **k: None})
-            stub.KisOverseas = type('KisOverseas', (), {'__init__': lambda self, *a, **k: None})
-            sys.modules[name] = stub
-        # MagicMock 으로 덮인 portfolio_manager 를 제거하고 실제 모듈 로드
+        # MagicMock 으로 덮인 portfolio_manager 를 제거하고 실제 모듈 로드.
+        # 생성자가 토스 클라이언트를 만들며 토큰을 받으려 하므로 생성자만 비운다.
         sys.modules.pop('modules.portfolio_manager', None)
+        from unittest import mock
         from modules.portfolio_manager import PortfolioManager
-        self.pm = PortfolioManager()
+        with mock.patch('modules.portfolio_manager.TossDomestic', lambda: None),                 mock.patch('modules.portfolio_manager.TossOverseas', lambda: None):
+            self.pm = PortfolioManager()
 
     @staticmethod
     def _uptrend_ohlc(n=70, start=100.0, step=1.0, amp=1.0):
