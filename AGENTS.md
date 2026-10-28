@@ -1,5 +1,23 @@
 # AGENTS.md — 개발 지침서
 
+## v8.0-shadow (2026-10-28) — Toss 전환 1단계: 실시간 수집, 실주문 금지
+
+- 1단계의 실주문 경로는 KIS를 유지하고 Toss는 `shadow` 시세 수집만 한다. 계기판은
+  execution provider(KIS)와 market-data provider(Toss)를 구분해 표시한다. Toss 공식
+  문서에는 모의투자 서버가 없으므로 `paper` 를 가정하지 않는다. 장중 전략의
+  `live_enabled` 는 20거래일 실시간 데이터 + walk-forward gate 통과 전까지 false 다.
+- Toss API 원본 필드는 전략/화면에서 직접 읽지 않고 `modules/brokers` 정규 모델을 쓴다.
+- 주문 접수(`ACCEPTED`)를 체결(`FILLED`)로 표시하지 않는다. 부분체결·취소·거부와
+  재접속 후 REST reconciliation 을 구분한다.
+- 웹소켓 수신부는 주문하지 않는다. bounded queue → 단일 소비 루프만 주문할 수 있다.
+- 실시간 시세가 stale 이면 신규 진입만 멈추고, 보유 청산은 REST fallback 으로 계속한다.
+- 장중 신호도 binary gate 로 만들지 않는다. 점수+size multiplier 로 쓰고 hard veto 는
+  해제 조건이 있는 데이터 stale/마감/계좌조회실패/주문·손실 한도/비정상 스프레드만 허용한다.
+- US 자동환전은 없다. USD buying power 와 KRW buying power 를 절대 합치지 않는다.
+- 3x ETF·개별주는 장중 유니버스에도 재도입하지 않는다.
+
+---
+
 ## v7.0.3 (2026-10-07) — "조용한 세션"을 없앤다: 텔레그램 알림 강화
 
 ### 무슨 일이 있었나

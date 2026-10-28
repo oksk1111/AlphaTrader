@@ -61,6 +61,7 @@ log "🔄 Stopping existing processes..."
 pkill -f "python.*run_bot.py" 2>/dev/null && log "  - Bot processes stopped" || log "  - No bot processes found"
 pkill -f "uvicorn.*web.app:app" 2>/dev/null && log "  - Uvicorn dashboard stopped" || log "  - No uvicorn dashboard found"
 pkill -f "streamlit.*dashboard.py" 2>/dev/null && log "  - Streamlit dashboard stopped (legacy)" || log "  - No streamlit dashboard found"
+pkill -f "python.*modules.shadow_collector" 2>/dev/null && log "  - Toss shadow collector stopped" || log "  - No Toss shadow collector found"
 
 sleep 3
 
@@ -70,6 +71,14 @@ log "🚀 Starting services..."
 # Start bot
 nohup "$PYTHON_BIN" run_bot.py >> database/bot_stdout.log 2>&1 &
 sleep 2
+
+# Toss shadow collector: credentials are configured and execution mode is shadow.
+# It only records realtime data and never submits an order.
+if grep -q '^MARKET_DATA_BROKER=toss' .env 2>/dev/null && grep -q '^EXECUTION_MODE=shadow' .env 2>/dev/null; then
+    pkill -f "python.*modules.shadow_collector" 2>/dev/null || true
+    nohup "$PYTHON_BIN" -m modules.shadow_collector >> database/toss_shadow_stdout.log 2>&1 &
+    log "  - Toss shadow collector started"
+fi
 
 # Start dashboard (FastAPI via uvicorn)
 nohup "$PYTHON_BIN" -m uvicorn web.app:app --host 0.0.0.0 --port 8501 >> database/dashboard_stdout.log 2>&1 &

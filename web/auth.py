@@ -67,8 +67,11 @@ JWT_EXPIRY_DAYS = 30
 
 # --- Simple Password Login ---
 
-LOGIN_PASSWORD = os.environ.get("LOGIN_PASSWORD", "").strip() or "alpha2026!"
-print(f"[Auth] Password login enabled.")
+LOGIN_PASSWORD = os.environ.get("LOGIN_PASSWORD", "").strip()
+if LOGIN_PASSWORD:
+    print("[Auth] Password login enabled.")
+else:
+    print("[Auth] Password login disabled (LOGIN_PASSWORD not set).")
 
 
 # --- Google OAuth Config ---

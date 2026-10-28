@@ -15,3 +15,5 @@ openai
 websockets
 PyJWT
 python-multipart
+backports.zoneinfo; python_version < "3.9"
+yfinance

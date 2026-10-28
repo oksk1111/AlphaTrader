@@ -1127,7 +1127,26 @@ async def dashboard(request: Request):
 # ==========================================================================
 
 HEARTBEAT_FILE = BASE_DIR / "database" / "heartbeat.json"
+TOSS_STREAM_STATUS_FILE = BASE_DIR / "database" / "toss_stream_status.json"
 HEARTBEAT_STALE_SECONDS = 300
+
+
+def get_toss_stream_status():
+    """Toss shadow 수집기 상태. 자격증명/계좌정보는 파일에 기록하지 않는다."""
+    try:
+        data = json.loads(TOSS_STREAM_STATUS_FILE.read_text(encoding="utf-8"))
+        age = max(0.0, _time.time() - float(data.get("updated_at", 0)))
+        data["status_age_sec"] = round(age, 1)
+        data["healthy"] = bool(data.get("connected")) and age <= 60
+        return data
+    except Exception:
+        return {
+            "broker": os.getenv("MARKET_DATA_BROKER", "toss"),
+            "execution_mode": os.getenv("EXECUTION_MODE", "shadow"),
+            "connected": False,
+            "healthy": False,
+            "status_age_sec": None,
+        }
 
 
 def get_bot_liveness():
@@ -1157,6 +1176,7 @@ async def api_status(request: Request):
     bot_pid = get_bot_pid()
     market_status = get_market_status()
     liveness, live_info = get_bot_liveness()
+    stream_status = get_toss_stream_status()
 
     # Unauthenticated: minimal health-check response (no sensitive data)
     if not is_authenticated(request):
@@ -1178,7 +1198,18 @@ async def api_status(request: Request):
             "session_outcome": _hb.get("session_outcome") or {},
             "us_done": _hb.get("us_done"),
             "kr_done": _hb.get("kr_done"),
-            # 장이 열려 있는데 봇이 멈춰 있으면 healthy 가 아니다.
+            "execution_broker": os.getenv("BROKER", "kis"),
+            "market_data_broker": stream_status.get("broker"),
+            "execution_mode": stream_status.get("execution_mode"),
+            "stream_connected": stream_status.get("connected"),
+            "stream_age_sec": stream_status.get("message_age_sec"),
+            "stream_queue_size": stream_status.get("queue_size"),
+            "shadow_sessions_collected": {
+                "KR": stream_status.get("kr_sessions_collected", 0),
+                "US": stream_status.get("us_sessions_collected", 0),
+            },
+            # 장이 열려 있는데 봇이 멈춰 있으면 healthy 가 아니다. shadow 수집기는
+            # 아직 실매매 필수 경로가 아니므로 별도 상태로만 노출한다.
             "healthy": not (market_status in ("US", "KR") and liveness == "stalled"),
         })
 
@@ -1214,6 +1245,7 @@ async def api_status(request: Request):
         "bot_liveness": liveness,
         "heartbeat_age_sec": live_info["heartbeat_age_sec"],
         "heartbeat": live_info["heartbeat"],
+        "toss_stream": stream_status,
         "market_status": market_status,
         "last_update": last_update,
         "ticker_data": ticker_data,

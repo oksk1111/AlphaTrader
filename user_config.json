@@ -174,5 +174,35 @@
             "min_slot_value": 50,
             "liquidate_non_universe": true
         }
+    },
+    "broker": {
+        "execution_provider": "kis",
+        "market_data_provider": "toss",
+        "execution_mode": "shadow",
+        "_comment": "1단계: 기존 KIS 실주문은 유지하고 Toss는 shadow 시세 수집만 한다. 정규 브로커 이관 전 Toss live 주문 금지"
+    },
+    "intraday_strategy": {
+        "_comment": "웹소켓 기반 장중 ETF 전략. shadow 데이터 검증 전 live 활성화 금지.",
+        "enabled": true,
+        "live_enabled": false,
+        "min_shadow_sessions": 20,
+        "min_buy_score": 0.62,
+        "min_overnight_score": 0.72,
+        "max_spread_pct": 0.35,
+        "stale_quote_sec": 5,
+        "entry_stop_before_close_min": 20,
+        "max_orders_per_session": 10,
+        "max_overnight_positions": 1,
+        "risk_per_trade_pct": 0.5,
+        "daily_loss_limit_pct": 2.0,
+        "features": {
+            "daily_trend": 0.18,
+            "vwap": 0.18,
+            "ema": 0.16,
+            "breakout": 0.15,
+            "relative_volume": 0.13,
+            "relative_strength": 0.12,
+            "liquidity": 0.08
+        }
     }
 }

@@ -70,9 +70,23 @@ KR_STOCKS = {  # 현행 run_bot.TARGET_TICKERS_KR_1X 에 하드코딩돼 있던 
 }
 KR_BENCH = "069500"
 
-US_1X = {"SPY": "S&P500", "QQQ": "Nasdaq100", "SMH": "Semis"}
+US_1X = {"SPY": "S&P500", "QQQ": "Nasdaq100", "SMH": "Semis",
+         "IWM": "Russell2000", "XLK": "Technology"}
 US_3X = {"TQQQ": "Nasdaq 3x", "SOXL": "Semis 3x"}
 US_BENCH = "SPY"
+
+
+def _operational_universe(market: str) -> List[str]:
+    """운영 설정의 유니버스를 읽는다 — 검증과 실제 대상이 달라지지 않게 한다."""
+    with open(os.path.join(ROOT, "user_config.json"), encoding="utf-8") as f:
+        config = json.load(f)
+    raw = ((config.get("momentum_rotation") or {}).get(market.lower()) or {}).get("universe") or []
+    symbols = []
+    for item in raw:
+        symbol = (item.get("symbol") or item.get("code")) if isinstance(item, dict) else str(item)
+        if symbol:
+            symbols.append(symbol)
+    return symbols
 
 
 # ---------------------------------------------------------------------------
@@ -413,7 +427,9 @@ def run_operational(data, market, start, capital, universe) -> Dict:
 def run_market(market: str, start: str, refresh: bool) -> Dict[str, Dict]:
     risk = _load_risk()
     if market == "KR":
-        etfs, stocks, bench, capital = list(KR_ETFS), list(KR_STOCKS), KR_BENCH, 2_700_000.0
+        operational = _operational_universe("KR")
+        etfs = list(dict.fromkeys(operational + list(KR_ETFS)))
+        stocks, bench, capital = list(KR_STOCKS), KR_BENCH, 2_700_000.0
         data = load_prices(etfs + stocks, "KR", start, refresh)
         etfs = [c for c in etfs if c in data]
         stocks = [c for c in stocks if c in data]
@@ -430,7 +446,9 @@ def run_market(market: str, start: str, refresh: bool) -> Dict[str, Dict]:
             "로테이션 top2 R20 +필터 +종가손절-10": lambda: run_rotation(data, market, start, capital, etfs, set(), bench, 2, 3, 20, close_stop_pct=-10.0),
         }
     else:
-        u1, u3, bench, capital = list(US_1X), list(US_3X), US_BENCH, 2000.0
+        operational = _operational_universe("US")
+        u1 = list(dict.fromkeys(operational + list(US_1X)))
+        u3, bench, capital = list(US_3X), US_BENCH, 2000.0
         data = load_prices(u1 + u3, "US", start, refresh)
         cur_univ = [c for c in u3 + u1 if c in data]
         u1 = [c for c in u1 if c in data]

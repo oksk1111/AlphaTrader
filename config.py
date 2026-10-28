@@ -3,7 +3,21 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# KIS API Config
+# Broker selection. 새 장중 전략은 검증 완료 전까지 shadow 주문만 허용한다.
+# 1단계에서는 기존 KIS 매매를 유지하고 Toss는 shadow 데이터만 수집한다.
+# run_bot의 주문 경로가 정규 브로커 모델로 이관되기 전 BROKER=toss로 표시하면
+# 실제 실행 브로커와 계기판이 달라지므로 기본값을 정직하게 KIS로 둔다.
+BROKER = os.getenv("BROKER", "kis").strip().lower()
+MARKET_DATA_BROKER = os.getenv("MARKET_DATA_BROKER", "toss").strip().lower()
+EXECUTION_MODE = os.getenv("EXECUTION_MODE", "shadow").strip().lower()
+
+# Toss Securities Open API
+TOSS_CLIENT_ID = os.getenv("TOSS_CLIENT_ID")
+TOSS_CLIENT_SECRET = os.getenv("TOSS_CLIENT_SECRET")
+TOSS_ACCOUNT_SEQ = os.getenv("TOSS_ACCOUNT_SEQ")
+TOSS_BASE_URL = os.getenv("TOSS_BASE_URL", "https://openapi.tossinvest.com")
+
+# KIS API Config — 단계적 전환/롤백 기간에만 유지
 KIS_APP_KEY = os.getenv("KIS_APP_KEY")
 KIS_APP_SECRET = os.getenv("KIS_APP_SECRET")
 KIS_CANO = os.getenv("KIS_CANO")

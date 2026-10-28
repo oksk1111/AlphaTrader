@@ -2,10 +2,16 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/web-FastAPI-009688)](https://fastapi.tiangolo.com/)
-[![KIS API](https://img.shields.io/badge/broker-KIS_API-orange)](#)
+[![Toss API](https://img.shields.io/badge/broker-Toss_Open_API-blue)](https://developers.tossinvest.com/docs)
 [![Telegram](https://img.shields.io/badge/notify-Telegram-2CA5E0)](#)
 
 미국/국내 주식 자동매매 시스템입니다.
+
+> 🧪 **v8.0 shadow — Toss 전환 1단계**: Toss REST/웹소켓 어댑터와 장중 ETF 점수 엔진을 추가했습니다.
+> 현재 기본 주문 모드는 `shadow`이며 실제 주문을 전송하지 않습니다. 최소 20거래일의 틱·호가·1분봉을
+> 수집하고 walk-forward gate를 통과하기 전에는 `intraday_strategy.live_enabled=false`를 유지합니다.
+> 대화나 문서에 노출된 API secret은 반드시 재발급한 뒤 서버 `.env`에만 설정하세요.
+
 **Scored DCA(점수 기반 분할매수)** 전략으로, 추세·뉴스·섹터·낙폭 신호를 0~1 **점수**로 환산해
 **매수 여부가 아니라 매수 크기**를 결정합니다. 판단은 하루 한 번이 아니라 장중 5분마다 반복되며,
 완전 차단은 자동 해제 조건을 가진 소수의 veto에만 허용합니다.
@@ -56,7 +62,7 @@
 
 | 모듈 | 기능 | 설명 |
 |------|------|------|
-| Trading Engine | 실시간 웹소켓 + 자동매매 | 장 상태 감지 및 미국 시장 실시간 웹소켓(WebSocket) 스트리밍 가격 수신을 통한 초저지연 실시간 시세 감시 및 고성능 변동성 돌파 구현 |
+| Trading Engine | Toss 실시간 shadow 수집 | KR/US 체결·호가·개인 주문 이벤트를 bounded queue로 수신하고 SQLite에 1분봉/신호 저장. 검증 전 주문 비활성 |
 | Strategy | 다중 전략 | `aggressive_dca`(기본, v6.0부터 점수 기반), `day`, `swing`, `dca` 전략과 `safe/risky` 모드 지원 |
 | **Scored DCA** | **점수가 매수 크기를 정한다** | 추세/구조/눌림/갭/뉴스/노출을 0~1 점수로 합성해 수량에 곱함. 점수 미달은 차단이 아니라 `defer`(다음 주기 재평가) (v6.0, `modules/decision_engine.py`) |
 | **장중 연속 재평가** | **하루 1회 판정 폐기** | 개장 루프와 장중 루프가 동일한 판단 함수를 5분 주기로 호출. 개장 때 조건이 나빴어도 장중에 좋아지면 같은 세션에 매수 (v6.0) |
@@ -86,7 +92,7 @@
 | 구분 | 내용 |
 |------|------|
 | Language | Python 3.10+ |
-| Broker API | KIS Open API |
+| Broker API | Toss Securities Open API (shadow), KIS rollback adapter |
 | AI | Gemini + Multi-LLM adapters |
 | Web | FastAPI + Jinja2 + Vanilla JS/CSS |
 | Data | JSON 기반 캐시/히스토리 (`database/`) |
@@ -104,15 +110,21 @@ pip install -r requirements.txt
 `.env` 파일에 최소 아래 값을 설정하세요.
 
 ```env
-KIS_APP_KEY=...
-KIS_APP_SECRET=...
-KIS_ACCOUNT_NO=...
-KIS_PRODUCT_CODE=...
+BROKER=kis                   # 1단계 기존 실주문 경로
+MARKET_DATA_BROKER=toss      # Toss 실시간 shadow 수집
+EXECUTION_MODE=shadow        # Toss 공식 모의 서버가 없어 shadow→소액 live 순서
+TOSS_CLIENT_ID=...
+TOSS_CLIENT_SECRET=...
+TOSS_ACCOUNT_SEQ=...    # 계좌가 하나면 생략 가능
 GEMINI_API_KEY=...
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...
-DASHBOARD_API_KEY=...   # 대시보드 접근 키 (미설정 시 랜덤 생성)
+DASHBOARD_API_KEY=...
+LOGIN_PASSWORD=...      # 미설정 시 비밀번호 로그인 비활성
 ```
+
+Toss WTS에서 서버의 고정 공인 IP를 허용 목록에 먼저 등록하세요. Client secret과 로그인 비밀번호는
+저장소에 커밋하지 말고, 노출되었으면 즉시 재발급/교체하세요.
 
 ### 3. 사용자 설정 확인
 

@@ -519,6 +519,9 @@ class TestConfig:
         sys.path.insert(0, os.path.join(REPO, "scripts"))
         import backtest_real
         assert backtest_real._load_rotation("KR") == self._cfg()["momentum_rotation"]["kr"]
+        assert backtest_real._operational_universe("US") == [
+            item["symbol"] for item in self._cfg()["momentum_rotation"]["us"]["universe"]
+        ]
 
     def test_opro_and_scanner_skip_in_rotation(self):
         src = io.open(os.path.join(REPO, "run_bot.py"), encoding="utf-8").read()
