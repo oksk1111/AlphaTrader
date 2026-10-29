@@ -100,6 +100,14 @@ venv/bin/python scripts/authorize_live_release.py --commit "$(grep '^DEPLOYED_CO
 포트 `8501`을 공인 인터넷에 직접 열어 두면 HTTP 구간에서 로그인 비밀번호와 세션이 노출될 수 있다.
 운영 대시보드는 도메인과 TLS reverse proxy(Nginx 또는 Caddy) 뒤에 두고, Uvicorn은 loopback에만 바인딩한다.
 
+> **자동 구성 (2026-10-29~).** 배포 때 `deployment/setup_https.sh` 가 Caddy 를 설치하고
+> `DASHBOARD_DOMAIN → 127.0.0.1:8501` 프록시, Let's Encrypt 인증서, 서버 iptables 80/443 을 맞춘다.
+> `DASHBOARD_DOMAIN`(Variables) 이 비어 있으면 `158-180-81-25.sslip.io` 처럼 공인 IP 기반 도메인을 쓰고,
+> `OAUTH_REDIRECT_URI` 가 비어 있으면 `https://<도메인>/auth/callback` 으로 채운다. 실패해도 봇 배포는 막지 않는다.
+> 사람이 해야 하는 것은 두 가지뿐이다: **(a)** Oracle Cloud VCN Security List 에 80·443 ingress 추가,
+> **(b)** Google Cloud Console OAuth client 의 Authorized redirect URI 에 같은 주소 등록.
+> `ALLOWED_EMAILS` 등은 Variables·Secrets 어느 쪽에 넣어도 읽는다. 아래 1~5 는 수동 구성 참고용이다.
+
 1. DNS A 레코드 `dashboard.example.com`을 서버 공인 IP로 연결한다.
 2. Google Cloud Console → OAuth consent screen / Credentials에서 **Web application** OAuth client를 만든다.
    Authorized redirect URI에 `https://dashboard.example.com/auth/callback`을 정확히 등록한다.
