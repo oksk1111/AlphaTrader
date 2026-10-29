@@ -59,7 +59,7 @@ fi
 # 이 명령은 shadow broker로 인증·계좌·시세·웹소켓만 검사하며 주문을 제출하지 않는다.
 grep -q '^LIVE_GATE_SECRET=.' .env || { log "❌ LIVE_GATE_SECRET is required"; exit 1; }
 log "🔐 Running read-only broker preflight before process restart..."
-if ! "$PYTHON_BIN" scripts/live_preflight.py >> database/live_preflight.log 2>&1; then
+if ! "$PYTHON_BIN" -m scripts.live_preflight >> database/live_preflight.log 2>&1; then
     log "❌ Broker preflight failed — existing processes left untouched"
     tail -n 80 database/live_preflight.log | sed -E 's/(Bearer |access_token|client_secret)[^[:space:]"]+/\1[REDACTED]/g' | tee -a "$LOG_FILE"
     exit 1

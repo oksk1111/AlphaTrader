@@ -9,9 +9,13 @@ sending exactly one order and verifies a confirmed fill plus account resync.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+import json
 
 from modules.brokers.models import BrokerError, Market, OrderRequest, OrderSide, OrderType
 from modules.brokers.toss import TossBroker
