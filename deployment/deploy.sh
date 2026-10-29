@@ -54,6 +54,18 @@ if git diff HEAD~1 --name-only 2>/dev/null | grep -q "requirements.txt" || [ ! -
     touch "$PROJECT_DIR/venv/.deps_installed"
 fi
 
+# Stop 전에 새 코드와 현재 자격증명으로 read-only preflight를 끝낸다. 실패한
+# 배포가 정상 동작 중인 봇을 먼저 끄는 것은 v6.1 관측 원칙에 정면으로 어긋난다.
+# 이 명령은 shadow broker로 인증·계좌·시세·웹소켓만 검사하며 주문을 제출하지 않는다.
+grep -q '^LIVE_GATE_SECRET=.' .env || { log "❌ LIVE_GATE_SECRET is required"; exit 1; }
+log "🔐 Running read-only broker preflight before process restart..."
+if ! "$PYTHON_BIN" scripts/live_preflight.py >> database/live_preflight.log 2>&1; then
+    log "❌ Broker preflight failed — existing processes left untouched"
+    tail -n 80 database/live_preflight.log | sed -E 's/(Bearer |access_token|client_secret)[^[:space:]"]+/\1[REDACTED]/g' | tee -a "$LOG_FILE"
+    exit 1
+fi
+log "✅ Broker preflight passed (no order submitted)"
+
 # Stop existing processes gracefully
 log "🔄 Stopping existing processes..."
 
@@ -67,17 +79,6 @@ sleep 3
 
 # Start services
 log "🚀 Starting services..."
-
-# 모든 배포의 첫 단계는 읽기 전용 preflight다. 이 명령은 shadow broker로 토큰·계좌·
-# KR/USD 매수가능금액·시세·웹소켓 구독만 확인하며 주문 API를 절대 호출하지 않는다.
-# shadow 기간의 성공 세션도 이 signed record에 묶여야 live 증적으로 인정된다.
-grep -q '^LIVE_GATE_SECRET=.' .env || { log "❌ LIVE_GATE_SECRET is required"; exit 1; }
-log "🔐 Running read-only broker preflight..."
-if ! "$PYTHON_BIN" scripts/live_preflight.py >> database/live_preflight.log 2>&1; then
-    log "❌ Broker preflight failed — bot will remain stopped; see database/live_preflight.log"
-    exit 1
-fi
-log "✅ Broker preflight passed (no order submitted)"
 
 # Start bot
 nohup "$PYTHON_BIN" run_bot.py >> database/bot_stdout.log 2>&1 &
