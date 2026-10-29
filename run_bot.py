@@ -177,9 +177,8 @@ def notify_shadow_gate_progress(market: str) -> None:
         if milestone and alert_key not in _shadow_gate_alerted:
             _shadow_gate_alerted.add(alert_key)
             send_alert(
-                f"🧪 [{market}] 실거래 전 shadow 검증 {collected}/{required}회 완료\n"
-                f"남은 세션: {checks['shadow_remaining']}회\n"
-                f"다음 단계: {('shadow 증적 완료 — 운영자 smoke test 대기' if checks['shadow_ok'] else '다음 정상 로테이션 세션 대기')}"
+                f"🧪 [{market}] SHADOW 세션 {collected}회 기록 (주문 미전송)\n"
+                f"실거래 전환: GitHub 변수 EXECUTION_MODE=live 후 재배포 — 운영자 승인 단계 없음"
             )
         logger.info(
             f"[{market}] live gate shadow progress: {collected}/{required}, "
@@ -1285,14 +1284,19 @@ def _rotation_session(market, user_config):
     broker = TossOverseas() if market == 'US' else TossDomestic()
     execution_mode = getattr(getattr(broker, 'b', None), 'execution_mode', None)
     execution_mode = getattr(execution_mode, 'value', 'shadow')  # fake broker tests/default = shadow
-    from modules.live_gate import preflight_ok, preflight_verified
-    current_preflight_ok = preflight_ok()
+    from modules.live_gate import preflight_verified, trading_halted
     current_preflight_verified = preflight_verified()
-    if execution_mode == 'live' and not current_preflight_ok:
-        raise RuntimeError(
-            f"[{market}] live 주문 차단: 신선한 read-only preflight가 없습니다. "
-            "scripts/live_preflight.py를 성공시킨 뒤 운영자 승인을 받으세요"
-        )
+    if execution_mode == 'live':
+        # 자동매매: 운영자 승인 없이 진행한다. 배포 때 자동으로 기록되는 read-only
+        # preflight 가 없을 때만 세션을 막는다 (토큰·계좌·시세·웹소켓 미확인 상태).
+        if not current_preflight_verified:
+            raise RuntimeError(
+                f"[{market}] live 세션 차단: 배포 시 read-only preflight 기록이 없습니다 "
+                "(deploy.sh 가 scripts/live_preflight.py 를 성공시켜야 합니다)"
+            )
+        _halt = trading_halted()
+        if _halt:
+            send_alert(f"⛔ [{market}] 실주문 비상정지 중 ({_halt}) — 판단만 하고 주문은 거부됩니다", is_error=True)
     started_at = datetime.datetime.now().astimezone().isoformat(timespec='seconds')
     skey = market_clock.session_key(market)
     universe = _rotation_universe(mcfg, market)
@@ -1359,6 +1363,13 @@ def _rotation_session(market, user_config):
     # 부족분만 채우므로 멱등이다.
     rebalance_due = (ms['sessions_since_rebalance'] >= rebalance_days
                      or ms.get('last_rebalance_key') == skey)
+    # shadow 리밸런싱은 주문을 보내지 않았으므로 실계좌 기준으로는 미완료다. 그대로 두면
+    # live 전환 직후 '유지일'로 판단돼 빈 슬롯을 최대 10거래일 동안 채우지 않는다.
+    # → live 로 처음 도는 세션은 즉시 리밸런싱한다.
+    if execution_mode == 'live' and ms.get('last_rebalance_mode') != 'live':
+        if not rebalance_due:
+            logger.info(f"[{market}] 직전 리밸런싱이 {ms.get('last_rebalance_mode') or 'shadow'} 모드 → live 첫 세션 즉시 리밸런싱")
+        rebalance_due = True
     prev_risk_on = ms.get('risk_on')
     if prev_risk_on is not None and bool(prev_risk_on) != bool(risk_on):
         send_alert(
@@ -1518,6 +1529,7 @@ def _rotation_session(market, user_config):
         ms['sessions_since_rebalance'] = 0
         ms['last_rebalance_key'] = skey
         ms['last_rebalance_at'] = datetime.datetime.now().isoformat(timespec='seconds')
+        ms['last_rebalance_mode'] = execution_mode
         ms['last_targets'] = targets
     ms['pending_buys'] = [c for c in dict.fromkeys(buy_fail) if c in targets] if risk_on else []
     ms['last_plan'] = plan.summary()
@@ -1618,7 +1630,8 @@ def _rotation_session(market, user_config):
             notes=(f"strategy=momentum_rotation risk_on={risk_on} rebalance={rebalance_due} "
                    f"execution_mode={execution_mode} preflight={'ok' if current_preflight_verified else 'missing'}"),
         ))
-        notify_shadow_gate_progress(market)
+        if execution_mode == 'shadow':
+            notify_shadow_gate_progress(market)
         diag = health_monitor.diagnose(market)
         logger.info(f"[{market}] 자가진단: {diag.level.upper()} — {diag.message}")
         if diag.should_alert:

@@ -267,6 +267,37 @@ class TestSessionWiring:
         state = json.load(open(rb.ROTATION_STATE_FILE, encoding="utf-8"))
         assert state["KR"]["sessions_since_rebalance"] == 1
 
+    def test_first_live_session_rebalances_after_shadow(self, rb, monkeypatch):
+        """shadow 리밸런싱은 주문을 안 보냈다 → live 전환 첫 세션에 바로 채운다.
+
+        그러지 않으면 '유지일'로 판단돼 실계좌가 최대 10거래일 동안 현금으로 남는다.
+        """
+        import types
+        from modules import live_gate, market_clock
+        monkeypatch.setattr(live_gate, "preflight_verified", lambda: True)
+        monkeypatch.setattr(live_gate, "trading_halted", lambda: "")
+        fake = FakeKR(dict(UNIVERSE), cash=2_000_000)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
+        rb.run_rotation_session("KR", _cfg())            # shadow 리밸런싱 (FakeKR 기본 = shadow)
+        fake.holdings, fake.cash, fake.buys = {}, 2_000_000, []   # shadow 였으니 실계좌는 비어 있다
+
+        orig = market_clock.session_info
+        day = {"d": "2026-10-02"}
+        monkeypatch.setattr(market_clock, "session_info",
+                            lambda m, now_utc=None: orig(m).__class__(**{**orig(m).__dict__, "session_date": day["d"]}))
+        fake.b = types.SimpleNamespace(execution_mode=types.SimpleNamespace(value="live"))
+        rb.run_rotation_session("KR", _cfg())
+        assert [c for c, _ in fake.buys] == ["A", "B"]
+        state = json.load(open(rb.ROTATION_STATE_FILE, encoding="utf-8"))
+        assert state["KR"]["last_rebalance_mode"] == "live"
+        assert state["KR"]["sessions_since_rebalance"] == 0
+
+        day["d"] = "2026-10-05"                          # 다음 live 세션은 평소대로 유지일
+        rb.run_rotation_session("KR", _cfg())
+        assert [c for c, _ in fake.buys] == ["A", "B"]
+        state = json.load(open(rb.ROTATION_STATE_FILE, encoding="utf-8"))
+        assert state["KR"]["sessions_since_rebalance"] == 1
+
     def test_failed_buy_is_retried_before_next_rebalance(self, rb, monkeypatch):
         """리밸런싱일 주문 실패 → 10거래일 현금 방치가 아니라 다음 세션에 재시도."""
         fake = FakeKR(dict(UNIVERSE), cash=2_000_000)

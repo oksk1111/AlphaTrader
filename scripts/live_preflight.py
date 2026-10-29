@@ -18,7 +18,7 @@ import time
 from modules.brokers.models import BrokerError, Market
 from modules.brokers.toss import TossBroker
 from modules.brokers.toss_stream import TossStream
-from modules.live_gate import record_preflight, readiness
+from modules.live_gate import record_preflight
 
 PROBES = {Market.KR: "069500", Market.US: "XLK"}
 

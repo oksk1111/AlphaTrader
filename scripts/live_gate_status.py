@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print the evidence required before authorizing normal live orders."""
+"""Print whether live orders are currently allowed (preflight recorded, no emergency stop)."""
 
 from __future__ import annotations
 
@@ -21,8 +21,7 @@ def main() -> int:
     args = parser.parse_args()
     report = gate_status(args.required_shadow_sessions)
     report["status"] = "ready" if all(
-        checks["shadow_ok"] and checks["preflight_ok"] and checks["smoke_ok"]
-        for checks in report["markets"].values()
+        checks["live_allowed"] for checks in report["markets"].values()
     ) else "blocked"
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["status"] == "ready" else 1
