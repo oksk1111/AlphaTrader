@@ -62,6 +62,10 @@ jobs:
         # 세지 않는가, 토큰을 봇·대시보드가 서로 revoke 하지 않는가.
         run: pytest tests/test_v80_toss.py -q
 
+      - name: 대시보드 인증 회귀 테스트
+        # OAuth callback CSRF binding, 빈 비밀번호 우회 방지, HTTPS secure cookie 정책.
+        run: pytest tests/test_dashboard_auth.py -q
+
       - name: 전략 검증 루프 (국면 + 청산품질 + 소액계좌)
         # 종료코드 0 = 합격. 실패 조건:
         #   · 상승 국면에서 자본이 놀고 있음      (v5.x 회귀)
@@ -90,6 +94,13 @@ jobs:
           TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
           TOSS_ACCOUNT_SEQ: ${{ secrets.TOSS_ACCOUNT_SEQ }}
           LOGIN_PASSWORD: ${{ secrets.LOGIN_PASSWORD }}
+          DASHBOARD_API_KEY: ${{ secrets.DASHBOARD_API_KEY }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          OAUTH_REDIRECT_URI: ${{ vars.OAUTH_REDIRECT_URI }}
+          ALLOWED_EMAILS: ${{ vars.ALLOWED_EMAILS }}
+          DASHBOARD_COOKIE_SECURE: ${{ vars.DASHBOARD_COOKIE_SECURE }}
           # shadow(기본) | live — Settings > Secrets and variables > Actions > Variables
           EXECUTION_MODE: ${{ vars.EXECUTION_MODE }}
         with:
@@ -97,7 +108,7 @@ jobs:
           username: ${{ secrets.ORACLE_USERNAME }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
           port: 22
-          envs: TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,TOSS_CLIENT_ID,TOSS_CLIENT_SECRET,TOSS_ACCOUNT_SEQ,LOGIN_PASSWORD,EXECUTION_MODE
+          envs: TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,TOSS_CLIENT_ID,TOSS_CLIENT_SECRET,TOSS_ACCOUNT_SEQ,LOGIN_PASSWORD,DASHBOARD_API_KEY,JWT_SECRET,GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET,OAUTH_REDIRECT_URI,ALLOWED_EMAILS,DASHBOARD_COOKIE_SECURE,EXECUTION_MODE
           script: |
             echo "🚀 Starting deployment via GitHub Actions..."
             REPO_DIR="$HOME/AlphaTrader"
@@ -141,10 +152,19 @@ jobs:
             set_env TOSS_CLIENT_SECRET "$TOSS_CLIENT_SECRET"
             set_env TOSS_ACCOUNT_SEQ "$TOSS_ACCOUNT_SEQ"
             set_env LOGIN_PASSWORD "$LOGIN_PASSWORD"
+            set_env DASHBOARD_API_KEY "$DASHBOARD_API_KEY"
+            set_env JWT_SECRET "$JWT_SECRET"
+            set_env GOOGLE_CLIENT_ID "$GOOGLE_CLIENT_ID"
+            set_env GOOGLE_CLIENT_SECRET "$GOOGLE_CLIENT_SECRET"
+            set_env OAUTH_REDIRECT_URI "$OAUTH_REDIRECT_URI"
+            set_env ALLOWED_EMAILS "$ALLOWED_EMAILS"
+            set_env DASHBOARD_COOKIE_SECURE "${DASHBOARD_COOKIE_SECURE:-true}"
             export EXECUTION_MODE="${EXECUTION_MODE:-shadow}"   # 자식 프로세스(봇)가 빈 값을 물려받지 않게
             echo "EXECUTION_MODE=$EXECUTION_MODE" >> .env
             chmod 600 .env
             grep -q "^TOSS_CLIENT_ID=." .env || echo "⚠️ TOSS_CLIENT_ID 미설정 — GitHub Secrets 에 등록하세요 (봇이 시세·주문을 못 합니다)"
+            grep -q "^GOOGLE_CLIENT_ID=." .env || echo "⚠️ GOOGLE_CLIENT_ID 미설정 — 대시보드 Google OAuth 로그인이 비활성입니다"
+            grep -q "^ALLOWED_EMAILS=." .env || echo "⚠️ ALLOWED_EMAILS 미설정 — OAuth 로그인이 모두 거부됩니다"
             echo "ℹ️ EXECUTION_MODE=${EXECUTION_MODE:-shadow}"
             
             # 3. Execute Deployment Script

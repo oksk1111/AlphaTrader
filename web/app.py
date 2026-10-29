@@ -30,11 +30,11 @@ print(f"[Dashboard] Starting... BASE_DIR={BASE_DIR}")
 
 # Authentication
 from web.auth import (
-    require_auth, is_authenticated, set_auth_cookie, set_session_cookie,
-    clear_session_cookie,
+    require_auth, is_authenticated, set_auth_cookie, set_oauth_state_cookie, set_session_cookie,
+    clear_oauth_state_cookie, clear_session_cookie,
     API_KEY, AUTH_COOKIE_NAME, verify_key, _extract_key_from_request,
-    GOOGLE_CLIENT_ID, get_google_auth_url, exchange_code_for_user,
-    is_email_allowed, create_session_token, verify_password,
+    GOOGLE_CLIENT_ID, create_oauth_state, get_google_auth_url, exchange_code_for_user,
+    is_email_allowed, create_session_token, verify_oauth_state, verify_password,
 )
 
 # FastAPI 앱 초기화
@@ -59,17 +59,31 @@ async def custom_http_exception_handler(request: Request, exc: HTTPException):
 
 
 # --- OAuth Routes ---
+def _login_context(request: Request, error: str = ""):
+    """Render-time login state. OAuth callbacks are bound to a signed state value."""
+    google_enabled = bool(GOOGLE_CLIENT_ID)
+    state = create_oauth_state() if google_enabled else ""
+    return {
+        "request": request,
+        "google_enabled": google_enabled,
+        "google_auth_url": get_google_auth_url(state) if google_enabled else "",
+        "oauth_state": state,
+        "error": error,
+    }
+
+
+def _login_response(request: Request, error: str = "", status_code: int = 200):
+    context = _login_context(request, error)
+    response = templates.TemplateResponse("login.html", context, status_code=status_code)
+    if context["oauth_state"]:
+        set_oauth_state_cookie(response, context["oauth_state"])
+    return response
+
+
 @app.get("/login")
 async def login_page(request: Request, error: str = ""):
     """로그인 페이지"""
-    google_enabled = bool(GOOGLE_CLIENT_ID)
-    google_auth_url = get_google_auth_url() if google_enabled else ""
-    return templates.TemplateResponse("login.html", {
-        "request": request,
-        "google_enabled": google_enabled,
-        "google_auth_url": google_auth_url,
-        "error": error,
-    })
+    return _login_response(request, error)
 
 
 @app.post("/login")
@@ -87,27 +101,31 @@ async def login_submit(request: Request):
         return response
 
     # 실패
-    return templates.TemplateResponse("login.html", {
-        "request": request,
-        "google_enabled": bool(GOOGLE_CLIENT_ID),
-        "google_auth_url": get_google_auth_url() if GOOGLE_CLIENT_ID else "",
-        "error": "비밀번호가 올바르지 않습니다.",
-    })
+    return _login_response(request, "비밀번호가 올바르지 않습니다.", status_code=401)
 
 
 @app.get("/auth/callback")
-async def auth_callback(request: Request, code: str = "", error: str = ""):
+async def auth_callback(request: Request, code: str = "", state: str = "", error: str = ""):
     """Google OAuth 콜백 처리"""
     if error:
-        return RedirectResponse(url=f"/login?error=Google 인증이 취소되었습니다.")
+        return RedirectResponse(url="/login?error=Google 인증이 취소되었습니다.")
+
+    if not verify_oauth_state(state, request.cookies.get("oauth_state", "")):
+        response = RedirectResponse(url="/login?error=Google 인증 요청이 만료되었거나 유효하지 않습니다. 다시 로그인하세요.")
+        clear_oauth_state_cookie(response)
+        return response
 
     if not code:
-        return RedirectResponse(url="/login?error=인증 코드가 없습니다.")
+        response = RedirectResponse(url="/login?error=인증 코드가 없습니다.")
+        clear_oauth_state_cookie(response)
+        return response
 
     # Exchange code for user info
     user_info = exchange_code_for_user(code)
     if not user_info:
-        return RedirectResponse(url="/login?error=Google 인증에 실패했습니다. 다시 시도해주세요.")
+        response = RedirectResponse(url="/login?error=Google 인증에 실패했습니다. 다시 시도해주세요.")
+        clear_oauth_state_cookie(response)
+        return response
 
     email = user_info.get("email", "")
     name = user_info.get("name", "")
@@ -115,11 +133,14 @@ async def auth_callback(request: Request, code: str = "", error: str = ""):
     # Check email whitelist
     if not is_email_allowed(email):
         print(f"[Auth] Blocked login attempt from: {email}")
-        return RedirectResponse(url=f"/login?error=허용되지 않은 이메일입니다: {email}")
+        response = RedirectResponse(url="/login?error=허용되지 않은 이메일입니다.")
+        clear_oauth_state_cookie(response)
+        return response
 
     # Create session and set cookie
     token = create_session_token(email, name)
     response = RedirectResponse(url="/", status_code=302)
+    clear_oauth_state_cookie(response)
     set_session_cookie(response, token)
     print(f"[Auth] Google login success: {email} ({name})")
     return response

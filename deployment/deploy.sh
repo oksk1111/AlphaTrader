@@ -81,7 +81,8 @@ if grep -q '^TOSS_CLIENT_ID=.' .env 2>/dev/null; then
 fi
 
 # Start dashboard (FastAPI via uvicorn)
-nohup "$PYTHON_BIN" -m uvicorn web.app:app --host 0.0.0.0 --port 8501 >> database/dashboard_stdout.log 2>&1 &
+# HTTPS reverse proxy만 dashboard에 연결한다. 8501을 공인망에 직접 열지 않는다.
+nohup "$PYTHON_BIN" -m uvicorn web.app:app --host 127.0.0.1 --port 8501 >> database/dashboard_stdout.log 2>&1 &
 sleep 3
 
 # Verify

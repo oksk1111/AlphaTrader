@@ -229,6 +229,19 @@ class TestSessionWiring:
         assert [c for c, _ in fake.buys] == ["A", "B"]
         assert fake.cash >= 0, "현금을 초과해 주문하면 안 된다"
 
+    def test_rotation_does_not_require_live_feed_ticker_mutation(self, rb, monkeypatch):
+        """LiveFeed 는 현재 구독 목록을 바꾸는 API가 없다.
+
+        과거 호출은 첫 로테이션 세션을 AttributeError 로 즉시 종료시켜 매매가 전혀
+        일어나지 않았다. 시작 시 유니버스/방어자산을 모두 구독하므로 재구독도 불필요하다.
+        """
+        fake = FakeKR(dict(UNIVERSE), cash=2_000_000)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
+        monkeypatch.setattr(rb, "_start_ws", lambda *args: object())
+        monkeypatch.setattr(rb, "_stop_ws", lambda: None)
+        rb.run_rotation_session("KR", _cfg())
+        assert [c for c, _ in fake.buys] == ["A", "B"]
+
     def test_legacy_holdings_outside_universe_are_migrated(self, rb, monkeypatch):
         """v6.1 DCA 가 남긴 유니버스 밖 종목(개별주 등)은 첫 리밸런싱에서 정리."""
         series = dict(UNIVERSE, OLD=_series(5000, .004))

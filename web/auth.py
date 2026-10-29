@@ -45,8 +45,16 @@ API_KEY: str = _load_or_generate_api_key()
 # Cookie names
 AUTH_COOKIE_NAME = "dashboard_auth"  # API key cookie (legacy)
 SESSION_COOKIE_NAME = "session"       # Google OAuth JWT session cookie
+OAUTH_STATE_COOKIE_NAME = "oauth_state"  # short-lived OAuth CSRF binding
 # Cookie max age: 30 days
 AUTH_COOKIE_MAX_AGE = 30 * 24 * 60 * 60
+
+# Public dashboard access must terminate TLS before this process. Secure cookies are
+# mandatory in that deployment so session/API-key cookies never travel over HTTP.
+# Local HTTP development remains possible only with DASHBOARD_COOKIE_SECURE=false.
+DASHBOARD_COOKIE_SECURE = os.environ.get("DASHBOARD_COOKIE_SECURE", "true").strip().lower() not in (
+    "0", "false", "no", "off",
+)
 
 
 # --- JWT Secret ---
@@ -82,7 +90,8 @@ OAUTH_REDIRECT_URI = os.environ.get(
     "OAUTH_REDIRECT_URI", "http://158.180.81.25:8501/auth/callback"
 ).strip()
 
-# Allowed emails (comma-separated). Empty = allow all Google accounts.
+# Allowed emails (comma-separated). OAuth is fail-closed when this is empty so a
+# newly enabled client cannot accidentally expose operations to every Google account.
 _allowed_emails_raw = os.environ.get("ALLOWED_EMAILS", "").strip()
 ALLOWED_EMAILS: list = [
     e.strip().lower() for e in _allowed_emails_raw.split(",") if e.strip()
@@ -93,14 +102,14 @@ if GOOGLE_CLIENT_ID:
     if ALLOWED_EMAILS:
         print(f"[Auth] Allowed emails: {ALLOWED_EMAILS}")
     else:
-        print("[Auth] WARNING: ALLOWED_EMAILS not set — any Google account can log in.")
+        print("[Auth] WARNING: ALLOWED_EMAILS not set — Google OAuth logins are denied.")
 else:
     print("[Auth] Google OAuth not configured (GOOGLE_CLIENT_ID not set).")
 
 
 def verify_password(password: str) -> bool:
     """Verify login password (constant-time comparison)."""
-    if not password:
+    if not password or not LOGIN_PASSWORD:
         return False
     return secrets.compare_digest(password.strip(), LOGIN_PASSWORD)
 
@@ -175,18 +184,40 @@ def verify_key(provided_key: Optional[str]) -> bool:
 
 # --- Google OAuth Functions ---
 
-def get_google_auth_url(state: str = "") -> str:
-    """Generate Google OAuth authorization URL."""
+def create_oauth_state() -> str:
+    """Issue a short-lived, one-time OAuth state value to bind callback to this browser."""
+    payload = {
+        "nonce": secrets.token_urlsafe(24),
+        "iat": datetime.now(timezone.utc),
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=10),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def verify_oauth_state(state: str, expected_state: str = "") -> bool:
+    """Accept only the signed, unexpired OAuth state issued to this browser."""
+    if not state or not expected_state or not secrets.compare_digest(state, expected_state):
+        return False
+    try:
+        payload = jwt.decode(state, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return bool(payload.get("nonce"))
+    except jwt.InvalidTokenError:
+        return False
+
+
+def get_google_auth_url(state: str) -> str:
+    """Generate Google OAuth authorization URL bound to a signed state value."""
+    if not GOOGLE_CLIENT_ID or not state:
+        return ""
     params = {
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": OAUTH_REDIRECT_URI,
         "response_type": "code",
-        "scope": "email profile",
+        "scope": "openid email profile",
         "access_type": "offline",
         "prompt": "select_account",
+        "state": state,
     }
-    if state:
-        params["state"] = state
     return f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
 
 
@@ -233,10 +264,8 @@ def exchange_code_for_user(code: str) -> Optional[dict]:
 
 
 def is_email_allowed(email: str) -> bool:
-    """Check if email is in the allowed list. Empty list = allow all."""
-    if not ALLOWED_EMAILS:
-        return True
-    return email.lower().strip() in ALLOWED_EMAILS
+    """Check the OAuth email allowlist. Empty configuration fails closed."""
+    return bool(ALLOWED_EMAILS) and email.lower().strip() in ALLOWED_EMAILS
 
 
 # --- JWT Session Management ---
@@ -357,13 +386,31 @@ def is_authenticated(request: Request) -> bool:
     return False
 
 
+def set_oauth_state_cookie(response: Response, state: str):
+    """Bind one Google OAuth callback to the browser that initiated it."""
+    response.set_cookie(
+        key=OAUTH_STATE_COOKIE_NAME,
+        value=state,
+        max_age=10 * 60,
+        httponly=True,
+        secure=DASHBOARD_COOKIE_SECURE,
+        samesite="lax",
+    )
+
+
+def clear_oauth_state_cookie(response: Response):
+    """Remove the one-time OAuth binding after callback processing."""
+    response.delete_cookie(key=OAUTH_STATE_COOKIE_NAME, secure=DASHBOARD_COOKIE_SECURE, samesite="lax")
+
+
 def set_auth_cookie(response: Response, key: str):
-    """Set the auth cookie on a response for browser sessions."""
+    """Set the legacy API-key browser cookie with the same transport policy as sessions."""
     response.set_cookie(
         key=AUTH_COOKIE_NAME,
         value=key,
         max_age=AUTH_COOKIE_MAX_AGE,
         httponly=True,
+        secure=DASHBOARD_COOKIE_SECURE,
         samesite="lax",
     )
 
@@ -375,6 +422,7 @@ def set_session_cookie(response: Response, token: str):
         value=token,
         max_age=AUTH_COOKIE_MAX_AGE,
         httponly=True,
+        secure=DASHBOARD_COOKIE_SECURE,
         samesite="lax",
     )
 

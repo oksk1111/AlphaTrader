@@ -1277,8 +1277,9 @@ def _rotation_session(market, user_config):
     touch_heartbeat(force=True, market=market, source='session-prep')
     holdings, cash, equity, degraded = _rotation_account(broker, market, exch_of)
     logger.info(f"[{market}] 계좌: 현금 {cash:,.2f} / 평가 {equity:,.2f} / 보유 {list(holdings)}")
-    if ws_client:
-        ws_client.update_tickers(list(dict.fromkeys(uni_codes + defensive + list(holdings))))
+    # LiveFeed 는 세션 시작 시 유니버스·방어자산을 모두 구독한다. 보유 내역을 보고
+    # 스트림을 다시 만들면 토스의 계정당 2개 연결 한도를 순간적으로 넘길 수 있다.
+    # 유니버스 밖 이관 보유는 계좌 스냅샷 가격으로만 청산 판단하므로 추가 구독도 필요 없다.
 
     def _history(code, exch):
         touch_heartbeat(market=market, source='scan', ticker=code)

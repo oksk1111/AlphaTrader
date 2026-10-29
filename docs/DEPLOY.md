@@ -23,7 +23,10 @@ Oracle Cloud(Ubuntu) 한 대에서 봇(`run_bot.py`), 대시보드(FastAPI `web.
 | `TOSS_CLIENT_SECRET` | ✅ | 토스증권 Open API 시크릿 |
 | `TOSS_ACCOUNT_SEQ` | 선택 | 계좌 식별값. 비우면 종합매매(BROKERAGE) 계좌가 하나일 때 자동 선택 |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | 권장 | 알림 |
-| `LOGIN_PASSWORD` | 권장 | 대시보드 비밀번호 로그인 (미설정 시 비활성) |
+| `LOGIN_PASSWORD` | 선택 | 비상용 대시보드 비밀번호 로그인. Google OAuth 운영 시 비워 두는 것을 권장 |
+| `DASHBOARD_API_KEY` | 선택 | 비상용 API key. URL 공유 금지 — OAuth 운영에서는 사용하지 않는 것을 권장 |
+| `JWT_SECRET` | ✅ (OAuth) | 32바이트 이상 무작위 세션 서명키. 재배포 뒤에도 세션을 검증한다 |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | ✅ (OAuth) | Google Cloud OAuth Web application 자격증명 |
 
 ### GitHub Variables (같은 화면의 Variables 탭)
 
@@ -31,6 +34,9 @@ Oracle Cloud(Ubuntu) 한 대에서 봇(`run_bot.py`), 대시보드(FastAPI `web.
 |------|----|------|
 | `EXECUTION_MODE` | `shadow` (미설정 시 기본) | 판단·로그·알림은 전부 돌고 **주문만 보내지 않는다**. 알림에 `SHADOW` 표시 |
 | | `live` | **실주문.** 토스는 공식 모의투자 서버가 없다 — shadow 로 며칠 확인한 뒤 전환할 것 |
+| `OAUTH_REDIRECT_URI` | `https://<dashboard-domain>/auth/callback` | Google Cloud Console에 같은 URI를 등록해야 한다 |
+| `ALLOWED_EMAILS` | `operator@example.com` | 쉼표 구분 OAuth 이메일 allowlist. **빈 값이면 OAuth 로그인을 전부 거부** |
+| `DASHBOARD_COOKIE_SECURE` | `true` | HTTPS에서만 쿠키를 전송한다. 로컬 HTTP 개발 외에는 변경하지 않는다 |
 
 `EXECUTION_MODE` 는 시크릿이 아니라 변수다(값을 로그에서 확인할 수 있어야 한다). 배포 로그에
 `ℹ️ EXECUTION_MODE=...` 줄이 찍힌다. 되돌리려면 변수를 `shadow` 로 바꾸고 재배포(Actions → Run workflow).
@@ -47,7 +53,50 @@ Oracle Cloud(Ubuntu) 한 대에서 봇(`run_bot.py`), 대시보드(FastAPI `web.
 4. 레버리지·인버스 등 사전 요건이 필요한 종목은 앱에서 해당 종목 구매 화면의 등록 절차를 먼저 마친다
    (`422 prerequisite-required`)
 
-## 2. 서버 최초 설치
+## 2. HTTPS + Google OAuth 대시보드 (운영 권장)
+
+포트 `8501`을 공인 인터넷에 직접 열어 두면 HTTP 구간에서 로그인 비밀번호와 세션이 노출될 수 있다.
+운영 대시보드는 도메인과 TLS reverse proxy(Nginx 또는 Caddy) 뒤에 두고, Uvicorn은 loopback에만 바인딩한다.
+
+1. DNS A 레코드 `dashboard.example.com`을 서버 공인 IP로 연결한다.
+2. Google Cloud Console → OAuth consent screen / Credentials에서 **Web application** OAuth client를 만든다.
+   Authorized redirect URI에 `https://dashboard.example.com/auth/callback`을 정확히 등록한다.
+3. GitHub Secrets에 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `JWT_SECRET`을 넣고, Variables에
+   `OAUTH_REDIRECT_URI=https://dashboard.example.com/auth/callback`,
+   `ALLOWED_EMAILS=<운영자 이메일>`, `DASHBOARD_COOKIE_SECURE=true`를 넣는다.
+4. 보안 그룹/방화벽은 `80/tcp`, `443/tcp`만 공개하고 **`8501/tcp` 공개 ingress를 제거**한다.
+5. 아래 프록시처럼 `127.0.0.1:8501`로만 전달한다. 인증된 대시보드에서 봇 로그와 상태를 볼 수 있으며,
+   `/api/status`의 비인증 응답은 의도적으로 최소 health 정보만 노출한다.
+
+```nginx
+server {
+    listen 80;
+    server_name dashboard.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name dashboard.example.com;
+    # certbot 또는 조직의 인증서 관리 방식으로 설정
+    ssl_certificate /etc/letsencrypt/live/dashboard.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/dashboard.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8501;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+    }
+}
+```
+
+> `DASHBOARD_API_KEY`의 `?key=` URL 방식은 브라우저 기록·프록시 로그에 남을 수 있다.
+> 운영 접근에는 Google OAuth allowlist를 사용하고 API key는 비상 대응용으로만 보관한다.
+
+## 3. 서버 최초 설치
 
 ```bash
 ssh -i <키파일>.key ubuntu@<서버_IP>          # Oracle Linux 이미지면 opc
@@ -64,10 +113,11 @@ sudo cp deployment/alphatrader.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now alphatrader
 ```
 
-대시보드: `http://<서버_IP>:8501` (방화벽/Ingress 에서 8501 개방). 외부 노출이 싫으면 SSH 터널:
-`ssh -i <키파일>.key -N -L 8501:localhost:8501 ubuntu@<서버_IP>` 후 `http://localhost:8501`.
+대시보드: 위 HTTPS reverse proxy를 구성했다면 `https://dashboard.example.com`으로 접속한다.
+운영 점검을 위한 SSH 터널은 `ssh -i <키파일>.key -N -L 8501:localhost:8501 ubuntu@<서버_IP>` 후
+`http://localhost:8501`을 사용한다. 공인 방화벽/Ingress에서 `8501/tcp`는 열지 않는다.
 
-## 3. 상태 확인
+## 4. 상태 확인
 
 ```bash
 curl -s http://<서버_IP>:8501/api/status    # bot_status · market_status · heartbeat_age_sec · session_active · session_outcome
@@ -81,7 +131,7 @@ tail -f database/deploy.log                # 배포 기록
 - 토스 웹소켓은 **계정당 동시 연결 2개**다 — 수집기 1 + 봇 세션 1. 로컬에서 하나 더 열면 가장 오래된
   연결(수집기)이 끊긴다.
 
-## 4. 문제 해결 (토스 에러 코드)
+## 5. 문제 해결 (토스 에러 코드)
 
 | 증상 / 코드 | 원인 | 조치 |
 |-------------|------|------|
@@ -92,9 +142,9 @@ tail -f database/deploy.log                # 배포 기록
 | `422 prerequisite-required` / `account-restricted` | 종목 사전 요건·계좌 제한 | 앱에서 절차 완료. 봇은 해당 종목 매매를 멈춘다 |
 | `422 order-hours-closed` | 주문 불가 시간 | 정상 — 다음 세션에 재시도 |
 | `409 opposite-pending-order-exists` (KR) | 같은 종목 반대 방향 미체결 | 미체결 취소 후 재시도 |
-| `429 rate-limit-exceeded` | 초당 한도 초과 | 클라이언트가 `Retry-After` 만큼 대기 후 재시도 (자동) |
+| `429 rate-limit-exceeded` | 초당 한도 초과 | 호출을 줄이고 다음 세션에서 재시도. 현재 어댑터는 429를 즉시 오류로 올려 원인을 숨기지 않는다 |
 
-## 5. 로컬 실행 (개발)
+## 6. 로컬 실행 (개발)
 
 ```bash
 pip install -r requirements.txt
