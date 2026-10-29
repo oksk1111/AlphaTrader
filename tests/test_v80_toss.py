@@ -182,7 +182,9 @@ class TestRealtimeFastPath:
         toss_stream.ORDER_EVENTS.clear()
 
     def _broker(self, responses):
-        from tests.test_toss_broker import Response, Session, broker
+        # tests/ is not a package in every pytest invocation. Importing the
+        # sibling module through the test package therefore fails outside CI.
+        from test_toss_broker import Response, Session, broker
         s = Session()
         s.queue(*[Response(r) for r in responses])
         return broker(s, "live"), s
@@ -197,8 +199,9 @@ class TestRealtimeFastPath:
         toss_stream.LIVE_PRICES["SPY"] = (512.3, time.monotonic() - 60)
         assert b.quote("SPY", Market.US).price == 500.0 and len(s.calls) == 1
 
-    def test_submit_and_wait_takes_order_event_without_polling(self):
+    def test_submit_and_wait_takes_order_event_without_polling(self, monkeypatch):
         from modules.brokers.models import OrderRequest, OrderSide, OrderType
+        monkeypatch.setattr("modules.live_gate.assert_live_order_allowed", lambda market: None)
         b, s = self._broker([
             {"result": {"orderId": "o1", "clientOrderId": "c1"}},
             {"result": {"orderId": "o1", "symbol": "SPY", "status": "PENDING", "execution": {"filledQuantity": "0"}}},

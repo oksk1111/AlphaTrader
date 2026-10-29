@@ -42,6 +42,12 @@ def broker(session, mode="shadow"):
     return b
 
 
+@pytest.fixture(autouse=True)
+def live_release(monkeypatch):
+    """Normal adapter tests exercise order serialization, not deployment release policy."""
+    monkeypatch.setattr("modules.live_gate.assert_live_order_allowed", lambda market: None)
+
+
 def test_live_mode_rejects_nonofficial_base_url(monkeypatch):
     monkeypatch.setenv("TOSS_BASE_URL", "https://example.test")
     with pytest.raises(ValueError):

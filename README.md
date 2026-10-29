@@ -89,6 +89,8 @@ python scripts/verify_strategy_loop.py --sessions 80 --seed 42 --seeds 5 --quiet
 
 - 대시보드는 **HTTPS + Google OAuth allowlist** 뒤에서만 운영한다. Uvicorn은 `127.0.0.1:8501`에만 바인딩하고
   공인 `8501/tcp` ingress는 열지 않는다. 자세한 설정은 [`docs/DEPLOY.md`](docs/DEPLOY.md)를 따른다.
+- `EXECUTION_MODE=live`만으로 주문되지 않는다. signed preflight, 시장별 20회 shadow 증적, 운영자 승인
+  one-share smoke 체결/잔고 동기화, 만료되는 signed release를 모두 통과해야 주문 API 요청을 허용한다.
 - `GET /api/status` — `bot_status` · `market_status` · `heartbeat_age_sec` · `session_active` · `session_outcome` ·
   `execution_mode` · `stream_connected` · `shadow_sessions_collected`
 - `database/trading.log` (봇) / `database/dashboard.log` (대시보드) — 자정 회전, 줄마다 `[bot]`/`[dash]`

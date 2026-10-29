@@ -66,6 +66,11 @@ jobs:
         # OAuth callback CSRF binding, 빈 비밀번호 우회 방지, HTTPS secure cookie 정책.
         run: pytest tests/test_dashboard_auth.py -q
 
+      - name: 실거래 릴리스 게이트 회귀 테스트
+        # live 주문은 signed preflight + 시장별 20회 shadow 증적 + one-share smoke 결과
+        # + 만료되는 운영자 승인이 없으면 브로커 요청 전에 거부되어야 한다.
+        run: pytest tests/test_live_gate.py -q
+
       - name: 전략 검증 루프 (국면 + 청산품질 + 소액계좌)
         # 종료코드 0 = 합격. 실패 조건:
         #   · 상승 국면에서 자본이 놀고 있음      (v5.x 회귀)
@@ -81,6 +86,9 @@ jobs:
   deploy:
     needs: verify
     runs-on: ubuntu-latest
+    # live는 GitHub Settings > Environments > production-live 에서 required reviewer를
+    # 반드시 설정한다. shadow 배포에는 별도 승인이 필요 없다.
+    environment: ${{ vars.EXECUTION_MODE == 'live' && 'production-live' || 'production-shadow' }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -93,6 +101,7 @@ jobs:
           TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
           TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
           TOSS_ACCOUNT_SEQ: ${{ secrets.TOSS_ACCOUNT_SEQ }}
+          LIVE_GATE_SECRET: ${{ secrets.LIVE_GATE_SECRET }}
           LOGIN_PASSWORD: ${{ secrets.LOGIN_PASSWORD }}
           DASHBOARD_API_KEY: ${{ secrets.DASHBOARD_API_KEY }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
@@ -108,7 +117,7 @@ jobs:
           username: ${{ secrets.ORACLE_USERNAME }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
           port: 22
-          envs: TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,TOSS_CLIENT_ID,TOSS_CLIENT_SECRET,TOSS_ACCOUNT_SEQ,LOGIN_PASSWORD,DASHBOARD_API_KEY,JWT_SECRET,GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET,OAUTH_REDIRECT_URI,ALLOWED_EMAILS,DASHBOARD_COOKIE_SECURE,EXECUTION_MODE
+          envs: TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,TOSS_CLIENT_ID,TOSS_CLIENT_SECRET,TOSS_ACCOUNT_SEQ,LIVE_GATE_SECRET,LOGIN_PASSWORD,DASHBOARD_API_KEY,JWT_SECRET,GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET,OAUTH_REDIRECT_URI,ALLOWED_EMAILS,DASHBOARD_COOKIE_SECURE,EXECUTION_MODE
           script: |
             echo "🚀 Starting deployment via GitHub Actions..."
             REPO_DIR="$HOME/AlphaTrader"
@@ -151,6 +160,7 @@ jobs:
             set_env TOSS_CLIENT_ID "$TOSS_CLIENT_ID"
             set_env TOSS_CLIENT_SECRET "$TOSS_CLIENT_SECRET"
             set_env TOSS_ACCOUNT_SEQ "$TOSS_ACCOUNT_SEQ"
+            set_env LIVE_GATE_SECRET "$LIVE_GATE_SECRET"
             set_env LOGIN_PASSWORD "$LOGIN_PASSWORD"
             set_env DASHBOARD_API_KEY "$DASHBOARD_API_KEY"
             set_env JWT_SECRET "$JWT_SECRET"
@@ -161,8 +171,10 @@ jobs:
             set_env DASHBOARD_COOKIE_SECURE "${DASHBOARD_COOKIE_SECURE:-true}"
             export EXECUTION_MODE="${EXECUTION_MODE:-shadow}"   # 자식 프로세스(봇)가 빈 값을 물려받지 않게
             echo "EXECUTION_MODE=$EXECUTION_MODE" >> .env
+            echo "DEPLOYED_COMMIT=${GITHUB_SHA}" >> .env
             chmod 600 .env
             grep -q "^TOSS_CLIENT_ID=." .env || echo "⚠️ TOSS_CLIENT_ID 미설정 — GitHub Secrets 에 등록하세요 (봇이 시세·주문을 못 합니다)"
+            grep -q "^LIVE_GATE_SECRET=." .env || { echo "❌ LIVE_GATE_SECRET 미설정 — preflight/live gate 배포를 중단합니다"; exit 1; }
             grep -q "^GOOGLE_CLIENT_ID=." .env || echo "⚠️ GOOGLE_CLIENT_ID 미설정 — 대시보드 Google OAuth 로그인이 비활성입니다"
             grep -q "^ALLOWED_EMAILS=." .env || echo "⚠️ ALLOWED_EMAILS 미설정 — OAuth 로그인이 모두 거부됩니다"
             echo "ℹ️ EXECUTION_MODE=${EXECUTION_MODE:-shadow}"

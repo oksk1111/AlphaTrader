@@ -311,6 +311,16 @@ class TossBroker(Broker):
                 state=OrderState.ACCEPTED, symbol=order.symbol,
                 message="shadow mode: 실제 주문을 전송하지 않았습니다",
             )
+        # EXECUTION_MODE=live 는 전송 능력일 뿐 즉시 주문 허가는 아니다. 배포 후
+        # 읽기 전용 preflight·shadow 증적·운영자 승인 기록이 없으면 여기서 막는다.
+        from modules.live_gate import assert_live_order_allowed, consume_smoke_authorization
+        if os.getenv("LIVE_SMOKE_ACTIVE") == "1":
+            # 운영자 승인 스크립트만 잠시 켜는 1회성 예외. 종목·금액·만료가 모두
+            # 서명된 기록과 맞아야 API 요청 전 소비된다.
+            notional = float(order.quantity or 0) * float(order.price or 0)
+            consume_smoke_authorization(order.market.value, order.symbol, notional)
+        else:
+            assert_live_order_allowed(order.market)
         body: Dict[str, Any] = {
             "clientOrderId": client_order_id,
             "symbol": order.symbol,

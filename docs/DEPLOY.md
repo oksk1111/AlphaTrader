@@ -41,6 +41,48 @@ Oracle Cloud(Ubuntu) 한 대에서 봇(`run_bot.py`), 대시보드(FastAPI `web.
 `EXECUTION_MODE` 는 시크릿이 아니라 변수다(값을 로그에서 확인할 수 있어야 한다). 배포 로그에
 `ℹ️ EXECUTION_MODE=...` 줄이 찍힌다. 되돌리려면 변수를 `shadow` 로 바꾸고 재배포(Actions → Run workflow).
 
+### Live-order release gates (필수)
+
+`EXECUTION_MODE=live`는 토스 주문 API **전송 능력**일 뿐 정상 전략 주문의 허가가 아니다. 다음이 모두
+통과하지 않으면 `TossBroker.submit_order()`가 HTTP 요청 전에 주문을 거부한다.
+
+1. 코드 변경으로 전략/유니버스/리밸런싱/방어자산을 건드렸다면 배포 전 `python scripts/backtest_real.py --robustness`
+   결과를 검토한다. 외부 시세 공급자 가용성 때문에 일반 CI가 아니라 변경 승인 체크리스트에서 관리한다.
+2. GitHub Environment `production-live`의 required reviewer 승인. `.github/workflows/deploy.yml`의 live deploy는
+   이 Environment에 연결된다. GitHub Settings → Environments에서 reviewer를 설정한다.
+3. GitHub Secret `LIVE_GATE_SECRET` 등록 — `JWT_SECRET`처럼 `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`
+   로 생성하는 32바이트 이상 비밀값이다. preflight/smoke/release 기록의 위변조를 막는다. 이 키가 없으면
+   **shadow 배포도 중단**한다. shadow 세션을 live 증적으로 쓰려면 같은 signed preflight가 필요하기 때문이다.
+4. 배포 중 **read-only preflight** 성공. `scripts/live_preflight.py`는 shadow broker로 인증·계좌 선택·KRW/USD
+   매수가능금액·KR/US 현재가·웹소켓 구독을 확인하며 주문 API는 호출하지 않는다. 실패하면 bot을 기동하지 않는다.
+5. 각 시장별로 `execution_mode=shadow preflight=ok`가 기록된 완료 로테이션 세션 **20회**. 이전 세션은
+   provenance가 없으므로 live 증적으로 세지 않는다.
+6. 운영자 승인 one-share smoke test가 각 시장에서 체결·잔고 재동기화까지 성공. CI나 bot은 절대 임의 주문하지 않는다.
+7. 운영자가 최대 24시간짜리 signed release를 명시적으로 생성. 만료 뒤 다음 live 주문은 다시 차단된다.
+
+운영 명령(서버에서, 각 단계의 JSON 결과가 `ok`인지 확인):
+
+```bash
+# 1) 읽기 전용 preflight (live 배포 시 자동 실행되지만 수동 재검증 가능)
+venv/bin/python scripts/live_preflight.py
+
+# 2) 20-session 증적 + preflight/smoke 상태 확인
+venv/bin/python scripts/live_gate_status.py --required-shadow-sessions 20
+
+# 3) 1주 smoke test는 두 단계이며, 운영자만 의도적으로 실행한다.
+# 예: US XLK 1주를 $300 상한으로 승인 후 실제 주문/체결/잔고 재동기화 검증
+venv/bin/python scripts/live_smoke.py authorize --market US --symbol XLK --max-notional 300
+venv/bin/python scripts/live_smoke.py execute --market US --symbol XLK --max-notional 300 \
+  --confirm I_UNDERSTAND_THIS_SENDS_A_REAL_ORDER
+
+# 4) KR/US smoke와 모든 증적이 충족된 뒤 24시간 정상 주문 릴리스
+venv/bin/python scripts/authorize_live_release.py --commit "$(grep '^DEPLOYED_COMMIT=' .env | cut -d= -f2)" \
+  --required-shadow-sessions 20 --confirm I_AUTHORIZE_NORMAL_LIVE_ORDERS_FOR_24_HOURS
+```
+
+> smoke test는 실제 보유와 수수료를 만들며 자동 매도가 아니다. `--max-notional`은 승인 상한이고
+> 실행할 종목/시장/보유·매도 계획을 운영자가 결정한다. 체결되지 않은 주문은 어댑터가 timeout 뒤 취소한다.
+
 - 시크릿은 **값이 있을 때만** 서버 `.env` 의 해당 줄을 덮어쓴다. 등록 전에 배포가 돌아도 기존 값이 지워지지 않는다.
 - 배포 시 서버 `.env` 의 `KIS_*` · `BROKER` · `MARKET_DATA_BROKER` 줄은 삭제된다 (v8.0 에서 한국투자증권 API 제거).
 - `GEMINI_API_KEY`, `DASHBOARD_API_KEY` 등 나머지 키는 서버 `.env` 에 직접 둔다 (`.env.example` 참고).

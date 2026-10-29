@@ -1254,6 +1254,16 @@ def _rotation_session(market, user_config):
     defensive = [str(c) for c in mcfg.get('defensive') or []]
 
     broker = TossOverseas() if market == 'US' else TossDomestic()
+    execution_mode = getattr(getattr(broker, 'b', None), 'execution_mode', None)
+    execution_mode = getattr(execution_mode, 'value', 'shadow')  # fake broker tests/default = shadow
+    from modules.live_gate import preflight_ok, preflight_verified
+    current_preflight_ok = preflight_ok()
+    current_preflight_verified = preflight_verified()
+    if execution_mode == 'live' and not current_preflight_ok:
+        raise RuntimeError(
+            f"[{market}] live 주문 차단: 신선한 read-only preflight가 없습니다. "
+            "scripts/live_preflight.py를 성공시킨 뒤 운영자 승인을 받으세요"
+        )
     started_at = datetime.datetime.now().astimezone().isoformat(timespec='seconds')
     skey = market_clock.session_key(market)
     universe = _rotation_universe(mcfg, market)
@@ -1576,7 +1586,8 @@ def _rotation_session(market, user_config):
             buys=len(bought), sells=len(sold) + len(stop_sold),
             evaluations=len(feats), available_cash=float(cash or 0.0),
             block_reasons={f"{fail_reason.get(c, '매수 실패')} [{c}]"[:80]: 1 for c in buy_fail},
-            notes=f"strategy=momentum_rotation risk_on={risk_on} rebalance={rebalance_due}",
+            notes=(f"strategy=momentum_rotation risk_on={risk_on} rebalance={rebalance_due} "
+                   f"execution_mode={execution_mode} preflight={'ok' if current_preflight_verified else 'missing'}"),
         ))
         diag = health_monitor.diagnose(market)
         logger.info(f"[{market}] 자가진단: {diag.level.upper()} — {diag.message}")
