@@ -101,3 +101,25 @@ def test_oauth_callback_rejects_state_from_another_browser(monkeypatch):
 
     # The initiating browser state remains signed and is not accepted without a code exchange.
     assert app.verify_oauth_state(own_state, own_state)
+
+
+def test_public_status_reports_bot_mode_not_collector_mode(monkeypatch, tmp_path):
+    """shadow 수집기는 항상 shadow 다. 봇이 live 인데 'shadow' 로 보이면 계기판이 거짓말한다."""
+    import json
+    import time
+    app = _app(monkeypatch)
+    from starlette.testclient import TestClient
+
+    hb = tmp_path / "heartbeat.json"
+    hb.write_text(json.dumps({"ts": time.time(), "source": "watchloop", "execution_mode": "live"}), encoding="utf-8")
+    stream = tmp_path / "toss_stream_status.json"
+    stream.write_text(json.dumps({"execution_mode": "shadow", "connected": True}), encoding="utf-8")
+    monkeypatch.setattr(app, "HEARTBEAT_FILE", hb)
+    monkeypatch.setattr(app, "TOSS_STREAM_STATUS_FILE", stream)
+    monkeypatch.setattr(app, "get_bot_pid", lambda: 4242)
+    monkeypatch.delenv("EXECUTION_MODE", raising=False)
+
+    payload = TestClient(app.app).get("/api/status").json()
+
+    assert payload["execution_mode"] == "live"
+    assert payload["collector_execution_mode"] == "shadow"

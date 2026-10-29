@@ -1233,7 +1233,9 @@ async def api_status(request: Request):
             "kr_done": _hb.get("kr_done"),
             "execution_broker": "toss",
             "market_data_broker": stream_status.get("broker"),
-            "execution_mode": stream_status.get("execution_mode"),
+            # 봇의 주문 모드 (heartbeat). 수집기는 항상 shadow 라 별도 필드로 둔다.
+            "execution_mode": _hb.get("execution_mode") or (os.getenv("EXECUTION_MODE") or "shadow").strip().lower(),
+            "collector_execution_mode": stream_status.get("execution_mode"),
             "stream_connected": stream_status.get("connected"),
             "stream_age_sec": stream_status.get("message_age_sec"),
             "stream_queue_size": stream_status.get("queue_size"),

@@ -217,6 +217,8 @@ def touch_heartbeat(force: bool = False, **state):
     payload['ts'] = now
     payload['iso'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     payload['pid'] = os.getpid()
+    # 봇 자신의 주문 모드. 대시보드가 shadow 수집기(항상 shadow) 값을 봇 모드로 보여주던 문제.
+    payload['execution_mode'] = (os.getenv('EXECUTION_MODE') or 'shadow').strip().lower()
     try:
         tmp = HEARTBEAT_FILE + '.tmp'
         with open(tmp, 'w', encoding='utf-8') as f:
