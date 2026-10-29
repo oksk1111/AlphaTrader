@@ -64,6 +64,20 @@ def test_live_order_is_blocked_without_signed_release(monkeypatch, tmp_path):
     assert session.calls == []
 
 
+def test_gate_status_shows_shadow_progress_before_smoke(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _record_shadow_history(live_gate.HEALTH_FILE, count=3)
+    live_gate.record_preflight(("KR", "US"), {"quotes": {}})
+
+    status = live_gate.gate_status()
+
+    assert status["shadow_sessions"] == {"KR": 3, "US": 3}
+    assert status["markets"]["KR"]["shadow_remaining"] == 17
+    assert status["markets"]["US"]["preflight_ok"] is True
+    assert status["markets"]["KR"]["smoke_ok"] is False
+    assert status["smoke"]["ok"] is False
+
+
 def test_release_requires_shadow_preflight_and_smoke(monkeypatch, tmp_path):
     _configure(monkeypatch, tmp_path)
     _record_shadow_history(live_gate.HEALTH_FILE)

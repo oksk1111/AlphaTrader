@@ -145,19 +145,48 @@ TREND_EXIT_MIN_LOSS_PCT = -1.0        # 이 손실% 이하일 때만 작동 (본
 
 # Telegram Notifier for alerts
 telegram = TelegramNotifier()
+_shadow_gate_alerted = set()
 
 def send_alert(message: str, is_error: bool = False):
-    """시스템 알림 발송"""
+    """시스템 알림 발송. 실패도 봇 로그에 남겨 운영자가 확인할 수 있게 한다."""
     prefix = "🚨 [ERROR] " if is_error else "ℹ️ [INFO] "
     full_message = f"{prefix}{message}\n\n⏰ {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    
+
     if telegram.is_configured():
-        telegram.send_message(full_message)
-    
+        if not telegram.send_message(full_message):
+            logger.error("텔레그램 알림 전송 실패 — TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID와 bot 차단 여부를 확인하세요")
+    else:
+        logger.critical("텔레그램 알림 미설정 — 메시지를 전송하지 못했습니다")
+
     if is_error:
         logger.error(message)
     else:
         logger.info(message)
+
+
+def notify_shadow_gate_progress(market: str) -> None:
+    """Shadow evidence progress at actionable milestones, without alert spam."""
+    try:
+        from modules.live_gate import gate_status
+        report = gate_status()
+        checks = report["markets"][market]
+        collected = report["shadow_sessions"][market]
+        required = report["required_shadow_sessions"]
+        milestone = collected in {1, 5, 10, 15, required}
+        alert_key = (market, collected)
+        if milestone and alert_key not in _shadow_gate_alerted:
+            _shadow_gate_alerted.add(alert_key)
+            send_alert(
+                f"🧪 [{market}] 실거래 전 shadow 검증 {collected}/{required}회 완료\n"
+                f"남은 세션: {checks['shadow_remaining']}회\n"
+                f"다음 단계: {('shadow 증적 완료 — 운영자 smoke test 대기' if checks['shadow_ok'] else '다음 정상 로테이션 세션 대기')}"
+            )
+        logger.info(
+            f"[{market}] live gate shadow progress: {collected}/{required}, "
+            f"remaining={checks['shadow_remaining']}"
+        )
+    except Exception as exc:
+        logger.error(f"[{market}] shadow 증적 진행상황 확인 실패: {exc}")
 
 # ============================================================================
 # [v6.1] 생존 신호(heartbeat) — "프로세스가 있다" != "봇이 살아 있다"
@@ -1589,6 +1618,7 @@ def _rotation_session(market, user_config):
             notes=(f"strategy=momentum_rotation risk_on={risk_on} rebalance={rebalance_due} "
                    f"execution_mode={execution_mode} preflight={'ok' if current_preflight_verified else 'missing'}"),
         ))
+        notify_shadow_gate_progress(market)
         diag = health_monitor.diagnose(market)
         logger.info(f"[{market}] 자가진단: {diag.level.upper()} — {diag.message}")
         if diag.should_alert:

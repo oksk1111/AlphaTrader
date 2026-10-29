@@ -70,6 +70,20 @@ def test_local_http_cookie_override_is_explicit(monkeypatch):
     assert "secure" not in "\n".join(response.headers.getlist("set-cookie")).lower()
 
 
+def test_authenticated_live_gate_endpoint_reports_progress(monkeypatch, tmp_path):
+    app = _app(monkeypatch)
+    from starlette.testclient import TestClient
+
+    monkeypatch.setattr(app, "BASE_DIR", tmp_path)
+    client = TestClient(app.app)
+    response = client.get("/api/live-gate", headers={"Authorization": "Bearer dashboard-key"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["required_shadow_sessions"] == 20
+    assert set(payload["markets"]) == {"KR", "US"}
+
+
 def test_oauth_callback_rejects_state_from_another_browser(monkeypatch):
     app = _app(monkeypatch)
     from starlette.testclient import TestClient

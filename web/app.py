@@ -843,6 +843,7 @@ def build_dashboard_payload(force_update=False):
         "signals": signals,
         "stories": build_stories(strategy_timeline, parsed_logs, config, market_status, activity_snapshot),
         "alerts": build_alerts(bot_pid, market_status, config, us_account, kr_account, signals, activity_snapshot),
+        "liveGate": get_live_gate_status(),
         "marketTicker": build_market_ticker(accounts, status, config, signals, activity_snapshot),
         "logs": [
             {
@@ -1152,6 +1153,15 @@ TOSS_STREAM_STATUS_FILE = BASE_DIR / "database" / "toss_stream_status.json"
 HEARTBEAT_STALE_SECONDS = 300
 
 
+def get_live_gate_status():
+    """Safe live-order gate progress for authenticated operators only."""
+    try:
+        from modules.live_gate import gate_status
+        return gate_status()
+    except Exception as exc:
+        return {"status": "unavailable", "error": str(exc), "markets": {}}
+
+
 def get_toss_stream_status():
     """Toss shadow 수집기 상태. 자격증명/계좌정보는 파일에 기록하지 않는다."""
     try:
@@ -1273,6 +1283,12 @@ async def api_status(request: Request):
         "recent_logs": parsed_lines[-20:][::-1],
         "config": load_config(),
     })
+
+@app.get("/api/live-gate")
+async def api_live_gate(request: Request):
+    require_auth(request)
+    return JSONResponse(get_live_gate_status())
+
 
 @app.get("/api/account")
 async def api_account(request: Request, force: bool = False):

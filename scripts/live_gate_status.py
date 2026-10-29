@@ -12,20 +12,18 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 import json
 
-from modules.brokers.models import BrokerError
-from modules.live_gate import readiness
+from modules.live_gate import gate_status
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--required-shadow-sessions", type=int, default=20)
     args = parser.parse_args()
-    try:
-        report = readiness(args.required_shadow_sessions)
-    except BrokerError as exc:
-        print(json.dumps({"status": "blocked", "code": exc.code, "error": str(exc)}, ensure_ascii=False, indent=2))
-        return 1
-    report["status"] = "ready" if all(all(checks.values()) for checks in report["markets"].values()) else "blocked"
+    report = gate_status(args.required_shadow_sessions)
+    report["status"] = "ready" if all(
+        checks["shadow_ok"] and checks["preflight_ok"] and checks["smoke_ok"]
+        for checks in report["markets"].values()
+    ) else "blocked"
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["status"] == "ready" else 1
 

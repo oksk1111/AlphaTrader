@@ -121,30 +121,60 @@ def preflight_ok() -> bool:
         return False
 
 
-def readiness(required: int = DEFAULT_REQUIRED_SHADOW_SESSIONS) -> Dict[str, Any]:
+def gate_status(required: int = DEFAULT_REQUIRED_SHADOW_SESSIONS) -> Dict[str, Any]:
+    """Return non-throwing operator status for every normal-order gate.
+
+    This is intentionally separate from :func:`readiness`: the dashboard and
+    Telegram progress messages must still show the shadow-session count before
+    a smoke record exists, rather than failing at the first missing artifact.
+    """
+    required = max(1, int(required))
     evidence = shadow_evidence(required)
-    result: Dict[str, Any] = {
-        "required_shadow_sessions": max(1, int(required)),
+
+    def _artifact(path: Path, max_age: int, stale_code: str, label: str) -> Dict[str, Any]:
+        try:
+            record = _read_signed(path)
+            _fresh(record, max_age, stale_code, label)
+            return {"ok": True, "markets": list(record.get("markets") or [])}
+        except BrokerError as exc:
+            return {"ok": False, "markets": [], "code": exc.code, "error": str(exc)}
+
+    preflight = _artifact(PREFLIGHT_FILE, PREFLIGHT_MAX_AGE_SEC, "live-preflight-stale", "read-only preflight")
+    smoke = _artifact(SMOKE_FILE, SMOKE_MAX_AGE_SEC, "live-smoke-stale", "live smoke test")
+    return {
+        "required_shadow_sessions": required,
         "shadow_sessions": evidence,
-        "markets": {},
+        "preflight": preflight,
+        "smoke": smoke,
+        "markets": {
+            market: {
+                "shadow_ok": evidence[market] >= required,
+                "shadow_remaining": max(0, required - evidence[market]),
+                "preflight_ok": preflight["ok"] and market in preflight["markets"],
+                "smoke_ok": smoke["ok"] and market in smoke["markets"],
+            }
+            for market in ("KR", "US")
+        },
     }
-    preflight = _read_signed(PREFLIGHT_FILE)
-    _fresh(preflight, PREFLIGHT_MAX_AGE_SEC, "live-preflight-stale", "read-only preflight")
-    smoke = _read_signed(SMOKE_FILE)
-    _fresh(smoke, SMOKE_MAX_AGE_SEC, "live-smoke-stale", "live smoke test")
-    for market in ("KR", "US"):
-        result["markets"][market] = {
-            "shadow_ok": evidence[market] >= result["required_shadow_sessions"],
-            "preflight_ok": market in (preflight.get("markets") or []),
-            "smoke_ok": market in (smoke.get("markets") or []),
-        }
+
+
+def readiness(required: int = DEFAULT_REQUIRED_SHADOW_SESSIONS) -> Dict[str, Any]:
+    """Return strict readiness, preserving actionable missing-artifact errors."""
+    result = gate_status(required)
+    if not result["preflight"]["ok"]:
+        raise BrokerError(result["preflight"]["error"], code=result["preflight"]["code"])
+    if not result["smoke"]["ok"]:
+        raise BrokerError(result["smoke"]["error"], code=result["smoke"]["code"])
     return result
 
 
 def authorize_release(required: int = DEFAULT_REQUIRED_SHADOW_SESSIONS, commit: str = "") -> Dict[str, Any]:
     """Create the short-lived normal-order release after all non-order gates pass."""
     report = readiness(required)
-    markets = [market for market, checks in report["markets"].items() if all(checks.values())]
+    markets = [
+        market for market, checks in report["markets"].items()
+        if checks["shadow_ok"] and checks["preflight_ok"] and checks["smoke_ok"]
+    ]
     if not markets:
         raise BrokerError("live 전환 조건 미충족: shadow 증적·preflight·smoke test를 확인하세요", code="live-gate-not-ready")
     return _write_signed(RELEASE_FILE, {

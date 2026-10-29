@@ -511,6 +511,49 @@ function renderSparklineSvg(points) {
     };
 }
 
+function renderLiveGateCard(liveGate) {
+    const required = Number(liveGate.required_shadow_sessions || 20);
+    const markets = liveGate.markets || {};
+    const rows = ['KR', 'US'].map((market) => {
+        const checks = markets[market] || {};
+        const count = Number(liveGate.shadow_sessions?.[market] || 0);
+        const complete = Boolean(checks.shadow_ok);
+        return `
+            <div class="stat-row">
+                <div class="stat-row-head">
+                    <span class="row-label">${market} shadow 검증</span>
+                    <span class="badge ${complete ? 'positive' : 'warning'}">${complete ? 'COMPLETE' : 'COLLECTING'}</span>
+                </div>
+                <div class="row-value">${count} / ${required} 세션</div>
+                <div class="table-muted">${complete ? '증적 완료 · 운영자 smoke test 대기' : `남은 정상 세션 ${Number(checks.shadow_remaining || Math.max(required - count, 0))}회`}</div>
+            </div>
+        `;
+    }).join('');
+    const preflight = liveGate.preflight?.ok ? '정상' : '확인 필요';
+    const smoke = liveGate.smoke?.ok ? '완료' : '미실행';
+    return `
+        <section class="card">
+            <div class="card-head">
+                <div>
+                    <div class="card-title">실거래 전 게이트</div>
+                    <div class="card-subtitle">shadow 검증이 완료돼도 smoke test와 운영자 release 전에는 실제 주문이 전송되지 않습니다.</div>
+                </div>
+            </div>
+            <div class="stat-list">
+                ${rows}
+                <div class="stat-row">
+                    <div class="stat-row-head"><span class="row-label">Read-only preflight</span><span class="badge ${liveGate.preflight?.ok ? 'positive' : 'warning'}">${preflight}</span></div>
+                    <div class="table-muted">유효기간 1시간 · 배포 시 자동 검사</div>
+                </div>
+                <div class="stat-row">
+                    <div class="stat-row-head"><span class="row-label">운영자 smoke test</span><span class="badge ${liveGate.smoke?.ok ? 'positive' : 'warning'}">${smoke}</span></div>
+                    <div class="table-muted">KR/US 각 1주 체결·잔고 동기화 확인 뒤 진행</div>
+                </div>
+            </div>
+        </section>
+    `;
+}
+
 function renderOverviewView() {
     const combined = getCombinedAccount();
     const usTotal = Number(appData.accounts?.us?.total_asset_krw || 0);
@@ -595,6 +638,8 @@ function renderOverviewView() {
                     </div>
                 </div>
             </section>
+
+            ${renderLiveGateCard(appData.liveGate || {})}
 
             <section class="card">
                 <div class="card-head">
