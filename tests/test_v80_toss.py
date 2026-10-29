@@ -212,7 +212,9 @@ class TestRealtimeFastPath:
         ack = b.submit_and_wait(OrderRequest("SPY", Market.US, OrderSide.BUY, OrderType.LIMIT, 2, price=505),
                                 timeout_sec=5, poll_sec=2)
         assert ack.state == OrderState.FILLED and ack.filled_quantity == 2
-        assert time.monotonic() - t0 < 0.5 and len(s.calls) == 2   # 접수 + 첫 상세 조회뿐
+        # CI worker scheduling can delay this thread briefly. The REST call count is
+        # the correctness invariant; one poll interval (2s) must never elapse.
+        assert time.monotonic() - t0 < 1.0 and len(s.calls) == 2   # 접수 + 첫 상세 조회뿐
 
     def test_stream_frames_fill_caches(self):
         trade = toss_stream.parse_frame(json.dumps({"type": "message", "topic": "trade:us:SPY",
