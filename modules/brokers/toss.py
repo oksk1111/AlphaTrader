@@ -377,7 +377,16 @@ class TossBroker(Broker):
             # [v8.0] 웹소켓 personal:order 이벤트가 있으면 폴링 주기를 기다리지 않는다.
             event = toss_stream.ORDER_EVENTS.get(ack.order_id)
             if event and event.get("status") in ("FILLED", "CANCELED", "REJECTED"):
-                return self._parse_order(event)
+                parsed = self._parse_order(event)
+                if parsed.filled_quantity > 0 or parsed.state != OrderState.FILLED:
+                    return parsed
+                # 이벤트 스냅샷에 체결수량(execution)이 없다. FILLED 인데 0주로 읽으면 실제
+                # 체결을 실패로 세고(알림 누락), 호출부가 재주문해 중복 매수한다 → REST 상세가 정본.
+                latest = self.order(ack.order_id)
+                if latest.state in (OrderState.FILLED, OrderState.CANCELED, OrderState.REJECTED):
+                    return latest
+                next_poll = time.monotonic() + max(0.1, poll_sec)
+                continue
             if time.monotonic() >= next_poll:
                 latest = self.order(ack.order_id)
                 next_poll = time.monotonic() + max(0.1, poll_sec)

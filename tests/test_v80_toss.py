@@ -216,6 +216,24 @@ class TestRealtimeFastPath:
         # the correctness invariant; one poll interval (2s) must never elapse.
         assert time.monotonic() - t0 < 1.0 and len(s.calls) == 2   # 접수 + 첫 상세 조회뿐
 
+    def test_fill_event_without_execution_is_confirmed_by_rest(self, monkeypatch):
+        """2026-10-30 실주문: SPY 는 체결됐는데 알림이 없었다. FILL 이벤트 스냅샷에
+        execution(체결수량)이 없으면 0주 체결로 읽혀 실패 처리됐다 → REST 상세로 확인."""
+        from modules.brokers.models import OrderRequest, OrderSide, OrderType
+        monkeypatch.setattr("modules.live_gate.assert_live_order_allowed", lambda market: None)
+        b, s = self._broker([
+            {"result": {"orderId": "o2", "clientOrderId": "c2"}},
+            {"result": {"orderId": "o2", "symbol": "SPY", "status": "PENDING", "execution": {"filledQuantity": "0"}}},
+            {"result": {"orderId": "o2", "symbol": "SPY", "status": "FILLED",
+                        "execution": {"filledQuantity": "1", "averageFilledPrice": "601.2"}}},
+        ])
+        toss_stream.ORDER_EVENTS["o2"] = {"orderId": "o2", "symbol": "SPY", "currency": "USD", "status": "FILLED"}
+        ack = b.submit_and_wait(OrderRequest("SPY", Market.US, OrderSide.BUY, OrderType.LIMIT, 1, price=607),
+                                timeout_sec=5, poll_sec=2)
+        assert ack.state == OrderState.FILLED
+        assert ack.filled_quantity == 1 and ack.average_filled_price == 601.2
+        assert len(s.calls) == 3   # 접수 + 첫 상세 + 이벤트 확인용 상세 (취소 호출 없음)
+
     def test_stream_frames_fill_caches(self):
         trade = toss_stream.parse_frame(json.dumps({"type": "message", "topic": "trade:us:SPY",
                                                     "data": {"price": "601.5", "volume": "1"}}))

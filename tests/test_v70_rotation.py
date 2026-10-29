@@ -298,6 +298,23 @@ class TestSessionWiring:
         state = json.load(open(rb.ROTATION_STATE_FILE, encoding="utf-8"))
         assert state["KR"]["sessions_since_rebalance"] == 1
 
+    def test_accepted_but_unconfirmed_buy_is_not_resent(self, rb, monkeypatch):
+        """접수된 주문(order_id 있음)이 실패로 읽히면 실제로는 체결됐을 수 있다.
+        수량을 줄여 재주문하면 중복 매수다 — 재시도하지 않고 알림만 보낸다."""
+        alerts = []
+        monkeypatch.setattr(rb, "send_alert", lambda msg, *a, **k: alerts.append(msg))
+        fake = FakeKR(dict(UNIVERSE), cash=2_000_000)
+        calls = []
+
+        def accepted_unconfirmed(code, qty, exchange=None):
+            calls.append((code, qty))
+            return {"rt_cd": "1", "msg1": "주문 filled (체결 0)", "order_id": "ord-1"}
+        fake.buy_market_order = accepted_unconfirmed
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
+        rb.run_rotation_session("KR", _cfg())
+        assert [c for c, _ in calls] == ["A", "B"], "종목당 한 번만 주문해야 한다"
+        assert any("매수 주문 실패" in m and "ord-1" in m for m in alerts)
+
     def test_failed_buy_is_retried_before_next_rebalance(self, rb, monkeypatch):
         """리밸런싱일 주문 실패 → 10거래일 현금 방치가 아니라 다음 세션에 재시도."""
         fake = FakeKR(dict(UNIVERSE), cash=2_000_000)

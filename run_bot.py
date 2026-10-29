@@ -1501,7 +1501,10 @@ def _rotation_session(market, user_config):
             logger.info(f"[{code}] 로테이션 매수: {qty}주 @ {price:,.2f} (슬롯 목표 {per_slot:,.0f}, 보유 {have:,.0f})")
             res = (broker.buy_market_order(code, qty, exch or 'NAS') if market == 'US'
                    else broker.buy_market_order(code, qty))
-            if not (res and res.get('rt_cd') == '0') and qty > 1:
+            # 재시도는 '접수 전 거부'(주문가능금액 초과 등, order_id 없음)일 때만. 접수된 주문이
+            # 실패로 읽혔다면(체결 확인 실패·시간 내 미체결 취소) 실제로는 체결됐을 수 있다 —
+            # 다시 내면 중복 매수다.
+            if not (res and res.get('rt_cd') == '0') and qty > 1 and res and not res.get('order_id'):
                 # 시장가 체결 여유분/수수료로 '주문가능금액 초과'가 나는 경우 한 번 줄여서 재시도
                 qty2 = max(1, int(qty * 0.9))
                 logger.warning(f"[{code}] 매수 거부({(res or {}).get('msg1')}) → {qty2}주로 재시도")
@@ -1526,6 +1529,12 @@ def _rotation_session(market, user_config):
                 logger.error(f"[{code}] 로테이션 매수 주문 실패: {err}")
                 buy_fail.append(code)
                 fail_reason[code] = f"주문 실패: {err}"
+                _oid = (res or {}).get('order_id')
+                send_alert(
+                    f"🚨 [{market}] 매수 주문 실패: {code} {qty}주\n사유: {err}"
+                    + (f"\n주문번호 {_oid} — 접수된 주문이다. 토스 앱에서 실제 체결 여부를 확인할 것" if _oid else ""),
+                    is_error=True,
+                )
 
     if rebalance_due:
         ms['sessions_since_rebalance'] = 0
