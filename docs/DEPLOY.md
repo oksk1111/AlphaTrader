@@ -33,7 +33,7 @@ Oracle Cloud(Ubuntu) 한 대에서 봇(`run_bot.py`), 대시보드(FastAPI `web.
 | 이름 | 값 | 의미 |
 |------|----|------|
 | `EXECUTION_MODE` | `shadow` (미설정 시 기본) | 판단·로그·알림은 전부 돌고 **주문만 보내지 않는다**. 알림에 `SHADOW` 표시 |
-| | `live` | **실주문.** 토스는 공식 모의투자 서버가 없다 — shadow 로 며칠 확인한 뒤 전환할 것 |
+| | `live` | **실주문 자동매매.** 배포 직후부터 봇 판단으로 주문을 낸다 (승인 단계 없음). 토스는 모의투자 서버가 없다 |
 | `OAUTH_REDIRECT_URI` | `https://<dashboard-domain>/auth/callback` | Google Cloud Console에 같은 URI를 등록해야 한다 |
 | `ALLOWED_EMAILS` | `operator@example.com` | 쉼표 구분 OAuth 이메일 allowlist. **빈 값이면 OAuth 로그인을 전부 거부** |
 | `DASHBOARD_COOKIE_SECURE` | `true` | HTTPS에서만 쿠키를 전송한다. 로컬 HTTP 개발 외에는 변경하지 않는다 |
@@ -41,47 +41,29 @@ Oracle Cloud(Ubuntu) 한 대에서 봇(`run_bot.py`), 대시보드(FastAPI `web.
 `EXECUTION_MODE` 는 시크릿이 아니라 변수다(값을 로그에서 확인할 수 있어야 한다). 배포 로그에
 `ℹ️ EXECUTION_MODE=...` 줄이 찍힌다. 되돌리려면 변수를 `shadow` 로 바꾸고 재배포(Actions → Run workflow).
 
-### Live-order release gates (필수)
+### 실주문 안전장치 (v8.1 — 운영자 승인 없음, 자동매매)
 
-`EXECUTION_MODE=live`는 토스 주문 API **전송 능력**일 뿐 정상 전략 주문의 허가가 아니다. 다음이 모두
-통과하지 않으면 `TossBroker.submit_order()`가 HTTP 요청 전에 주문을 거부한다.
+`EXECUTION_MODE=live` 로 배포하면 봇이 **스스로 판단해 바로 실제 주문을 낸다.** shadow 세션 횟수·
+1주 smoke test·24시간 release·배포 커밋 바인딩 같은 사람 승인 단계는 없다 (2026-10-29 제거).
+`TossBroker.submit_order()` 가 막는 경우는 자동 점검 두 가지뿐이다.
 
-1. 코드 변경으로 전략/유니버스/리밸런싱/방어자산을 건드렸다면 배포 전 `python scripts/backtest_real.py --robustness`
-   결과를 검토한다. 외부 시세 공급자 가용성 때문에 일반 CI가 아니라 변경 승인 체크리스트에서 관리한다.
-2. GitHub Environment `production-live`의 required reviewer 승인. `.github/workflows/deploy.yml`의 live deploy는
-   이 Environment에 연결된다. GitHub Settings → Environments에서 reviewer를 설정한다.
-3. GitHub Secret `LIVE_GATE_SECRET` 등록 — `JWT_SECRET`처럼 `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`
-   로 생성하는 32바이트 이상 비밀값이다. preflight/smoke/release 기록의 위변조를 막는다. 이 키가 없으면
-   **shadow 배포도 중단**한다. shadow 세션을 live 증적으로 쓰려면 같은 signed preflight가 필요하기 때문이다.
-4. 배포 중 **read-only preflight** 성공. `scripts/live_preflight.py`는 shadow broker로 인증·계좌 선택·KRW/USD
-   매수가능금액·KR/US 현재가·웹소켓 구독을 확인하며 주문 API는 호출하지 않는다. 실패하면 bot을 기동하지 않는다.
-5. 각 시장별로 `execution_mode=shadow preflight=ok`가 기록된 완료 로테이션 세션 **20회**. 이전 세션은
-   provenance가 없으므로 live 증적으로 세지 않는다.
-6. 운영자 승인 one-share smoke test가 각 시장에서 체결·잔고 재동기화까지 성공. CI나 bot은 절대 임의 주문하지 않는다.
-7. 운영자가 최대 24시간짜리 signed release를 명시적으로 생성. 만료 뒤 다음 live 주문은 다시 차단된다.
+1. **배포 때 read-only preflight 기록이 없다.** `deploy.sh` 가 봇 재시작 전에 `scripts/live_preflight.py`
+   (인증·계좌·KRW/USD 매수가능금액·KR/US 현재가·웹소켓, 주문 API 호출 없음)를 돌려 `LIVE_GATE_SECRET` 으로
+   서명한 기록을 남긴다. 실패하면 기존 봇을 그대로 두고 배포를 멈춘다. 기록은 만료되지 않는다 — 다음 날 세션도 계속 거래한다.
+2. **비상정지가 켜져 있다.** 서버의 `database/live_halt` 파일(내용 무관) 또는 `LIVE_TRADING_HALT=1`.
+   파일을 지우면 다음 주문부터 재개된다.
 
-운영 명령(서버에서, 각 단계의 JSON 결과가 `ok`인지 확인):
+멈추는 방법: GitHub 변수 `EXECUTION_MODE=shadow` 로 바꾸고 재배포(Actions → Run workflow), 또는 서버에서
+`touch database/live_halt`. live 전환 첫 세션은 직전 shadow 리밸런싱을 무시하고 **즉시 리밸런싱**한다
+(`rotation_state.json` 의 `last_rebalance_mode`).
 
 ```bash
-# 1) 읽기 전용 preflight (live 배포 시 자동 실행되지만 수동 재검증 가능)
-venv/bin/python scripts/live_preflight.py
-
-# 2) 20-session 증적 + preflight/smoke 상태 확인
-venv/bin/python scripts/live_gate_status.py --required-shadow-sessions 20
-
-# 3) 1주 smoke test는 두 단계이며, 운영자만 의도적으로 실행한다.
-# 예: US XLK 1주를 $300 상한으로 승인 후 실제 주문/체결/잔고 재동기화 검증
+# 서버에서 상태 확인 (live_allowed: true 면 실주문 가능)
+venv/bin/python scripts/live_gate_status.py
+# (선택) 1주 수동 체결 점검 — 실주문이다. 정상 매매에는 필요 없다
 venv/bin/python scripts/live_smoke.py authorize --market US --symbol XLK --max-notional 300
-venv/bin/python scripts/live_smoke.py execute --market US --symbol XLK --max-notional 300 \
-  --confirm I_UNDERSTAND_THIS_SENDS_A_REAL_ORDER
-
-# 4) KR/US smoke와 모든 증적이 충족된 뒤 24시간 정상 주문 릴리스
-venv/bin/python scripts/authorize_live_release.py --commit "$(grep '^DEPLOYED_COMMIT=' .env | cut -d= -f2)" \
-  --required-shadow-sessions 20 --confirm I_AUTHORIZE_NORMAL_LIVE_ORDERS_FOR_24_HOURS
+venv/bin/python scripts/live_smoke.py execute --market US --symbol XLK --max-notional 300   --confirm I_UNDERSTAND_THIS_SENDS_A_REAL_ORDER
 ```
-
-> smoke test는 실제 보유와 수수료를 만들며 자동 매도가 아니다. `--max-notional`은 승인 상한이고
-> 실행할 종목/시장/보유·매도 계획을 운영자가 결정한다. 체결되지 않은 주문은 어댑터가 timeout 뒤 취소한다.
 
 - 시크릿은 **값이 있을 때만** 서버 `.env` 의 해당 줄을 덮어쓴다. 등록 전에 배포가 돌아도 기존 값이 지워지지 않는다.
 - 배포 시 서버 `.env` 의 `KIS_*` · `BROKER` · `MARKET_DATA_BROKER` 줄은 삭제된다 (v8.0 에서 한국투자증권 API 제거).

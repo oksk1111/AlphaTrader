@@ -1157,7 +1157,9 @@ def get_live_gate_status():
     """Safe live-order gate progress for authenticated operators only."""
     try:
         from modules.live_gate import gate_status
-        return gate_status()
+        report = gate_status()
+        report["execution_mode"] = (os.getenv("EXECUTION_MODE") or "shadow").strip().lower()
+        return report
     except Exception as exc:
         return {"status": "unavailable", "error": str(exc), "markets": {}}
 

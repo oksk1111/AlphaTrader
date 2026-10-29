@@ -1,9 +1,10 @@
-"""Live-order release gates.
+"""Live-order safety checks (automatic — no operator approval).
 
-`EXECUTION_MODE=live` means the broker is capable of transmitting an order; it is
-not itself permission to do so.  Every live order is blocked unless this module
-can verify a short-lived, HMAC-signed release record created after read-only
-preflight, shadow evidence, and the operator-approved smoke test.
+With `EXECUTION_MODE=live` the bot sends real orders on its own. This module only
+blocks them when an automatic check fails: the HMAC-signed read-only preflight
+that every deploy writes is missing, or the emergency stop is on
+(`database/live_halt` / LIVE_TRADING_HALT=1). The optional one-share smoke tool
+(`scripts/live_smoke.py`) still uses a signed one-time authorisation.
 """
 
 from __future__ import annotations
@@ -21,13 +22,11 @@ from modules.brokers.models import BrokerError, Market
 STATE_DIR = Path("database")
 PREFLIGHT_FILE = STATE_DIR / "live_preflight.json"
 SMOKE_FILE = STATE_DIR / "live_smoke.json"
-RELEASE_FILE = STATE_DIR / "live_release.json"
 SMOKE_AUTH_FILE = STATE_DIR / "live_smoke_authorization.json"
 HEALTH_FILE = STATE_DIR / "strategy_health.json"
 
 PREFLIGHT_MAX_AGE_SEC = 60 * 60
 SMOKE_MAX_AGE_SEC = 7 * 24 * 60 * 60
-RELEASE_MAX_AGE_SEC = 24 * 60 * 60
 DEFAULT_REQUIRED_SHADOW_SESSIONS = 20
 
 
@@ -121,83 +120,65 @@ def preflight_ok() -> bool:
         return False
 
 
-def gate_status(required: int = DEFAULT_REQUIRED_SHADOW_SESSIONS) -> Dict[str, Any]:
-    """Return non-throwing operator status for every normal-order gate.
+def trading_halted() -> str:
+    """Emergency stop. Returns the reason when live orders must not be sent.
 
-    This is intentionally separate from :func:`readiness`: the dashboard and
-    Telegram progress messages must still show the shadow-session count before
-    a smoke record exists, rather than failing at the first missing artifact.
+    `database/live_halt` (any content) or LIVE_TRADING_HALT=1 stops every new live
+    order without a redeploy. Remove the file to resume. Switching
+    EXECUTION_MODE back to shadow is the other way to stop.
+    """
+    if os.getenv("LIVE_TRADING_HALT", "").strip().lower() in ("1", "true", "yes", "on"):
+        return "LIVE_TRADING_HALT 환경변수"
+    halt = STATE_DIR / "live_halt"
+    if halt.exists():
+        try:
+            note = halt.read_text(encoding="utf-8").strip()
+        except OSError:
+            note = ""
+        return f"{halt} 파일" + (f" ({note[:80]})" if note else "")
+    return ""
+
+
+def gate_status(required: int = DEFAULT_REQUIRED_SHADOW_SESSIONS) -> Dict[str, Any]:
+    """Non-throwing operator status for the dashboard.
+
+    Live orders need only an automatic, signed read-only preflight (written by
+    every deploy) and no emergency stop. Shadow session counts are informational.
     """
     required = max(1, int(required))
     evidence = shadow_evidence(required)
-
-    def _artifact(path: Path, max_age: int, stale_code: str, label: str) -> Dict[str, Any]:
-        try:
-            record = _read_signed(path)
-            _fresh(record, max_age, stale_code, label)
-            return {"ok": True, "markets": list(record.get("markets") or [])}
-        except BrokerError as exc:
-            return {"ok": False, "markets": [], "code": exc.code, "error": str(exc)}
-
-    preflight = _artifact(PREFLIGHT_FILE, PREFLIGHT_MAX_AGE_SEC, "live-preflight-stale", "read-only preflight")
-    smoke = _artifact(SMOKE_FILE, SMOKE_MAX_AGE_SEC, "live-smoke-stale", "live smoke test")
+    verified = preflight_verified()
+    halted = trading_halted()
     return {
         "required_shadow_sessions": required,
         "shadow_sessions": evidence,
-        "preflight": preflight,
-        "smoke": smoke,
+        "preflight": {"ok": verified, "markets": ["KR", "US"] if verified else []},
+        "halted": bool(halted),
+        "halt_reason": halted,
         "markets": {
             market: {
                 "shadow_ok": evidence[market] >= required,
                 "shadow_remaining": max(0, required - evidence[market]),
-                "preflight_ok": preflight["ok"] and market in preflight["markets"],
-                "smoke_ok": smoke["ok"] and market in smoke["markets"],
+                "preflight_ok": verified,
+                "live_allowed": verified and not halted,
             }
             for market in ("KR", "US")
         },
     }
 
 
-def readiness(required: int = DEFAULT_REQUIRED_SHADOW_SESSIONS) -> Dict[str, Any]:
-    """Return strict readiness, preserving actionable missing-artifact errors."""
-    result = gate_status(required)
-    if not result["preflight"]["ok"]:
-        raise BrokerError(result["preflight"]["error"], code=result["preflight"]["code"])
-    if not result["smoke"]["ok"]:
-        raise BrokerError(result["smoke"]["error"], code=result["smoke"]["code"])
-    return result
-
-
-def authorize_release(required: int = DEFAULT_REQUIRED_SHADOW_SESSIONS, commit: str = "") -> Dict[str, Any]:
-    """Create the short-lived normal-order release after all non-order gates pass."""
-    report = readiness(required)
-    markets = [
-        market for market, checks in report["markets"].items()
-        if checks["shadow_ok"] and checks["preflight_ok"] and checks["smoke_ok"]
-    ]
-    if not markets:
-        raise BrokerError("live 전환 조건 미충족: shadow 증적·preflight·smoke test를 확인하세요", code="live-gate-not-ready")
-    return _write_signed(RELEASE_FILE, {
-        "created_at": time.time(),
-        "expires_at": time.time() + RELEASE_MAX_AGE_SEC,
-        "markets": markets,
-        "required_shadow_sessions": report["required_shadow_sessions"],
-        "commit": commit,
-    })
-
-
 def assert_live_order_allowed(market: Market) -> None:
-    """Hard broker-side guard for every non-smoke live order."""
-    deployed_commit = os.getenv("DEPLOYED_COMMIT", "").strip()
-    if not deployed_commit:
-        raise BrokerError("DEPLOYED_COMMIT이 없어 live 주문을 허용할 수 없습니다", code="live-deploy-commit-missing")
-    release = _read_signed(RELEASE_FILE)
-    if release.get("commit") != deployed_commit:
-        raise BrokerError("현재 배포본에 대한 live release가 아닙니다", code="live-release-commit-mismatch")
-    if time.time() > float(release.get("expires_at", 0)):
-        raise BrokerError("live release가 만료되었습니다. 새 preflight와 배포 승인이 필요합니다", code="live-release-expired")
-    if market.value not in (release.get("markets") or []):
-        raise BrokerError(f"{market.value} 시장은 live 승인되지 않았습니다", code="live-market-not-approved")
+    """Hard broker-side guard for every non-smoke live order.
+
+    No human approval step: the bot trades autonomously once deployed with
+    EXECUTION_MODE=live. Blocks only on automatic safety conditions.
+    """
+    halted = trading_halted()
+    if halted:
+        raise BrokerError(f"live 주문 비상정지 중: {halted}", code="live-trading-halted")
+    if not preflight_verified():
+        raise BrokerError("배포 시 read-only preflight 기록이 없어 live 주문을 보낼 수 없습니다",
+                          code="live-preflight-missing")
 
 
 def record_preflight(markets: Iterable[str], details: Dict[str, Any]) -> Dict[str, Any]:

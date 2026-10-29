@@ -512,42 +512,44 @@ function renderSparklineSvg(points) {
 }
 
 function renderLiveGateCard(liveGate) {
-    const required = Number(liveGate.required_shadow_sessions || 20);
+    const mode = String(liveGate.execution_mode || 'shadow').toLowerCase();
+    const isLive = mode === 'live';
     const markets = liveGate.markets || {};
+    const halted = Boolean(liveGate.halted);
     const rows = ['KR', 'US'].map((market) => {
         const checks = markets[market] || {};
+        const trading = isLive && Boolean(checks.live_allowed);
         const count = Number(liveGate.shadow_sessions?.[market] || 0);
-        const complete = Boolean(checks.shadow_ok);
+        const label = trading ? 'LIVE' : (isLive ? 'BLOCKED' : 'SHADOW');
+        const note = trading
+            ? '자동매매 중 · 봇 판단으로 실제 주문 전송'
+            : (isLive
+                ? (halted ? `비상정지: ${liveGate.halt_reason || ''}` : '배포 preflight 기록 없음 — 재배포 필요')
+                : `주문 미전송 (shadow 세션 ${count}회 기록)`);
         return `
             <div class="stat-row">
                 <div class="stat-row-head">
-                    <span class="row-label">${market} shadow 검증</span>
-                    <span class="badge ${complete ? 'positive' : 'warning'}">${complete ? 'COMPLETE' : 'COLLECTING'}</span>
+                    <span class="row-label">${market} 실주문</span>
+                    <span class="badge ${trading ? 'positive' : 'warning'}">${label}</span>
                 </div>
-                <div class="row-value">${count} / ${required} 세션</div>
-                <div class="table-muted">${complete ? '증적 완료 · 운영자 smoke test 대기' : `남은 정상 세션 ${Number(checks.shadow_remaining || Math.max(required - count, 0))}회`}</div>
+                <div class="table-muted">${note}</div>
             </div>
         `;
     }).join('');
     const preflight = liveGate.preflight?.ok ? '정상' : '확인 필요';
-    const smoke = liveGate.smoke?.ok ? '완료' : '미실행';
     return `
         <section class="card">
             <div class="card-head">
                 <div>
-                    <div class="card-title">실거래 전 게이트</div>
-                    <div class="card-subtitle">shadow 검증이 완료돼도 smoke test와 운영자 release 전에는 실제 주문이 전송되지 않습니다.</div>
+                    <div class="card-title">실거래 상태</div>
+                    <div class="card-subtitle">EXECUTION_MODE=${mode} · 운영자 승인 단계 없음 · 중지는 shadow 전환 또는 database/live_halt</div>
                 </div>
             </div>
             <div class="stat-list">
                 ${rows}
                 <div class="stat-row">
                     <div class="stat-row-head"><span class="row-label">Read-only preflight</span><span class="badge ${liveGate.preflight?.ok ? 'positive' : 'warning'}">${preflight}</span></div>
-                    <div class="table-muted">유효기간 1시간 · 배포 시 자동 검사</div>
-                </div>
-                <div class="stat-row">
-                    <div class="stat-row-head"><span class="row-label">운영자 smoke test</span><span class="badge ${liveGate.smoke?.ok ? 'positive' : 'warning'}">${smoke}</span></div>
-                    <div class="table-muted">KR/US 각 1주 체결·잔고 동기화 확인 뒤 진행</div>
+                    <div class="table-muted">배포 때 자동 검사 (토큰·계좌·시세·웹소켓)</div>
                 </div>
             </div>
         </section>
