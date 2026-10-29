@@ -74,7 +74,7 @@ def _login_context(request: Request, error: str = ""):
 
 def _login_response(request: Request, error: str = "", status_code: int = 200):
     context = _login_context(request, error)
-    response = templates.TemplateResponse("login.html", context, status_code=status_code)
+    response = templates.TemplateResponse(request, "login.html", context, status_code=status_code)
     if context["oauth_state"]:
         set_oauth_state_cookie(response, context["oauth_state"])
     return response

@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def _auth(monkeypatch, *, secure=True):
     monkeypatch.setenv("DASHBOARD_API_KEY", "dashboard-key")
-    monkeypatch.setenv("JWT_SECRET", "test-jwt-secret")
+    monkeypatch.setenv("JWT_SECRET", "test-jwt-secret-at-least-32-bytes-long")
     monkeypatch.setenv("DASHBOARD_COOKIE_SECURE", "true" if secure else "false")
     import web.auth as auth
     return importlib.reload(auth)
@@ -19,7 +19,7 @@ def _auth(monkeypatch, *, secure=True):
 
 def _app(monkeypatch):
     monkeypatch.setenv("DASHBOARD_API_KEY", "dashboard-key")
-    monkeypatch.setenv("JWT_SECRET", "test-jwt-secret")
+    monkeypatch.setenv("JWT_SECRET", "test-jwt-secret-at-least-32-bytes-long")
     monkeypatch.setenv("DASHBOARD_COOKIE_SECURE", "false")
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "google-client")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "google-secret")
