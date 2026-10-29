@@ -22,6 +22,17 @@ AGENTS v8.0 규칙 9 — 후보와 채택 규칙을 **결과를 보기 전에** 
 (개발 PC 에서 토스 API 를 부르면 서버 봇 토큰이 끊긴다 — AGENTS v8.0 규칙 2).
 
     python scripts/sector_universe_study.py
+    python scripts/sector_universe_study.py --point-in-time
+
+--point-in-time (2차, 2026-10-30, 1차 결과를 본 뒤 사전 등록)
+  1차는 기각됐지만 비교가 현행에 유리하게 기울어 있다: 현행 17종 중 14종이 2018~2026 상장이고
+  2022 이후 오른 테마(AI·방산 등)를 2026 년에 고른 목록이다. 그래서 양쪽 모두 "2017-01-01 이전에
+  상장돼 있던 ETF" 로만 제한해 사후 선택 편향을 같게 맞춘다 (판정은 첫 거래일만 본다, 수익률 아님).
+    A = (현행 유니버스 ∪ backtest_real.KR_ETFS) 중 2017 이전 상장  → 069500·091160·133690
+    B = A + SECTOR_ETFS 중 2017 이전 상장 (266410·266390 은 2017-03 상장이라 제외) → 15종
+  채택 규칙은 1차와 같은 4개. 판정의 의미도 미리 정한다:
+    B 통과 → 업종 커버리지가 구조적으로 낫다 → 운영 유니버스를 현행 17 + SECTOR_ETFS 14 로 확장 제안
+    B 실패 → 현행 유지
 """
 
 from __future__ import annotations
@@ -76,15 +87,25 @@ def _holdings_share(data, universe, code, start, end):
     return 100.0 * seen["held"] / max(1, seen["days"])
 
 
+def _listed_before(data, codes, cutoff="2017-01-01"):
+    import pandas as pd
+    return [c for c in codes if c in data and data[c].index[0] < pd.Timestamp(cutoff)]
+
+
 def main() -> int:
+    point_in_time = "--point-in-time" in sys.argv[1:]
     base = list(dict.fromkeys(bt._operational_universe("KR") + list(bt.KR_ETFS)))
     rc = bt._load_rotation("KR")
     data = bt.load_prices(base + list(SECTOR_ETFS) + rc.get("defensive", []), "KR", "2014-01-01",
                           source="yfinance")
     base = [c for c in base if c in data]
     expanded = base + [c for c in SECTOR_ETFS if c in data and c not in base]
+    if point_in_time:
+        base = _listed_before(data, base)
+        expanded = base + [c for c in _listed_before(data, list(SECTOR_ETFS)) if c not in base]
+        print(f"[point-in-time] A={base}")
     missing = [c for c in SECTOR_ETFS if c not in data]
-    print(f"현행 {len(base)}종 / 확장 {len(expanded)}종" + (f" (데이터 없음: {missing})" if missing else ""))
+    print(f"{'A' if point_in_time else '현행'} {len(base)}종 / {'B' if point_in_time else '확장'} {len(expanded)}종" + (f" (데이터 없음: {missing})" if missing else ""))
 
     rows = {}
     print(f"\n{'구간':<16}{'현행 CAGR':>10}{'MDD':>8}{'Sharpe':>8}{'회전':>6}   "
