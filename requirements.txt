@@ -7,6 +7,7 @@ beautifulsoup4
 lxml
 fastapi
 uvicorn[standard]
+httpx                    # starlette TestClient (tests/test_dashboard_auth.py) — 간접 의존에 기대지 않는다
 jinja2
 pytz
 groq

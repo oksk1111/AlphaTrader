@@ -455,6 +455,13 @@ def _mean(vals):
 
 
 def main() -> int:
+    # Windows 콘솔(cp949)은 '—' 등을 못 찍어 UnicodeEncodeError 로 종료코드 1 이 난다.
+    # 판정과 무관한 출력 문제가 검증 실패처럼 보이지 않게 한다.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--sessions", type=int, default=60)
     ap.add_argument("--seed", type=int, default=42)
