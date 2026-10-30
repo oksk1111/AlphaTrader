@@ -1398,37 +1398,62 @@ def session_log_excerpt(date, since="00:00", until="23:59", max_lines=600):
     stdout 의 타임스탬프 없는 줄은 바로 앞 타임스탬프 줄의 시각을 물려받는다.
     """
     since, until = f"{since}:00"[:8], f"{until}:59"[:8]
-    sources = bot_log_files(limit_files=40) + [str(BASE_DIR / "database" / "bot_stdout.log")]
+    stdout_path = str(BASE_DIR / "database" / "bot_stdout.log")
+    sources = bot_log_files(limit_files=40) + [stdout_path]
     seen, out = set(), []
     for path in sources:
         if not os.path.exists(path):
             continue
+        sfx = re.search(r"(\d{4}-\d{2}-\d{2})$", path)
+        if sfx and sfx.group(1) != date:      # 자정 회전본 trading.log.YYYY-MM-DD = 그날 하루치
+            continue
+        if re.search(r"trading_\d{8}\.log$", path):   # v6.0 이전 날짜별 파일
+            continue
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
+            f = open(path, "rb")
         except Exception:
             continue
-        cur_date = cur_time = None
-        for raw in lines:
-            line = raw.rstrip("\n")
-            m = _DIAG_TS.match(line)
-            if m:
-                cur_date, cur_time = m.group(1), m.group(2)
-            if cur_date != date or not (since <= (cur_time or "") <= until):
-                continue
-            if not line.strip() or any(n in line for n in _DIAG_NOISE):
-                continue
-            key = line if m else f"{cur_time} {line}"
-            if key in seen:      # 같은 줄이 trading.log 와 stdout(콘솔 핸들러, 같은 포맷) 양쪽에 있다
-                continue
-            seen.add(key)
-            out.append({"time": cur_time, "source": os.path.basename(path), "line": line[:500]})
+        with f:
+            # 한 줄씩 흘려 읽는다. 첫 배포는 readlines() 로 파일을 통째로 올렸고, 첫 호출 직후
+            # 대시보드가 502 로 내려갔다 (2026-10-31). stdout 은 회전 없이 append 만 되므로
+            # 끝 STDOUT_TAIL_BYTES 만 본다. 엔드포인트는 sync def → 스레드풀에서 돌아
+            # 이벤트 루프(다른 화면 요청)를 막지 않는다.
+            if path == stdout_path:
+                size = os.path.getsize(path)
+                if size > STDOUT_TAIL_BYTES:
+                    f.seek(size - STDOUT_TAIL_BYTES)
+                    f.readline()                      # 잘린 첫 줄 버림
+            lines = (b.decode("utf-8", errors="replace") for b in f)
+            _collect(lines, path, date, since, until, seen, out)
     out.sort(key=lambda r: r["time"] or "")
     return out[-max_lines:]
 
 
+STDOUT_TAIL_BYTES = 64 * 1024 * 1024
+
+
+def _collect(lines, path, date, since, until, seen, out, cap=20000):
+    cur_date = cur_time = None
+    for raw in lines:
+        if len(out) >= cap:
+            return
+        line = raw.rstrip("\r\n")
+        m = _DIAG_TS.match(line)
+        if m:
+            cur_date, cur_time = m.group(1), m.group(2)
+        if cur_date != date or not (since <= (cur_time or "") <= until):
+            continue
+        if not line.strip() or any(n in line for n in _DIAG_NOISE):
+            continue
+        key = line if m else f"{cur_time} {line}"
+        if key in seen:      # 같은 줄이 trading.log 와 stdout(콘솔 핸들러, 같은 포맷) 양쪽에 있다
+            continue
+        seen.add(key)
+        out.append({"time": cur_time, "source": os.path.basename(path), "line": line[:500]})
+
+
 @app.get("/api/session-diagnostics")
-async def api_session_diagnostics(request: Request, date: str = "", since: str = "00:00",
+def api_session_diagnostics(request: Request, date: str = "", since: str = "00:00",
                                   until: str = "23:59", limit: int = 600):
     """[v8.2] 특정 날짜·시간대의 세션 판단 로그 + 로테이션 상태.
 
