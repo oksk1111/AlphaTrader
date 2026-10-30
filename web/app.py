@@ -1384,6 +1384,76 @@ async def api_measurement(request: Request, limit: int = 20):
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
 
+_DIAG_TS = re.compile(r"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})")
+# 1분마다 찍히는 줄들. 세션 판단을 읽는 데 방해만 된다.
+_DIAG_NOISE = ("Heartbeat", "Account Cache Updated", "[ProfitTracker]", "Bot is alive")
+
+
+def session_log_excerpt(date, since="00:00", until="23:59", max_lines=600):
+    """봇 로그(자정 회전본 포함) + bot_stdout.log 에서 date 의 [since, until] 구간 줄.
+
+    [v8.2] 2026-10-30 KR 세션이 거래 0건으로 끝났는데, 대시보드는 현재 파일의 마지막
+    160줄(=1분 heartbeat 뿐)만 보여줘서 그날 아침 판단을 원격에서 볼 방법이 없었다.
+    토스 주문 거부 상세는 logger 가 아니라 print 로 stdout 에만 남는다 — 그래서 둘 다 읽는다.
+    stdout 의 타임스탬프 없는 줄은 바로 앞 타임스탬프 줄의 시각을 물려받는다.
+    """
+    since, until = f"{since}:00"[:8], f"{until}:59"[:8]
+    sources = bot_log_files(limit_files=40) + [str(BASE_DIR / "database" / "bot_stdout.log")]
+    seen, out = set(), []
+    for path in sources:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+        except Exception:
+            continue
+        cur_date = cur_time = None
+        for raw in lines:
+            line = raw.rstrip("\n")
+            m = _DIAG_TS.match(line)
+            if m:
+                cur_date, cur_time = m.group(1), m.group(2)
+            if cur_date != date or not (since <= (cur_time or "") <= until):
+                continue
+            if not line.strip() or any(n in line for n in _DIAG_NOISE):
+                continue
+            key = line if m else f"{cur_time} {line}"
+            if key in seen:      # 같은 줄이 trading.log 와 stdout(콘솔 핸들러, 같은 포맷) 양쪽에 있다
+                continue
+            seen.add(key)
+            out.append({"time": cur_time, "source": os.path.basename(path), "line": line[:500]})
+    out.sort(key=lambda r: r["time"] or "")
+    return out[-max_lines:]
+
+
+@app.get("/api/session-diagnostics")
+async def api_session_diagnostics(request: Request, date: str = "", since: str = "00:00",
+                                  until: str = "23:59", limit: int = 600):
+    """[v8.2] 특정 날짜·시간대의 세션 판단 로그 + 로테이션 상태.
+
+    "거래가 없었다"가 판단 결과(RISK-OFF·순위 없음)인지 고장(조회·주문 실패)인지를
+    서버 SSH 없이 구분하기 위한 창구. 인증 필요 (계좌 금액이 포함된다).
+    예: /api/session-diagnostics?date=2026-10-30&since=08:50&until=15:40
+    """
+    require_auth(request)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date or ""):
+        date = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d")
+    if not re.fullmatch(r"\d{2}:\d{2}", since or ""):
+        since = "00:00"
+    if not re.fullmatch(r"\d{2}:\d{2}", until or ""):
+        until = "23:59"
+    state = {}
+    try:
+        with open(BASE_DIR / "database" / "rotation_state.json", "r", encoding="utf-8") as f:
+            state = json.load(f)
+    except Exception as e:
+        state = {"_error": str(e)}
+    lines = session_log_excerpt(date, since, until, max(1, min(int(limit or 600), 3000)))
+    return JSONResponse({"date": date, "since": since, "until": until,
+                         "rotation_state": state, "count": len(lines), "lines": lines})
+
+
 @app.get("/api/walk-forward/latest")
 async def api_walk_forward_latest(request: Request):
     """최근 walk-forward 리포트 1건 반환 (없으면 빈 응답)."""
