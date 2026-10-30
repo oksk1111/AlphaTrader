@@ -6,6 +6,7 @@
 """
 
 import json
+import logging
 import os
 import threading
 import time
@@ -48,6 +49,15 @@ _GROUP_TPS = (("/oauth2", 2), ("/api/v1/accounts", 1), ("/api/v1/holdings", 4),
               ("/api/v1/orders", 5), ("/api/v1/candles", 15), ("/api/v1/prices", 12), ("", 4))
 _RATE: Dict[str, List[float]] = {}
 _RATE_LOCK = threading.Lock()
+_RATE_LIMIT_BACKOFF = (1.0, 2.0, 4.0)     # [v8.2] GET 429 재시도 간격 (초)
+log = logging.getLogger("toss")
+
+
+def _retry_after(response) -> float:
+    try:
+        return min(10.0, max(0.0, float(response.headers.get("Retry-After") or 0)))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _throttle(path: str) -> None:
@@ -193,7 +203,7 @@ class TossBroker(Broker):
 
     def _request(self, method: str, path: str, *, account: bool = False,
                  params: Dict[str, Any] = None, body: Dict[str, Any] = None,
-                 retry_auth: bool = True) -> Dict[str, Any]:
+                 retry_auth: bool = True, _rl_attempt: int = 0) -> Dict[str, Any]:
         _throttle(path)
         try:
             response = self.session.request(
@@ -207,6 +217,17 @@ class TossBroker(Broker):
             self.authenticate(force=True)
             return self._request(method, path, account=account, params=params,
                                  body=body, retry_auth=False)
+        if response.status_code == 429 and method == "GET" and _rl_attempt < len(_RATE_LIMIT_BACKOFF):
+            # [v8.2] 조회(GET)만 짧게 재시도한다. _throttle 은 프로세스마다 따로 세므로 봇과
+            # 수집기가 동시에 일봉을 받으면 합산이 클라이언트 한도를 넘는다 (2026-10-30 09:10
+            # KR: 379800 일봉 1건 429 → 방어자산 매수까지 보류). 주문(POST)은 재시도하지
+            # 않는다 — 접수된 주문을 다시 내면 중복 주문이다. 마지막 429 는 그대로 올린다.
+            wait = _retry_after(response) or _RATE_LIMIT_BACKOFF[_rl_attempt]
+            log.warning("토스 429 %s — %.1fs 후 재시도 (%d/%d)", path, wait,
+                        _rl_attempt + 1, len(_RATE_LIMIT_BACKOFF))
+            time.sleep(wait)
+            return self._request(method, path, account=account, params=params, body=body,
+                                 retry_auth=retry_auth, _rl_attempt=_rl_attempt + 1)
         if response.status_code == 429:
             raise BrokerError(
                 "토스 API 요청 한도를 초과했습니다",

@@ -628,6 +628,35 @@ class TestDefensiveSlot:
         rb.run_rotation_session("KR", self._cfg(close_stop_pct=None))
         assert (self.GOLD, 20) in fake.sells
 
+    def test_risk_off_universe_history_failure_does_not_block_defensive(self, rb, monkeypatch):
+        """[v8.2] 2026-10-30 KR 재현: RISK-OFF + 유니버스 379800 일봉 429 → 국고채 매수까지 보류돼
+        거래 0건. risk-off 에는 주식 순위가 판단에 쓰이지 않으므로 방어자산은 산다."""
+        series = {k: v for k, v in UNIVERSE.items() if k != "C"}       # C 일봉 조회 실패
+        series.update(BENCH=_series(10000, -.003), **{self.BOND: _series(100000, .0005),
+                                                      self.GOLD: _series(20000, -.001)})  # 10/30: 금 하락추세
+        fake = FakeKR(series, cash=1_500_076)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
+        rb.run_rotation_session("KR", self._cfg())
+        assert {c for c, _ in fake.buys} == {self.BOND}
+
+    def test_risk_on_universe_history_failure_still_blocks_buys(self, rb, monkeypatch):
+        """risk-on 이면 순위가 슬롯을 정한다 — 일부 종목이 빠진 순위로는 사지 않는다 (기존 규칙)."""
+        series = {k: v for k, v in UNIVERSE.items() if k != "C"}
+        fake = FakeKR(series, cash=2_000_000)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
+        rb.run_rotation_session("KR", self._cfg())
+        assert not fake.buys
+
+    def test_failed_defensive_history_is_not_read_as_trend_break(self, rb, monkeypatch):
+        """조회 실패를 '추세이탈'로 읽어 보유 방어자산을 팔면 v7.0.2 규칙 9 위반."""
+        series = dict(UNIVERSE, BENCH=_series(10000, -.003))           # GOLD 일봉 없음
+        fake = FakeKR(series, holdings={self.GOLD: (20, 20000)}, cash=0)
+        fake.get_current_price = lambda code, exchange=None: 20000 if code == self.GOLD else (
+            series[code][-1] if code in series else None)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
+        rb.run_rotation_session("KR", self._cfg(close_stop_pct=None))
+        assert not fake.sells
+
     def test_operational_config_and_backtest_share_the_rule(self):
         cfg = json.load(open(os.path.join(REPO, "user_config.json"), encoding="utf-8"))
         assert cfg["momentum_rotation"]["kr"]["defensive"] == [self.BOND, self.GOLD]

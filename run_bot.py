@@ -1234,6 +1234,9 @@ def _start_ws(market, codes):
         return None
     try:
         ws_client = LiveFeed(market, codes, ws_price_callback).start()
+        # [v8.2] 성공 로그가 없어서 '봇이 실시간 스트림을 쓰고 있는가'를 로그로 확인할 수 없었다
+        # (대시보드 stream_connected 는 수집기 프로세스 상태다).
+        logger.info(f"📡 [WS] [{market}] 봇 실시간 스트림 시작 — {len(codes)}종목 체결·호가 + 주문 이벤트 (집행용, 판단은 일봉)")
     except Exception as e:
         logger.error(f"❌ [WS] 시작 실패 → REST 로 진행: {e}")
         ws_client = None
@@ -1342,7 +1345,8 @@ def _rotation_session(market, user_config):
     if failed_history:
         # 조회 실패를 신규상장(짧은 히스토리)과 섞으면 전 종목이 순위에서 빠져도
         # 정상 RISK-OFF 세션처럼 보인다. 매수만 명시적으로 보류하고 이유를 알린다.
-        message = f"[{market}] 일봉 조회 실패 → 중복/오판 매수 방지로 이번 세션 매수 보류: {failed_history}"
+        message = (f"[{market}] 일봉 조회 실패: {failed_history} → risk-on 이면 이번 세션 매수 보류 "
+                   f"(risk-off 방어자산 매수는 영향 없음)")
         logger.error(message)
         send_alert(f"🚨 {message}", is_error=True)
     if short:
@@ -1412,11 +1416,17 @@ def _rotation_session(market, user_config):
     # [v8.0] 주식 ETF 로 못 채운 슬롯(risk-off·추세통과 부족)은 자기 추세가 살아 있는
     # 방어자산(채권·금)으로 채운다. 방어자산마저 하락 추세면 현금. 판단 시점은 주식 슬롯과
     # 같다 (리밸런싱일 또는 risk-off 일).
+    failed_defensive = []
+    if defensive and (rebalance_due or not risk_on) and n_slots - len(targets) > 0:
+        # 방어자산이 실제로 판단 대상일 때만 그 조회 실패가 매수를 막는다
+        failed_defensive = [c for c in defensive if not closes_of.get(c)]
     if defensive and (rebalance_due or not risk_on):
         dtargets = defensive_targets({c: closes_of.get(c) or [] for c in defensive},
                                      n_slots - len(targets))
+        # [v8.2] 일봉 조회 실패를 '추세이탈'로 읽어 보유 방어자산을 팔지 않는다 (v7.0.2 규칙 9).
         sells += [(c, "방어자산 해제 (추세이탈/주식 슬롯 복귀)")
-                  for c in holdings if c in defensive and c not in dtargets]
+                  for c in holdings if c in defensive and c not in dtargets
+                  and c not in failed_defensive]
         targets = list(targets) + dtargets
         logger.info(f"[{market}] 방어자산 슬롯: {dtargets or '없음(현금)'}")
 
@@ -1454,10 +1464,18 @@ def _rotation_session(market, user_config):
     if not risk_on:
         to_buy = [t for t in to_buy if t in defensive]   # risk-off 에는 방어자산만 산다
     if to_buy:
-        if failed_history:
+        # [v8.2] 매수를 막는 건 '이번 매수 판단에 쓰인' 데이터의 실패뿐이다. risk-off 날에는
+        # 주식 ETF 순위가 판단에 쓰이지 않으므로(방어자산만 산다) 유니버스 종목 하나의 조회
+        # 실패가 방어자산 매수를 막지 않는다. 2026-10-30 KR: 379800 일봉 1건 429 →
+        # 148070(국고채10년) 매수가 보류돼 거래 0건. risk-on 이면 순위가 슬롯 배분을 정하므로
+        # 유니버스 실패도 전부 막는다 (기존과 같다).
+        blocking = (list(failed_history) if risk_on else []) + failed_defensive
+        if failed_history and not risk_on:
+            logger.info(f"[{market}] risk-off — 유니버스 일봉 실패 {failed_history} 는 방어자산 판단과 무관 → 매수 진행")
+        if blocking:
             for code in dict.fromkeys(to_buy):
                 buy_fail.append(code)
-                fail_reason[code] = f"일봉 조회 실패 {failed_history} — 신호 신뢰 불가로 매수 보류"
+                fail_reason[code] = f"일봉 조회 실패 {blocking} — 신호 신뢰 불가로 매수 보류"
             to_buy = []
         if sold:
             time.sleep(3)

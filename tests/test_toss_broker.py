@@ -195,14 +195,42 @@ def test_order_detail_distinguishes_partial_and_filled():
         assert ack.average_filled_price == pytest.approx(200.25)
 
 
-def test_rate_limit_fails_bounded_instead_of_recursing_forever():
+def _too_many():
+    return Response({"error": {"code": "rate-limit-exceeded", "message": "slow down"}},
+                    status=429, headers={"X-Request-Id": "req-1"})
+
+
+def test_rate_limit_fails_bounded_instead_of_recursing_forever(monkeypatch):
+    from modules.brokers import toss
+    monkeypatch.setattr(toss.time, "sleep", lambda s: None)
     s = Session()
-    s.queue(Response({"error": {"code": "rate-limit-exceeded", "message": "slow down"}},
-                     status=429, headers={"X-Request-Id": "req-1"}))
+    s.queue(*[_too_many() for _ in range(len(toss._RATE_LIMIT_BACKOFF) + 1)])
     with pytest.raises(BrokerError) as caught:
         broker(s).quote("XLK", Market.US)
     assert caught.value.code == "rate-limit-exceeded"
     assert caught.value.retryable is True
+    assert len(s.calls) == len(toss._RATE_LIMIT_BACKOFF) + 1
+
+
+def test_get_429_is_retried_then_succeeds(monkeypatch):
+    """[v8.2] 2026-10-30 KR: 봇·수집기 합산 호출이 한도를 넘어 일봉 1건이 429 → 방어자산 매수 보류."""
+    from modules.brokers import toss
+    waits = []
+    monkeypatch.setattr(toss.time, "sleep", waits.append)
+    s = Session()
+    s.queue(_too_many(), Response({"result": [{"symbol": "XLK", "lastPrice": "200"}]}))
+    assert broker(s).quote("XLK", Market.US).price == 200
+    assert len(s.calls) == 2 and waits and waits[-1] >= 1.0
+
+
+def test_order_post_429_is_never_retried(monkeypatch):
+    """접수됐을 수 있는 주문을 다시 내면 중복 주문이다."""
+    from modules.brokers import toss
+    monkeypatch.setattr(toss.time, "sleep", lambda s: None)
+    s = Session()
+    s.queue(_too_many(), _too_many())
+    with pytest.raises(BrokerError):
+        broker(s)._request("POST", "/api/v1/orders", account=False, body={})
     assert len(s.calls) == 1
 
 
