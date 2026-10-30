@@ -174,7 +174,7 @@ tail -f database/deploy.log                # 배포 기록
 | `422 prerequisite-required` / `account-restricted` | 종목 사전 요건·계좌 제한 | 앱에서 절차 완료. 봇은 해당 종목 매매를 멈춘다 |
 | `422 order-hours-closed` | 주문 불가 시간 | 정상 — 다음 세션에 재시도 |
 | `409 opposite-pending-order-exists` (KR) | 같은 종목 반대 방향 미체결 | 미체결 취소 후 재시도 |
-| `429 rate-limit-exceeded` | 초당 한도 초과 (봇·수집기가 같은 client_id 한도를 나눠 쓴다 — 리미터는 프로세스별) | [v8.2] 조회(GET)는 1·2·4초 후 최대 3회 재시도, 로그에 `토스 429 … 재시도` 가 남는다. 주문(POST)은 재시도하지 않는다(중복 주문 방지). 지난 세션 영향은 `/api/session-diagnostics?date=YYYY-MM-DD` 로 확인 |
+| `429 rate-limit-exceeded` | 초당 한도 초과 (봇·대시보드·수집기가 같은 client_id 한도를 나눠 쓴다) | [v8.3] 세 프로세스가 `database/toss_rate_limit.json` 공용 카운터(flock)로 합산 한도를 지킨다. 그래도 429 가 나면 [v8.2] 조회(GET)는 1·2·4초 후 최대 3회 재시도, 로그에 `토스 429 … 재시도` 가 남는다. 주문(POST)은 재시도하지 않는다(중복 주문 방지). 지난 세션 영향은 `/api/session-diagnostics?date=YYYY-MM-DD` 로 확인 |
 
 ## 6. 로컬 실행 (개발)
 

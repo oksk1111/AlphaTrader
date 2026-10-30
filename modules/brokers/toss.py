@@ -42,13 +42,21 @@ _ORDER_STATE = {
 }
 
 
-# [v8.0] 그룹별 초당 한도 (문서 한도보다 낮게 — 봇·대시보드·수집기가 같은 클라이언트 한도를
-# 나눠 쓴다). 429 를 미리 피하는 용도다. 429 자체는 여전히 재시도하지 않고 호출자에게 올린다.
+# [v8.0] 그룹별 초당 한도 (문서 한도보다 낮게). 429 를 미리 피하는 용도다.
+# [v8.3] 이 숫자는 이제 **봇·대시보드·수집기 합산** 한도다. 같은 client_id 의 한도는 토스 쪽에서
+# 합산되는데, v8.0~v8.2 는 프로세스마다 메모리 카운터로 따로 셌다 — 개장 직후 봇과 수집기가 동시에
+# 일봉을 받으면 합이 한도를 넘었다 (2026-10-30 KR 09:10, 379800 일봉 429 → 방어자산 매수 보류).
 _GROUP_TPS = (("/oauth2", 2), ("/api/v1/accounts", 1), ("/api/v1/holdings", 4),
               ("/api/v1/buying-power", 2), ("/api/v1/sellable-quantity", 2),
               ("/api/v1/orders", 5), ("/api/v1/candles", 15), ("/api/v1/prices", 12), ("", 4))
-_RATE: Dict[str, List[float]] = {}
+# 프로세스 간 공용 카운터. 토큰 캐시와 같은 방식(flock)으로 지킨다.
+RATE_FILE = Path(os.getenv("TOSS_RATE_FILE") or "database/toss_rate_limit.json")
+_RATE: Dict[str, List[float]] = {}          # fcntl 이 없는 환경(Windows 개발 PC)용 프로세스 내 카운터
 _RATE_LOCK = threading.Lock()
+try:
+    import fcntl
+except ImportError:                          # Windows — 운영 서버(Linux)에는 항상 있다
+    fcntl = None
 _RATE_LIMIT_BACKOFF = (1.0, 2.0, 4.0)     # [v8.2] GET 429 재시도 간격 (초)
 log = logging.getLogger("toss")
 
@@ -61,16 +69,72 @@ def _retry_after(response) -> float:
 
 
 def _throttle(path: str) -> None:
+    """그룹 한도 안에 자리가 날 때까지 기다린 뒤 호출 1건을 기록한다.
+
+    기다림은 잠금 **밖**에서 한다 — 잠금을 쥐고 자면 다른 프로세스의 다른 그룹 호출
+    (예: 수집기 일봉을 기다리는 동안 봇의 주문)까지 막힌다.
+    """
     prefix, tps = next((p, t) for p, t in _GROUP_TPS if path.startswith(p))
-    with _RATE_LOCK:
-        now = time.monotonic()
-        stamps = [t for t in _RATE.get(prefix, []) if now - t < 1.0]
-        if len(stamps) >= tps:
-            time.sleep(max(0.0, 1.0 - (now - stamps[0])) + 0.01)
-            now = time.monotonic()
-            stamps = [t for t in stamps if now - t < 1.0]
-        stamps.append(now)
-        _RATE[prefix] = stamps
+    while True:
+        wait = _reserve(prefix, tps)
+        if wait <= 0:
+            return
+        time.sleep(wait)
+
+
+def _take(stamps: List[float], now: float, tps: int) -> float:
+    """1초 창 안의 기록이 tps 미만이면 now 를 추가하고 0, 아니면 기다릴 초를 돌려준다."""
+    # 시계가 뒤로 간 경우(NTP 보정)의 '미래' 기록도 버린다 — 영원히 막히지 않게.
+    stamps[:] = [t for t in stamps if 0.0 <= now - t < 1.0]
+    if len(stamps) >= tps:
+        return max(0.0, 1.0 - (now - min(stamps))) + 0.01
+    stamps.append(now)
+    return 0.0
+
+
+def _reserve_local(prefix: str, tps: int) -> float:
+    stamps = _RATE.setdefault(prefix, [])
+    return _take(stamps, time.time(), tps)
+
+
+def _reserve(prefix: str, tps: int) -> float:
+    with _RATE_LOCK:                          # 같은 프로세스 안의 스레드끼리
+        if fcntl is None:
+            return _reserve_local(prefix, tps)
+        try:
+            RATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(RATE_FILE, "a+", encoding="utf-8") as f:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)   # 프로세스끼리
+                try:
+                    f.seek(0)
+                    try:
+                        data = json.loads(f.read() or "{}")
+                    except ValueError:
+                        data = {}                         # 깨진 파일은 덮어쓴다 (영구 폴백 방지)
+                    if not isinstance(data, dict):
+                        data = {}
+                    now = time.time()
+                    stamps = [float(t) for t in data.get(prefix) or []
+                              if isinstance(t, (int, float))]
+                    wait = _take(stamps, now, tps)
+                    if wait > 0:
+                        return wait
+                    data[prefix] = stamps
+                    for key in list(data):                # 다른 그룹의 오래된 기록도 정리
+                        if key != prefix:
+                            data[key] = [t for t in data[key] or []
+                                         if isinstance(t, (int, float)) and 0.0 <= now - t < 1.0]
+                    f.seek(0)
+                    f.truncate()
+                    f.write(json.dumps(data))
+                    f.flush()
+                    return 0.0
+                finally:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        except OSError as exc:
+            # 파일을 못 쓰는 상황에서 호출 자체를 막지는 않는다. 다만 조용히 넘기지 않는다.
+            log.warning("토스 공용 호출 카운터 사용 불가(%s) → 프로세스 내 카운터로 진행", exc)
+            return _reserve_local(prefix, tps)
 
 
 def _float(value: Any, default: float = 0.0) -> float:
@@ -218,10 +282,10 @@ class TossBroker(Broker):
             return self._request(method, path, account=account, params=params,
                                  body=body, retry_auth=False)
         if response.status_code == 429 and method == "GET" and _rl_attempt < len(_RATE_LIMIT_BACKOFF):
-            # [v8.2] 조회(GET)만 짧게 재시도한다. _throttle 은 프로세스마다 따로 세므로 봇과
-            # 수집기가 동시에 일봉을 받으면 합산이 클라이언트 한도를 넘는다 (2026-10-30 09:10
-            # KR: 379800 일봉 1건 429 → 방어자산 매수까지 보류). 주문(POST)은 재시도하지
-            # 않는다 — 접수된 주문을 다시 내면 중복 주문이다. 마지막 429 는 그대로 올린다.
+            # [v8.2] 조회(GET)만 짧게 재시도한다 (2026-10-30 09:10 KR: 379800 일봉 1건 429 →
+            # 방어자산 매수까지 보류). [v8.3] 공용 카운터로 합산 초과는 막지만, 토스 쪽 창 계산이
+            # 우리와 어긋나는 경우가 남는다. 주문(POST)은 재시도하지 않는다 — 접수된 주문을
+            # 다시 내면 중복 주문이다. 마지막 429 는 그대로 올린다.
             wait = _retry_after(response) or _RATE_LIMIT_BACKOFF[_rl_attempt]
             log.warning("토스 429 %s — %.1fs 후 재시도 (%d/%d)", path, wait,
                         _rl_attempt + 1, len(_RATE_LIMIT_BACKOFF))
