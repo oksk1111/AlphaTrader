@@ -253,3 +253,104 @@ def test_oauth2_string_error_surfaces_real_cause(monkeypatch, tmp_path):
     with pytest.raises(BrokerError) as caught:
         TossBroker("client", "secret", "1", "shadow", s).authenticate()
     assert caught.value.code == "access_denied" and "IP not allowed" in str(caught.value)
+
+
+# ---------------------------------------------------------------------------
+# [v8.5] 토큰 — 재발급은 이전 토큰으로 열린 웹소켓과 다른 프로세스를 끊는다
+# ---------------------------------------------------------------------------
+def _token_file(tmp_path, monkeypatch):
+    from modules.brokers import toss
+    path = tmp_path / "token.json"
+    monkeypatch.setattr(toss, "TOKEN_FILE", path)
+    return path
+
+
+def _write_token(path, token, ttl):
+    import os
+    import time
+    path.write_text(json.dumps({"access_token": token, "expiry": time.time() + ttl}), encoding="utf-8")
+    st = path.stat()
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))   # 파일시스템 mtime 해상도와 무관하게
+
+
+def _auth_of(call):
+    return call[2]["headers"]["Authorization"]
+
+
+def test_token_reissued_by_another_process_is_adopted_without_a_401(tmp_path, monkeypatch):
+    """다른 프로세스가 재발급하면 메모리의 토큰은 이미 무효다 — 파일이 바뀐 것을 보고 바로 갈아탄다."""
+    path = _token_file(tmp_path, monkeypatch)
+    _write_token(path, "T1", 86400)
+    s = Session()
+    b = TossBroker("client", "secret", "1", "shadow", s)
+    assert b.authenticate() == "T1"
+    _write_token(path, "T2", 86400)                      # 수집기·대시보드가 재발급
+    assert b.authenticate() == "T2"
+    assert s.calls == [], "발급 호출 없이 갈아타야 한다"
+
+
+def test_401_adopts_the_shared_token_instead_of_reissuing(tmp_path, monkeypatch):
+    """401 마다 무조건 재발급하면 방금 다른 프로세스가 받은 토큰을 무효로 만든다 (핑퐁)."""
+    path = _token_file(tmp_path, monkeypatch)
+    _write_token(path, "T2", 86400)
+    s = Session()
+    b = TossBroker("client", "secret", "1", "shadow", s)
+    b.access_token, b.token_expiry = "T1", 10 ** 12      # 무효가 된 줄 모르는 메모리 토큰
+    s.queue(Response({"error": {"code": "invalid-token"}}, status=401),
+            Response({"result": [{"symbol": "XLK", "lastPrice": "200"}]}))
+    assert b.quote("XLK", Market.US).price == 200
+    assert [c[0] for c in s.calls] == ["GET", "GET"], "토큰 발급(POST)이 없어야 한다"
+    assert _auth_of(s.calls[0]) == "Bearer T1" and _auth_of(s.calls[1]) == "Bearer T2"
+
+
+def test_401_on_the_shared_token_itself_reissues_once(tmp_path, monkeypatch):
+    path = _token_file(tmp_path, monkeypatch)
+    _write_token(path, "T1", 86400)
+    s = Session()
+    b = TossBroker("client", "secret", "1", "shadow", s)
+    s.queue(Response({"error": {"code": "invalid-token"}}, status=401),
+            Response({"access_token": "T2", "expires_in": 86400}),
+            Response({"result": [{"symbol": "XLK", "lastPrice": "200"}]}))
+    assert b.quote("XLK", Market.US).price == 200
+    assert [c[0] for c in s.calls] == ["GET", "POST", "GET"]
+    assert json.loads(path.read_text(encoding="utf-8"))["access_token"] == "T2"
+
+
+def test_min_ttl_refreshes_before_the_session_not_at_decision_time(tmp_path, monkeypatch):
+    """2026-11-09~11: 만료 갱신이 매일 23:40(US 판단 시각)에 걸려 봇 스트림이 auth-revoked 로 끊겼다.
+    세션 시작 때 남은 수명이 세션보다 짧으면 미리 갱신한다."""
+    path = _token_file(tmp_path, monkeypatch)
+    _write_token(path, "T1", 600)                        # 10분 뒤 만료 — 판단 시각에 걸린다
+    s = Session()
+    b = TossBroker("client", "secret", "1", "shadow", s)
+    assert b.authenticate() == "T1" and s.calls == []    # 평소 호출은 아직 갱신하지 않는다
+    s.queue(Response({"access_token": "T2", "expires_in": 86400}))
+    assert b.authenticate(min_ttl=7 * 3600) == "T2"
+    assert b.authenticate(min_ttl=7 * 3600) == "T2" and len(s.calls) == 1
+
+
+def test_failed_early_refresh_keeps_the_still_valid_token(tmp_path, monkeypatch):
+    path = _token_file(tmp_path, monkeypatch)
+    _write_token(path, "T1", 3600)
+    s = Session()
+    b = TossBroker("client", "secret", "1", "shadow", s)
+    s.queue(Response({"error": "temporarily_unavailable"}, status=503))
+    assert b.authenticate(min_ttl=7 * 3600) == "T1", "사전 갱신 실패가 세션을 죽이면 안 된다"
+
+
+def test_candle_budget_is_below_the_rate_that_hit_429_every_morning():
+    from modules.brokers import toss
+    assert dict(toss._GROUP_TPS)["/api/v1/candles"] <= 10
+
+
+def test_429_log_carries_rate_limit_headers(monkeypatch, caplog):
+    """토스의 실제 한도를 추측하지 않고 로그에서 읽는다."""
+    from modules.brokers import toss
+    monkeypatch.setattr(toss.time, "sleep", lambda s: None)
+    s = Session()
+    s.queue(Response({"error": {"code": "rate-limit-exceeded"}}, status=429,
+                     headers={"X-RateLimit-Limit": "10", "Retry-After": "1", "X-Request-Id": "r"}),
+            Response({"result": [{"symbol": "XLK", "lastPrice": "200"}]}))
+    with caplog.at_level("WARNING", logger="toss"):
+        broker(s).quote("XLK", Market.US)
+    assert "X-RateLimit-Limit" in caplog.text and "X-Request-Id" not in caplog.text

@@ -48,7 +48,7 @@ _ORDER_STATE = {
 # 일봉을 받으면 합이 한도를 넘었다 (2026-10-30 KR 09:10, 379800 일봉 429 → 방어자산 매수 보류).
 _GROUP_TPS = (("/oauth2", 2), ("/api/v1/accounts", 1), ("/api/v1/holdings", 4),
               ("/api/v1/buying-power", 2), ("/api/v1/sellable-quantity", 2),
-              ("/api/v1/orders", 5), ("/api/v1/candles", 15), ("/api/v1/prices", 12), ("", 4))
+              ("/api/v1/orders", 5), ("/api/v1/candles", 10), ("/api/v1/prices", 12), ("", 4))
 # 프로세스 간 공용 카운터. 토큰 캐시와 같은 방식(flock)으로 지킨다.
 RATE_FILE = Path(os.getenv("TOSS_RATE_FILE") or "database/toss_rate_limit.json")
 _RATE: Dict[str, List[float]] = {}          # fcntl 이 없는 환경(Windows 개발 PC)용 프로세스 내 카운터
@@ -58,6 +58,9 @@ try:
 except ImportError:                          # Windows — 운영 서버(Linux)에는 항상 있다
     fcntl = None
 _RATE_LIMIT_BACKOFF = (1.0, 2.0, 4.0)     # [v8.2] GET 429 재시도 간격 (초)
+# [v8.5] 일봉 15→10회/초. 11/3~11/12 KR 9세션 모두 09:10 일봉(19종목)에서 429 가 1회씩 났다 —
+# 공용 카운터(v8.3)로 합산 15회/초를 지켜도 남았으므로 토스의 실제 한도가 15 보다 낮다. 실제 값은
+# 아직 모른다: 아래 _rate_headers 로그로 확인되면 그 값에 맞춘다.
 log = logging.getLogger("toss")
 
 
@@ -66,6 +69,15 @@ def _retry_after(response) -> float:
         return min(10.0, max(0.0, float(response.headers.get("Retry-After") or 0)))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _rate_headers(response) -> Dict[str, str]:
+    """429 응답의 한도 관련 헤더 — 토스의 실제 한도를 추측하지 않고 로그에서 읽기 위해 남긴다."""
+    try:
+        return {k: v for k, v in dict(response.headers).items()
+                if any(w in k.lower() for w in ("ratelimit", "rate-limit", "retry-after"))}
+    except Exception:
+        return {}
 
 
 def _throttle(path: str) -> None:
@@ -170,18 +182,28 @@ class TossBroker(Broker):
         self.session = session or requests.Session()
         self.access_token: Optional[str] = None
         self.token_expiry = 0.0
+        self._token_mtime: Optional[int] = None   # 이 프로세스가 마지막으로 읽거나 쓴 토큰 파일의 mtime
         self._token_lock = threading.Lock()
 
     @property
     def name(self) -> str:
         return "TOSS"
 
-    def _load_token(self) -> bool:
+    @staticmethod
+    def _file_mtime() -> Optional[int]:
         try:
+            return TOKEN_FILE.stat().st_mtime_ns
+        except OSError:
+            return None
+
+    def _load_token(self, margin: float = 300.0) -> bool:
+        try:
+            mtime = self._file_mtime()
             data = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
-            if time.time() < float(data.get("expiry", 0)) - 300:
+            if time.time() < float(data.get("expiry", 0)) - margin:
                 self.access_token = data["access_token"]
                 self.token_expiry = float(data["expiry"])
+                self._token_mtime = mtime
                 return True
         except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
             return False
@@ -196,13 +218,29 @@ class TossBroker(Broker):
         }), encoding="utf-8")
         os.chmod(tmp, 0o600)
         os.replace(tmp, TOKEN_FILE)
+        self._token_mtime = self._file_mtime()
 
-    def authenticate(self, force: bool = False) -> str:
+    def authenticate(self, force: bool = False, rejected: Optional[str] = None,
+                     min_ttl: float = 0.0) -> str:
+        """유효한 토큰을 돌려준다. 발급은 정말 필요할 때 한 프로세스만 한다.
+
+        rejected: 방금 401 을 받은 토큰. 공유 파일에 **다른** 유효 토큰이 있으면 재발급하지 않고
+                  그것을 쓴다 — 다른 프로세스가 이미 재발급한 것이다. 여기서 또 발급하면 그 프로세스의
+                  토큰을 무효로 만들어 서로를 끊는 핑퐁이 된다.
+        min_ttl:  남은 수명이 이보다 짧으면 지금 재발급한다. 재발급은 이전 토큰으로 열린 웹소켓을
+                  끊으므로(auth-revoked), 세션 시작 때 미리 해서 판단·주문 시각을 피한다
+                  (2026-11-09~11: 매일 23:40 = US 판단 시각에 만료 갱신이 걸려 봇 스트림이 끊겼다).
+        """
+        margin = max(300.0, float(min_ttl or 0.0))
+        proactive = not force and rejected is None and margin > 300.0
         with self._token_lock:
-            if not force:
-                if self.access_token and time.time() < self.token_expiry - 300:
+            if not force and rejected is None:
+                # 다른 프로세스가 재발급했으면(파일이 바뀜) 메모리의 토큰은 이미 무효다
+                if self._token_mtime is not None and self._file_mtime() != self._token_mtime:
+                    self._load_token()
+                if self.access_token and time.time() < self.token_expiry - margin:
                     return self.access_token
-                if self._load_token():
+                if self._load_token(margin):
                     return self.access_token
             if not self.client_id or not self.client_secret:
                 raise BrokerError("TOSS_CLIENT_ID/TOSS_CLIENT_SECRET이 설정되지 않았습니다",
@@ -219,8 +257,13 @@ class TossBroker(Broker):
                 except ImportError:
                     fcntl = None
                 try:
-                    if not force and self._load_token():
+                    if not force and self._load_token(margin) and self.access_token != rejected:
                         return self.access_token
+                    # 미리 하는 갱신이 실패해도 아직 유효한 토큰이 있으면 세션을 죽이지 않는다
+                    if proactive:
+                        self._load_token()               # 공유 파일의 아직 유효한 토큰 (없으면 메모리 것)
+                    usable = bool(proactive and self.access_token
+                                  and time.time() < self.token_expiry - 300)
                     try:
                         response = self.session.post(
                             self.base_url + "/oauth2/token",
@@ -233,9 +276,16 @@ class TossBroker(Broker):
                             timeout=10,
                         )
                     except requests.RequestException as exc:
+                        if usable:
+                            log.warning("토스 토큰 사전 갱신 실패(%s) → 기존 토큰으로 진행", exc)
+                            return self.access_token
                         raise BrokerError(f"토스 토큰 발급 연결 실패: {exc}",
                                           code="network-error", retryable=True) from exc
                     if response.status_code != 200:
+                        if usable:
+                            log.warning("토스 토큰 사전 갱신 실패(HTTP %s) → 기존 토큰으로 진행",
+                                        response.status_code)
+                            return self.access_token
                         self._raise_api_error(response)
                     data = response.json()
                     self.access_token = data["access_token"]
@@ -269,16 +319,19 @@ class TossBroker(Broker):
                  params: Dict[str, Any] = None, body: Dict[str, Any] = None,
                  retry_auth: bool = True, _rl_attempt: int = 0) -> Dict[str, Any]:
         _throttle(path)
+        headers = self._headers(account)
+        used_token = self.access_token
         try:
             response = self.session.request(
-                method, self.base_url + path, headers=self._headers(account),
+                method, self.base_url + path, headers=headers,
                 params=params, json=body, timeout=10,
             )
         except requests.RequestException as exc:
             raise BrokerError(f"토스 API 연결 실패 ({path}): {exc}",
                               code="network-error", retryable=True) from exc
         if response.status_code == 401 and retry_auth:
-            self.authenticate(force=True)
+            # [v8.5] 무조건 재발급하지 않는다 — 다른 프로세스가 이미 새 토큰을 받았으면 그것을 쓴다
+            self.authenticate(rejected=used_token or "")
             return self._request(method, path, account=account, params=params,
                                  body=body, retry_auth=False)
         if response.status_code == 429 and method == "GET" and _rl_attempt < len(_RATE_LIMIT_BACKOFF):
@@ -287,8 +340,8 @@ class TossBroker(Broker):
             # 우리와 어긋나는 경우가 남는다. 주문(POST)은 재시도하지 않는다 — 접수된 주문을
             # 다시 내면 중복 주문이다. 마지막 429 는 그대로 올린다.
             wait = _retry_after(response) or _RATE_LIMIT_BACKOFF[_rl_attempt]
-            log.warning("토스 429 %s — %.1fs 후 재시도 (%d/%d)", path, wait,
-                        _rl_attempt + 1, len(_RATE_LIMIT_BACKOFF))
+            log.warning("토스 429 %s — %.1fs 후 재시도 (%d/%d) 헤더=%s", path, wait,
+                        _rl_attempt + 1, len(_RATE_LIMIT_BACKOFF), _rate_headers(response))
             time.sleep(wait)
             return self._request(method, path, account=account, params=params, body=body,
                                  retry_auth=retry_auth, _rl_attempt=_rl_attempt + 1)

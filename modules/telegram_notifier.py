@@ -6,6 +6,7 @@
 
 import os
 import json
+import time
 import requests
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -64,30 +65,46 @@ class TelegramNotifier:
         if len(message) > self.MAX_MESSAGE_LEN:
             message = message[:self.MAX_MESSAGE_LEN - 20] + "\n… (메시지 잘림)"
 
-        try:
-            url = f"{self.base_url}/sendMessage"
-            payload = {
-                "chat_id": self.chat_id,
-                "text": message,
-                "parse_mode": parse_mode
-            }
-            response = requests.post(url, json=payload, timeout=10)
-
-            if response.status_code == 200:
-                return True
-            else:
-                # parse_mode 문제일 수 있으므로 plain text로 재시도
-                if parse_mode:
+        url = f"{self.base_url}/sendMessage"
+        payload = {
+            "chat_id": self.chat_id,
+            "text": message,
+            "parse_mode": parse_mode
+        }
+        # [v8.5] 일시적 실패(연결 오류·429·5xx)는 한 번 더 보낸다. 2026-11-03 15:00 장 마감 요약이
+        # 한 번의 실패로 사라졌다 — 알림이 유일한 관측 수단인 날에는 조용한 세션이 된다 (v7.0.3).
+        for attempt in (1, 2):
+            try:
+                response = requests.post(url, json=payload, timeout=10)
+                if response.status_code == 200:
+                    return True
+                if response.status_code == 429 or response.status_code >= 500:
+                    if attempt == 1:
+                        time.sleep(self._retry_delay(response))
+                        continue
+                elif parse_mode and payload["parse_mode"]:
+                    # parse_mode 문제일 수 있으므로 plain text로 재시도
                     payload["parse_mode"] = ""
                     retry = requests.post(url, json=payload, timeout=10)
                     if retry.status_code == 200:
                         return True
                 print(f"❌ Telegram API error: {response.text}")
                 return False
+            except Exception as e:
+                if attempt == 1:
+                    time.sleep(2)
+                    continue
+                print(f"❌ Failed to send Telegram message: {e}")
+                return False
+        return False
 
-        except Exception as e:
-            print(f"❌ Failed to send Telegram message: {e}")
-            return False
+    @staticmethod
+    def _retry_delay(response) -> float:
+        """429 의 retry_after(초)를 따르되 세션을 오래 붙잡지 않는다 (최대 5초)."""
+        try:
+            return min(5.0, max(1.0, float(response.json()["parameters"]["retry_after"])))
+        except Exception:
+            return 2.0
     
     def get_today_trades(self) -> list:
         """오늘 거래 내역 조회"""

@@ -1253,6 +1253,25 @@ def _stop_ws():
         ws_client = None
 
 
+SESSION_TOKEN_MIN_TTL_SEC = 7 * 3600   # 정규장 6.5시간 + 여유
+
+
+def _refresh_token_before_session(market):
+    """[v8.5] 세션 안에 만료될 토큰은 스트림을 열기 **전에** 갱신한다.
+
+    토큰 재발급은 이전 토큰으로 열린 웹소켓을 끊는다(auth-revoked). 2026-11-09~11 에는 만료 갱신이
+    매일 23:40 — US 판단·주문 시각 — 에 걸려 봇 스트림이 그 순간 끊겼다 (재접속으로 복구, 그 사이는
+    REST fallback). 실패해도 세션은 진행한다: 유효한 토큰이 없으면 브로커 생성 단계에서 드러난다.
+    """
+    if not TOSS_CLIENT_ID:
+        return
+    try:
+        from modules.brokers.compat import broker as _toss_broker
+        _toss_broker().authenticate(min_ttl=SESSION_TOKEN_MIN_TTL_SEC)
+    except Exception as e:
+        logger.error(f"[{market}] 세션 전 토큰 갱신 실패 → 기존 토큰으로 진행: {e}")
+
+
 def run_rotation_session(market, user_config):
     """[v7.0] 모멘텀 로테이션 1세션. job() 에서 strategy == 'momentum_rotation' 일 때 호출.
 
@@ -1260,7 +1279,8 @@ def run_rotation_session(market, user_config):
     주문 단가는 실시간 체결가로, 체결 여부는 주문 이벤트로 즉시 확인한다 (TossBroker 가 캐시를 먼저 본다).
     """
     mcfg = ((user_config.get('momentum_rotation') or {}).get(market.lower())) or {}
-    _start_ws(market, [c for c, _ in _rotation_universe(mcfg, market)] + list(mcfg.get('defensive') or []))
+    _refresh_token_before_session(market)
+    _start_ws(market,[c for c, _ in _rotation_universe(mcfg, market)] + list(mcfg.get('defensive') or []))
     try:
         _rotation_session(market, user_config)
     finally:
