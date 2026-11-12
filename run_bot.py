@@ -1270,6 +1270,7 @@ def run_rotation_session(market, user_config):
 def _rotation_session(market, user_config):
     from modules.momentum_rotation import (
         compute_features, market_risk_on, plan_rotation, fillable_slots, defensive_targets,
+        judgement_detail,
     )
 
     cfg = user_config.get('momentum_rotation') or {}
@@ -1393,6 +1394,10 @@ def _rotation_session(market, user_config):
     day_label = ('리밸런싱일' if rebalance_due
                  else f"유지일 {ms['sessions_since_rebalance']}/{rebalance_days}")
     logger.info(f"[{market}] 로테이션 판단 ({day_label}): {plan.summary()}")
+    # [v8.4] 판단 근거 수치 — '설계대로 안 산 것'과 '고장'을 로그·알림만으로 구분한다
+    why_lines = judgement_detail(feats, bench, bench_closes if use_filter else None)
+    for _w in why_lines:
+        logger.info(f"[{market}] 판단 근거: {_w}")
 
     sells = []
     if rebalance_due or not risk_on:
@@ -1584,7 +1589,8 @@ def _rotation_session(market, user_config):
             _summary_lines.append(f"유지일 — 다음 리밸런싱까지 {_remaining}세션")
         else:
             _summary_lines.append("편입 대상 없음 (모든 슬롯 충족)")
-    _summary_lines.append(f"현금: {_cur(cash)} | 평가: {_cur(equity)}")
+    _summary_lines += [f"· {_w}" for _w in why_lines]
+    _summary_lines.append(f"현금:{_cur(cash)} | 평가: {_cur(equity)}")
     # 보유 종목 P&L
     if holdings:
         _h_lines = []

@@ -282,3 +282,19 @@ class TestHealthMonitor:
                 session_key=f"KR:2026-08-{i:02d}", market="KR", started_at="x",
                 candidates=0, buys=0))
         assert health_monitor.diagnose("KR").dry_streak == 0
+
+    def test_stale_streak_is_not_realerted_when_nothing_was_wanted(self):
+        """[v8.4] 2026-11 US: 추세 통과 0종(후보 0)인 세션마다 2주 전의
+        '5세션 연속 · 주문가능금액 초과 · 환전하세요'가 그대로 다시 나갔다."""
+        self._dry(5)
+        health_monitor.record_session(health_monitor.SessionRecord(
+            session_key="US:2026-08-20", market="US", started_at="x",
+            candidates=0, buys=0))
+        d = health_monitor.diagnose("US")
+        assert d.should_alert is False and d.dry_streak == 5
+        assert "주문가능금액" not in d.message
+        # 다시 사려다 실패하면 경고가 돌아온다
+        health_monitor.record_session(health_monitor.SessionRecord(
+            session_key="US:2026-08-21", market="US", started_at="x",
+            candidates=1, buys=0, block_reasons={"주문가능금액 부족": 1}))
+        assert health_monitor.diagnose("US").should_alert is True

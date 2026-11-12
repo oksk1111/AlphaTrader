@@ -663,3 +663,31 @@ class TestDefensiveSlot:
         assert "defensive" not in cfg["momentum_rotation"]["us"], "US 는 검증 미통과 — 넣지 않는다"
         src = open(os.path.join(REPO, "scripts", "backtest_real.py"), encoding="utf-8").read()
         assert "defensive_targets(" in src and 'rc.get("defensive")' in src
+
+
+# ---------------------------------------------------------------------------
+# [v8.4] 판단 근거 — "왜 안 샀는가"가 숫자로 알림에 실린다
+# ---------------------------------------------------------------------------
+class TestJudgementDetail:
+
+    def test_reports_filter_numbers_and_trend_breadth(self):
+        down = _series(10000, -.003)
+        feats = [mr.compute_features("A", down), mr.compute_features("B", _series(10000, -.001))]
+        lines = mr.judgement_detail(feats, "BENCH", down)
+        assert "시장필터 BENCH" in lines[0] and "<" in lines[0] and "하락" in lines[0]
+        assert "통과 0/2종" in lines[1] and "가장 가까운 B" in lines[1]
+
+    def test_no_filter_line_without_benchmark_and_counts_passing(self):
+        feats = [mr.compute_features("A", _series(10000, .004)), mr.compute_features("N", [1.0] * 5)]
+        lines = mr.judgement_detail(feats)
+        assert lines == ["추세조건(종가>MA20>MA60) 통과 1/1종"]   # 히스토리 짧은 N 은 분모에서 빠진다
+
+    def test_session_summary_carries_the_reason(self, rb, monkeypatch):
+        """2026-11: 'RISK-OFF → 신규 매수 없음' 만으로는 설계대로인지 고장인지 알 수 없었다."""
+        alerts = []
+        monkeypatch.setattr(rb, "send_alert", lambda msg, *a, **k: alerts.append(msg))
+        fake = FakeKR(dict(UNIVERSE, BENCH=_series(10000, -.003)), cash=500_000)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
+        rb.run_rotation_session("KR", _cfg())
+        summary = next(m for m in alerts if "로테이션 세션" in m)
+        assert "시장필터 BENCH" in summary and "추세조건(종가>MA20>MA60) 통과" in summary

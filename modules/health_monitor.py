@@ -47,8 +47,8 @@ CRITICAL_DRY_SESSIONS = 7   # 연속 무매수 7세션 → 심각 (사람 개입
 # 지배적 차단 사유 → 사람이 실제로 취할 수 있는 조치
 REMEDY_HINTS = {
     "주문가능금액": (
-        "USD 매수가능금액이 0일 가능성이 큽니다. 토스증권은 Open API 주문에 자동환전이 없으니 "
-        "토스 앱에서 달러로 환전해 두세요. get_foreign_balance() 응답도 함께 점검."
+        "매수가능금액이 1주 주문단가보다 적습니다 (0 이거나 소액). US 라면 토스증권은 Open API "
+        "주문에 자동환전이 없으니 토스 앱에서 달러로 환전해 두세요. get_foreign_balance() 응답도 함께 점검."
     ),
     "노출 한도": "종목별 노출 상한에 도달했습니다. max_position_pct 를 올리거나 일부 익절하세요.",
     "낙폭 서킷브레이커": "계좌 낙폭이 커서 매수가 중단됐습니다. risk_state.json 확인 후 회복을 기다리거나 수동 리셋하세요.",
@@ -158,6 +158,18 @@ def diagnose(market: Optional[str] = None) -> Diagnosis:
     if streak == 0:
         return Diagnosis(level="ok", dry_streak=0,
                          message=f"[{scope}] 정상 — 최근 세션에서 체결 발생")
+
+    # [v8.4] 가장 최근 세션에 '사려던 종목'이 없었다면 지난 실패는 이미 지나간 일이다.
+    # 후보 없는 세션은 연속 기록을 끊지도 늘리지도 않으므로, 이 검사가 없으면 옛 경고가
+    # 옛 사유·옛 조치 힌트 그대로 매일 반복된다 (2026-11 US: 추세 통과 0종인 날마다
+    # "5세션 연속 · 주문가능금액 초과 [SMH] · 환전하세요"가 2주간 나갔다).
+    latest = _recent(market, 1)
+    if latest and int(latest[0].get("candidates", 0) or 0) <= 0 \
+            and int(latest[0].get("buys", 0) or 0) <= 0:
+        return Diagnosis(
+            level="info", dry_streak=streak,
+            message=(f"ℹ️ [{scope}] 이번 세션은 매수 대상이 없었습니다 (전략 판단). "
+                     f"이전 무매수 {streak}세션의 사유는 이번 세션에 해당하지 않습니다."))
 
     # 무매수 구간의 차단 사유 집계
     counter: Counter = Counter()

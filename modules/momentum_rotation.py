@@ -187,6 +187,39 @@ def market_risk_on(index_closes: Sequence[float], ma: int = MARKET_MA,
 
 
 # ---------------------------------------------------------------------------
+# [v8.4] 판단 근거 — "왜 안 샀는가"를 숫자로 (알림·로그용, 판단에는 쓰지 않는다)
+# ---------------------------------------------------------------------------
+def judgement_detail(features: Iterable[Features],
+                     bench: str = "", bench_closes: Optional[Sequence[float]] = None,
+                     ma: int = MARKET_MA, slope: int = MARKET_SLOPE) -> List[str]:
+    """시장필터 수치와 추세조건 통과 종목 수를 사람이 읽는 줄로 돌려준다.
+
+    2026-11: 지수가 며칠 반등하자 "장이 좋은데 왜 안 사나"라는 질문이 나왔다. 요약에는
+    'RISK-OFF' / '순위 없음' 뿐이라 설계대로인지 고장인지 숫자로 확인할 수 없었다.
+    """
+    lines: List[str] = []
+    closes = [float(c) for c in (bench_closes or []) if c is not None and float(c) > 0]
+    if len(closes) >= ma + slope:
+        ma_now = sum(closes[-ma:]) / ma
+        ma_prev = sum(closes[-ma - slope:-slope]) / ma
+        lines.append(
+            f"시장필터 {bench}: 종가 {closes[-1]:,.2f} {'≥' if closes[-1] >= ma_now else '<'} "
+            f"MA{ma} {ma_now:,.2f} ({closes[-1] / ma_now - 1:+.1%}), "
+            f"MA{ma} {'상승' if ma_now >= ma_prev else '하락'} ({slope}일 전 {ma_prev:,.2f})")
+    feats = [f for f in features if f.ma20 is not None and f.ma60 is not None]
+    if feats:
+        ok = [f for f in feats if f.eligible]
+        line = f"추세조건(종가>MA20>MA60) 통과 {len(ok)}/{len(feats)}종"
+        if not ok:
+            # 통과에 가장 가까운 종목 — 두 조건 중 더 모자란 쪽의 거리
+            near = max(feats, key=lambda f: min(f.close / f.ma20 - 1, f.ma20 / f.ma60 - 1))
+            line += (f" — 가장 가까운 {near.ticker}: 종가/MA20 {near.close / near.ma20 - 1:+.1%}, "
+                     f"MA20/MA60 {near.ma20 / near.ma60 - 1:+.1%}")
+        lines.append(line)
+    return lines
+
+
+# ---------------------------------------------------------------------------
 # 슬롯 수 — "채울 수 있는 슬롯 수로 나눈다" (AGENTS v6.1 규칙 7)
 # ---------------------------------------------------------------------------
 def fillable_slots(equity: float, min_slot_value: float,
