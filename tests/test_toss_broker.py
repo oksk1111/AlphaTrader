@@ -338,19 +338,16 @@ def test_failed_early_refresh_keeps_the_still_valid_token(tmp_path, monkeypatch)
     assert b.authenticate(min_ttl=7 * 3600) == "T1", "사전 갱신 실패가 세션을 죽이면 안 된다"
 
 
-def test_candle_budget_is_below_the_rate_that_hit_429_every_morning():
-    from modules.brokers import toss
-    assert dict(toss._GROUP_TPS)["/api/v1/candles"] <= 10
-
-
-def test_429_log_carries_rate_limit_headers(monkeypatch, caplog):
-    """토스의 실제 한도를 추측하지 않고 로그에서 읽는다."""
+def test_429_log_carries_rate_limit_headers_and_body(monkeypatch, caplog):
+    """토스의 실제 한도를 추측하지 않고 로그에서 읽는다. 2026-11-12 실측: 429 인데 Limit 20 /
+    Remaining 11 — 초당 한도 초과가 아니었다. 어떤 제한인지는 본문에 있다."""
     from modules.brokers import toss
     monkeypatch.setattr(toss.time, "sleep", lambda s: None)
     s = Session()
-    s.queue(Response({"error": {"code": "rate-limit-exceeded"}}, status=429,
-                     headers={"X-RateLimit-Limit": "10", "Retry-After": "1", "X-Request-Id": "r"}),
+    s.queue(Response({"error": {"code": "burst-limit", "message": "too fast"}}, status=429,
+                     headers={"X-RateLimit-Limit": "20", "Retry-After": "1", "X-Request-Id": "r"}),
             Response({"result": [{"symbol": "XLK", "lastPrice": "200"}]}))
     with caplog.at_level("WARNING", logger="toss"):
         broker(s).quote("XLK", Market.US)
     assert "X-RateLimit-Limit" in caplog.text and "X-Request-Id" not in caplog.text
+    assert "burst-limit" in caplog.text

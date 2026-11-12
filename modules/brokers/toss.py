@@ -48,7 +48,7 @@ _ORDER_STATE = {
 # 일봉을 받으면 합이 한도를 넘었다 (2026-10-30 KR 09:10, 379800 일봉 429 → 방어자산 매수 보류).
 _GROUP_TPS = (("/oauth2", 2), ("/api/v1/accounts", 1), ("/api/v1/holdings", 4),
               ("/api/v1/buying-power", 2), ("/api/v1/sellable-quantity", 2),
-              ("/api/v1/orders", 5), ("/api/v1/candles", 10), ("/api/v1/prices", 12), ("", 4))
+              ("/api/v1/orders", 5), ("/api/v1/candles", 15), ("/api/v1/prices", 12), ("", 4))
 # 프로세스 간 공용 카운터. 토큰 캐시와 같은 방식(flock)으로 지킨다.
 RATE_FILE = Path(os.getenv("TOSS_RATE_FILE") or "database/toss_rate_limit.json")
 _RATE: Dict[str, List[float]] = {}          # fcntl 이 없는 환경(Windows 개발 PC)용 프로세스 내 카운터
@@ -58,9 +58,10 @@ try:
 except ImportError:                          # Windows — 운영 서버(Linux)에는 항상 있다
     fcntl = None
 _RATE_LIMIT_BACKOFF = (1.0, 2.0, 4.0)     # [v8.2] GET 429 재시도 간격 (초)
-# [v8.5] 일봉 15→10회/초. 11/3~11/12 KR 9세션 모두 09:10 일봉(19종목)에서 429 가 1회씩 났다 —
-# 공용 카운터(v8.3)로 합산 15회/초를 지켜도 남았으므로 토스의 실제 한도가 15 보다 낮다. 실제 값은
-# 아직 모른다: 아래 _rate_headers 로그로 확인되면 그 값에 맞춘다.
+# [v8.5] 매일 일봉 조회 첫 구간에서 나는 429 는 초당 한도 초과가 **아니다**. 실측(2026-11-12 12:31):
+# 429 응답 헤더가 X-RateLimit-Limit 20 / Remaining 11 — 한도 20회/초 중 9회만 쓴 시점이었다. 일봉 한도를
+# 10회/초로 낮춰도 똑같이 났다(그래서 15 로 되돌렸다). 다른 제한(순간 몰림 등)으로 보이며 원인은 미확정 —
+# 429 로그에 헤더와 응답 본문을 남겨 다음 발생 때 읽는다. 그때까지는 GET 재시도(v8.2)가 흡수한다.
 log = logging.getLogger("toss")
 
 
@@ -78,6 +79,16 @@ def _rate_headers(response) -> Dict[str, str]:
                 if any(w in k.lower() for w in ("ratelimit", "rate-limit", "retry-after"))}
     except Exception:
         return {}
+
+
+def _rate_body(response) -> str:
+    """429 응답 본문의 code/message — 어떤 제한에 걸렸는지 토스가 말해 주는 유일한 곳."""
+    try:
+        payload = response.json()
+        error = payload.get("error") if isinstance(payload, dict) else None
+        return json.dumps(error if error is not None else payload, ensure_ascii=False)[:200]
+    except Exception:
+        return ""
 
 
 def _throttle(path: str) -> None:
@@ -340,8 +351,9 @@ class TossBroker(Broker):
             # 우리와 어긋나는 경우가 남는다. 주문(POST)은 재시도하지 않는다 — 접수된 주문을
             # 다시 내면 중복 주문이다. 마지막 429 는 그대로 올린다.
             wait = _retry_after(response) or _RATE_LIMIT_BACKOFF[_rl_attempt]
-            log.warning("토스 429 %s — %.1fs 후 재시도 (%d/%d) 헤더=%s", path, wait,
-                        _rl_attempt + 1, len(_RATE_LIMIT_BACKOFF), _rate_headers(response))
+            log.warning("토스 429 %s — %.1fs 후 재시도 (%d/%d) 헤더=%s 본문=%s", path, wait,
+                        _rl_attempt + 1, len(_RATE_LIMIT_BACKOFF), _rate_headers(response),
+                        _rate_body(response))
             time.sleep(wait)
             return self._request(method, path, account=account, params=params, body=body,
                                  retry_auth=retry_auth, _rl_attempt=_rl_attempt + 1)
