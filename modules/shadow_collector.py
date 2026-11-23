@@ -107,7 +107,8 @@ def run() -> None:
                         last_watch_error = time.time()
                         logger.error("[ExtendedWatch] 이벤트 처리 실패: %s", exc)
             if event and not is_watch_only(event):
-                store.record_event(event)
+                # [v8.6] 원본 틱·호가(market_events)는 저장하지 않는다. 읽는 곳 없이 32GB 까지
+                # 쌓여 디스크가 2~3일 안에 찰 상태였다. 분석은 1분 집계로 한다.
                 store.upsert_trade(event)
                 if event.kind == "trade" and event.market and event.symbol:
                     minute = str(event.timestamp or "")[:16]

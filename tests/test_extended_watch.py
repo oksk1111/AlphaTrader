@@ -116,6 +116,12 @@ def test_watch_module_has_no_order_path():
         assert forbidden not in source
 
 
+def test_collector_does_not_store_raw_events():
+    source = Path("modules/shadow_collector.py").read_text(encoding="utf-8")
+    assert "record_event" not in source
+    assert "store.upsert_trade(event)" in source
+
+
 class Response:
     def __init__(self, content):
         self.content = content
