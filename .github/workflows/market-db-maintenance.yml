@@ -1,0 +1,36 @@
+name: Market DB Maintenance
+
+# 수동 실행 전용. 현재는 읽기 전용 점검만 있다. 저장소가 PUBLIC 이므로 행 수·크기·날짜만 출력한다.
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "작업"
+        required: true
+        default: inspect
+        type: choice
+        options:
+          - inspect
+
+jobs:
+  maintenance:
+    runs-on: ubuntu-latest
+    environment: ${{ vars.EXECUTION_MODE == 'live' && 'production-live' || 'production-shadow' }}
+    steps:
+      - name: Run on server
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          COMMAND: ${{ inputs.command }}
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USERNAME }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          port: 22
+          envs: COMMAND
+          command_timeout: 30m
+          script: |
+            set -e
+            cd "$HOME/AlphaTrader"
+            PRIO="nice -n 19"
+            command -v ionice >/dev/null 2>&1 && PRIO="$PRIO ionice -c 3"
+            $PRIO venv/bin/python scripts/compact_market_db.py "$COMMAND"
