@@ -1,6 +1,7 @@
 name: Market DB Maintenance
 
-# 수동 실행 전용. 현재는 읽기 전용 점검만 있다. 저장소가 PUBLIC 이므로 행 수·크기·날짜만 출력한다.
+# 수동 실행 전용. 저장소가 PUBLIC 이므로 행 수·크기·날짜만 출력한다.
+# compact·rollback 은 수집기만 멈춘다 (봇은 이 DB 를 쓰지 않는다). 원본 삭제 작업은 없다.
 on:
   workflow_dispatch:
     inputs:
@@ -11,26 +12,65 @@ on:
         type: choice
         options:
           - inspect
+          - backfill
+          - compact
+          - rollback
+      confirm:
+        description: "compact·rollback 은 작업 이름을 똑같이 입력"
+        required: false
+        default: ""
 
 jobs:
   maintenance:
     runs-on: ubuntu-latest
+    timeout-minutes: 320
     environment: ${{ vars.EXECUTION_MODE == 'live' && 'production-live' || 'production-shadow' }}
     steps:
       - name: Run on server
         uses: appleboy/ssh-action@v1.0.3
         env:
           COMMAND: ${{ inputs.command }}
+          CONFIRM: ${{ inputs.confirm }}
         with:
           host: ${{ secrets.ORACLE_HOST }}
           username: ${{ secrets.ORACLE_USERNAME }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
           port: 22
-          envs: COMMAND
-          command_timeout: 30m
+          envs: COMMAND,CONFIRM
+          command_timeout: 300m
           script: |
             set -e
             cd "$HOME/AlphaTrader"
             PRIO="nice -n 19"
             command -v ionice >/dev/null 2>&1 && PRIO="$PRIO ionice -c 3"
-            $PRIO venv/bin/python scripts/compact_market_db.py "$COMMAND"
+            # 대괄호: 이 스크립트 자신의 명령줄이 패턴에 걸려 pkill 되지 않게 한다.
+            COLLECTOR='[p]ython.*modules[.]shadow_collector'
+
+            restart_collector() {
+              if ! pgrep -f "$COLLECTOR" >/dev/null; then
+                setsid nohup venv/bin/python -c "from dotenv import load_dotenv; load_dotenv(); import runpy; runpy.run_module('modules.shadow_collector', run_name='__main__', alter_sys=True)" \
+                  >> database/toss_shadow_stdout.log 2>&1 < /dev/null &
+                sleep 5
+              fi
+              pgrep -f "$COLLECTOR" >/dev/null && echo "collector running" || echo "collector NOT running"
+            }
+
+            case "$COMMAND" in
+              inspect|backfill)
+                $PRIO venv/bin/python scripts/compact_market_db.py "$COMMAND"
+                ;;
+              compact|rollback)
+                [ "$CONFIRM" = "$COMMAND" ] || { echo "confirm 값이 작업 이름과 다릅니다"; exit 1; }
+                [ ! -e database/.deploying ] || { echo "배포 진행 중"; exit 1; }
+                trap restart_collector EXIT
+                pkill -f "$COLLECTOR" || true
+                for _ in $(seq 1 30); do
+                  pgrep -f "$COLLECTOR" >/dev/null || break
+                  sleep 1
+                done
+                $PRIO venv/bin/python scripts/compact_market_db.py "$COMMAND"
+                ;;
+              *)
+                echo "알 수 없는 작업"; exit 1
+                ;;
+            esac

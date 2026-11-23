@@ -81,6 +81,7 @@ _LOG_BASENAME = {
     "bot": "trading.log",
     "dash": "dashboard.log",
     "test": "test.log",
+    "compact_market_db": "maintenance.log",   # [v8.6] 일회성 작업이 봇 로그 회전과 경합하지 않게
 }.get(PROC, "trading.log")
 
 LOG_FILE = os.path.join(LOG_DIR, _LOG_BASENAME)

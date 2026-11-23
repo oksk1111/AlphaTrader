@@ -12,7 +12,8 @@
 3. **장외 세션은 토스 캘린더로 판정한다** (`market_clock.us_session_phase`). 모르면 `unknown` 이지 `closed` 가 아니다.
 4. 뉴스의 `first_seen_at` 은 기사 시각이 아니라 RSS 에서 처음 본 시각이다. `baseline=1` 은 도착 시각 분석에서 뺀다.
 5. **수집기는 원본 틱·호가를 `market_events` 에 저장하지 않는다.** 읽는 곳 없이 32GB 까지 쌓여 11/24 디스크 여유가
-   3.2GB 였다. 기존 행은 아직 남아 있다. `/api/status` 의 `toss_stream.storage` 로 DB 크기와 디스크 여유를 본다.
+   3.2GB 였다. 기존 행 정리는 `scripts/compact_market_db.py`
+   (backfill → compact, 원본은 `.old` 로 보존). 원본 영구 삭제는 코드에 넣지 말고 사용자 승인 후 따로 한다. `/api/status` 의 `toss_stream.storage` 로 DB 크기와 디스크 여유를 본다.
 
 ## v8.5 (2026-11-12) — 토큰 재발급이 판단 시각에 봇 스트림을 끊고 있었다
 
