@@ -452,6 +452,10 @@ class TossBroker(Broker):
             interval=interval,
         ) for item in result.get("candles") or []]
 
+    def us_market_calendar(self) -> Dict[str, Any]:
+        """[v8.6] 전일·당일·익일의 미국 데이/프리/정규/애프터 세션 시각 (KST)."""
+        return self._request("GET", "/api/v1/market-calendar/US").get("result") or {}
+
     def submit_order(self, order: OrderRequest) -> OrderAck:
         order.validate()
         client_order_id = order.client_order_id or uuid.uuid4().hex[:32]

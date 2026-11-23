@@ -182,6 +182,38 @@ def is_market_open_for(market: str, now_utc: Optional[_dt.datetime] = None) -> b
         return False
 
 
+_US_CALENDAR_PHASES = (("dayMarket", "day"), ("preMarket", "pre"),
+                       ("regularMarket", "regular"), ("afterMarket", "after"))
+
+
+def us_session_phase(calendar: Optional[dict], now_utc: Optional[_dt.datetime] = None) -> str:
+    """[v8.6] 토스 미국 장 캘린더 기준 세션. 'day'|'pre'|'regular'|'after'|'closed'|'unknown'.
+
+    캘린더가 없거나 now 가 캘린더 범위를 지났으면 'closed' 가 아니라 'unknown' 이다 —
+    모르는 것을 닫힘으로 읽으면 수집 공백이 정상처럼 보인다.
+    """
+    if not calendar:
+        return "unknown"
+    now = now_utc or _dt.datetime.now(_dt.timezone.utc)
+    latest_end = None
+    for day_key in ("previousBusinessDay", "today", "nextBusinessDay"):
+        day = calendar.get(day_key) or {}
+        for key, phase in _US_CALENDAR_PHASES:
+            span = day.get(key)
+            if not span:
+                continue
+            try:
+                start = _dt.datetime.fromisoformat(str(span["startTime"]).replace("Z", "+00:00"))
+                end = _dt.datetime.fromisoformat(str(span["endTime"]).replace("Z", "+00:00"))
+            except (KeyError, ValueError) as e:
+                logger.warning("[MarketClock] 미국 캘린더 형식 오류 (%s.%s): %s", day_key, key, e)
+                return "unknown"
+            if start <= now < end:
+                return phase
+            latest_end = max(latest_end, end) if latest_end else end
+    return "closed" if latest_end and now < latest_end else "unknown"
+
+
 def session_key(market: str, now_utc: Optional[_dt.datetime] = None) -> str:
     """세션 식별자. 거래소 현지 영업일 기준이므로 KST 자정을 넘겨도 안 바뀐다.
 

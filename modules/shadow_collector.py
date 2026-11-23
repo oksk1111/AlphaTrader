@@ -6,7 +6,9 @@
 import json
 import os
 import queue
+import shutil
 import signal
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -15,12 +17,26 @@ from modules import market_clock
 from modules.brokers.models import Market, Quote
 from modules.brokers.toss import TossBroker
 from modules.brokers.toss_stream import TossStream
+from modules.extended_watch import WATCH_ONLY_SYMBOLS, ExtendedWatch, NewsPoller, is_watch_only
 from modules.intraday_strategy import IntradayContext, evaluate_intraday
 from modules.logger import logger
 from modules.market_data_store import MarketDataStore
+from modules.telegram_notifier import get_notifier
 
 
 STATUS_FILE = Path("database/toss_stream_status.json")
+WATCH_ERROR_LOG_SEC = 60
+
+
+def _storage_status(store: MarketDataStore) -> Dict:
+    """원본 틱은 삭제 없이 쌓인다. 디스크가 차면 봇도 멈추므로 크기를 화면에 드러낸다."""
+    size = sum(p.stat().st_size for p in (store.path, Path(f"{store.path}-wal")) if p.exists())
+    return {"market_db_bytes": size, "disk_free_bytes": shutil.disk_usage(store.path.parent).free}
+
+
+def _notify_async(message: str) -> None:
+    # 텔레그램 재시도가 수신 큐 소비를 붙잡지 않게 한다.
+    threading.Thread(target=get_notifier().send_message, args=(message,), daemon=True).start()
 
 
 def load_symbols() -> List[Tuple[Market, str]]:
@@ -53,19 +69,26 @@ def run() -> None:
     if not broker.account_seq:
         broker.account_seq = broker._resolve_account_seq()
     symbols = load_symbols()
-    stream = TossStream(broker.authenticate, symbols, broker.account_seq)
+    watch_symbols = [(Market.US, code) for code in WATCH_ONLY_SYMBOLS]
+    stream = TossStream(broker.authenticate, list(dict.fromkeys(symbols + watch_symbols)),
+                        broker.account_seq)
     store = MarketDataStore()
+    watch = ExtendedWatch(store, broker.us_market_calendar, _notify_async)
+    news = NewsPoller(store, watch)
+    last_watch_error = 0.0
     stopping = False
 
     def stop(*_args):
         nonlocal stopping
         stopping = True
         stream.stop()
+        news.stop()
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     logger.info("[TossShadow] 수집 시작: %d종목, 주문 전송 비활성", len(symbols))
     stream.start()
+    news.start()
     last_status = 0.0
     last_signal_minute = {}
     daily_cache = {}
@@ -76,6 +99,14 @@ def run() -> None:
             except queue.Empty:
                 event = None
             if event:
+                # 장외 관찰 실패가 기존 수집을 멈추면 안 된다.
+                try:
+                    watch.on_event(event)
+                except Exception as exc:
+                    if time.time() - last_watch_error >= WATCH_ERROR_LOG_SEC:
+                        last_watch_error = time.time()
+                        logger.error("[ExtendedWatch] 이벤트 처리 실패: %s", exc)
+            if event and not is_watch_only(event):
                 store.record_event(event)
                 store.upsert_trade(event)
                 if event.kind == "trade" and event.market and event.symbol:
@@ -111,6 +142,10 @@ def run() -> None:
                                 decision.components, price,
                             )
             if time.time() - last_status >= 15:
+                try:
+                    watch.tick()
+                except Exception as exc:
+                    logger.error("[ExtendedWatch] 주기 저장 실패: %s", exc)
                 status = stream.status()
                 status.update({
                     "broker": "toss",
@@ -118,11 +153,19 @@ def run() -> None:
                     "symbols": len(symbols),
                     "kr_sessions_collected": store.collected_sessions("KR"),
                     "us_sessions_collected": store.collected_sessions("US"),
+                    "extended": {**watch.status(), **news.status(),
+                                 "watch_only": list(WATCH_ONLY_SYMBOLS)},
+                    "storage": _storage_status(store),
                 })
                 _write_status(status)
                 last_status = time.time()
     finally:
         stream.stop()
+        news.stop()
+        try:
+            watch.tick(time.time() + 60)      # 진행 중인 분까지 저장
+        except Exception as exc:
+            logger.error("[ExtendedWatch] 종료 저장 실패: %s", exc)
         store.close()
         logger.info("[TossShadow] 수집 종료")
 

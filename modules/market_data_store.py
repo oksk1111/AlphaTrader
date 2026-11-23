@@ -82,6 +82,43 @@ class MarketDataStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_shadow_signals_session
                     ON shadow_signals(session_key, market, symbol);
+
+                CREATE TABLE IF NOT EXISTS extended_minutes (
+                    symbol TEXT NOT NULL,
+                    minute TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    open REAL NOT NULL,
+                    high REAL NOT NULL,
+                    low REAL NOT NULL,
+                    close REAL NOT NULL,
+                    volume REAL NOT NULL,
+                    trades INTEGER NOT NULL,
+                    spread_bps_avg REAL,
+                    spread_bps_max REAL,
+                    bid_volume REAL,
+                    ask_volume REAL,
+                    ref_price REAL,
+                    PRIMARY KEY (symbol, minute)
+                );
+
+                CREATE TABLE IF NOT EXISTS extended_refs (
+                    symbol TEXT PRIMARY KEY,
+                    price REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS extended_news (
+                    id TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    link TEXT,
+                    published_at TEXT,
+                    first_seen_at REAL NOT NULL,
+                    phase TEXT NOT NULL,
+                    baseline INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_extended_news_seen
+                    ON extended_news(first_seen_at);
             """)
 
     def record_event(self, event: MarketEvent) -> None:
@@ -203,6 +240,54 @@ class MarketDataStore:
             params = (market,)
         row = self._conn.execute(query, params).fetchone()
         return int(row[0] or 0)
+
+    def upsert_extended_minute(self, bar: Dict[str, Any]) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT OR REPLACE INTO extended_minutes
+                   (symbol, minute, phase, open, high, low, close, volume, trades,
+                    spread_bps_avg, spread_bps_max, bid_volume, ask_volume, ref_price)
+                   VALUES (:symbol, :minute, :phase, :open, :high, :low, :close, :volume, :trades,
+                           :spread_bps_avg, :spread_bps_max, :bid_volume, :ask_volume, :ref_price)""",
+                bar,
+            )
+
+    def set_extended_ref(self, symbol: str, price: float, updated_at: float) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO extended_refs (symbol, price, updated_at) VALUES (?, ?, ?)",
+                (symbol, price, updated_at),
+            )
+
+    def extended_refs(self) -> Dict[str, float]:
+        with self._lock:
+            rows = self._conn.execute("SELECT symbol, price FROM extended_refs").fetchall()
+        return {row[0]: row[1] for row in rows}
+
+    def record_news(self, items: Iterable[Dict[str, Any]], first_seen_at: float,
+                    phase: str, baseline: bool) -> int:
+        """처음 본 기사만 저장한다. baseline=True 는 시작 시점에 이미 있던 기사 (도착 시각 분석 제외)."""
+        added = 0
+        with self._lock, self._conn:
+            for item in items:
+                cursor = self._conn.execute(
+                    """INSERT OR IGNORE INTO extended_news
+                       (id, source, title, link, published_at, first_seen_at, phase, baseline)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (item["id"], item["source"], item["title"], item.get("link"),
+                     item.get("published_at"), first_seen_at, phase, int(baseline)),
+                )
+                added += max(0, cursor.rowcount)
+        return added
+
+    def recent_news(self, since: float, limit: int = 2) -> list:
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT title FROM extended_news WHERE first_seen_at >= ? AND baseline = 0
+                   GROUP BY title ORDER BY MAX(first_seen_at) DESC LIMIT ?""",
+                (since, max(1, int(limit))),
+            ).fetchall()
+        return [row[0] for row in rows]
 
     def close(self) -> None:
         self._conn.close()
