@@ -691,3 +691,48 @@ class TestJudgementDetail:
         rb.run_rotation_session("KR", _cfg())
         summary = next(m for m in alerts if "로테이션 세션" in m)
         assert "시장필터 BENCH" in summary and "추세조건(종가>MA20>MA60) 통과" in summary
+
+
+class TestManualHoldings:
+    """[v8.7] 운영자가 직접 운용하는 위성 종목(manual_holdings)은 봇이 건드리지 않는다.
+
+    liquidate_non_universe=true 라, 이 목록이 없으면 같은 계좌에 수동으로 산 종목(예: CJ)을
+    다음 리밸런싱에서 '유니버스 밖'으로 판다.
+    """
+
+    def test_manual_holding_is_not_liquidated_or_close_stopped(self, rb, monkeypatch):
+        series = dict(UNIVERSE, CJ=_series(50000, -.004))            # 하락 추세 + 평단 대비 큰 손실
+        fake = FakeKR(series, holdings={"CJ": (10, 200000)}, cash=2_000_000)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
+        rb.run_rotation_session("KR", _cfg(manual_holdings=["CJ"]))
+        assert not [s for s in fake.sells if s[0] == "CJ"]
+        assert {c for c, _ in fake.buys} == {"A", "B"}
+
+    def test_without_manual_list_it_is_still_liquidated(self, rb, monkeypatch):
+        series = dict(UNIVERSE, CJ=_series(50000, .004))
+        fake = FakeKR(series, holdings={"CJ": (10, 50000)}, cash=2_000_000)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
+        rb.run_rotation_session("KR", _cfg())
+        assert ("CJ", 10) in fake.sells
+
+    def test_manual_value_is_not_bot_slot_money(self, rb, monkeypatch):
+        """위성 평가액을 슬롯 자금에 넣으면 per_slot 이 부풀어 봇이 현금 전부를 한 종목에 쓴다."""
+        series = dict(UNIVERSE, CJ=_series(100000, .0))
+        fake = FakeKR(series, holdings={"CJ": (100, 100000)}, cash=2_000_000)   # 위성 1000만원
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
+        rb.run_rotation_session("KR", _cfg(manual_holdings=["CJ"]))
+        spent = {c: q * series[c][-1] for c, q in fake.buys}
+        assert set(spent) == {"A", "B"}
+        assert all(v <= 1_000_000 for v in spent.values()), spent
+
+    def test_universe_code_in_manual_list_stays_bot_managed(self, rb, monkeypatch):
+        fake = FakeKR(dict(UNIVERSE), cash=2_000_000)
+        monkeypatch.setattr(rb, "TossDomestic", lambda: fake)
+        rb.run_rotation_session("KR", _cfg(manual_holdings=["A"]))
+        assert "A" in {c for c, _ in fake.buys}
+
+    def test_operational_config_protects_cj(self):
+        cfg = json.load(open(os.path.join(os.path.dirname(__file__), "..", "user_config.json"), encoding="utf-8"))
+        kr = cfg["momentum_rotation"]["kr"]
+        assert "001040" in kr["manual_holdings"]
+        assert "001040" not in [str(c) for c in kr["universe"]] + kr["defensive"]

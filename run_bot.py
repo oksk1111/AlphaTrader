@@ -1152,8 +1152,25 @@ def _rotation_universe(mcfg, market):
     return out
 
 
-def _rotation_account(broker, market, exch_of=None):
+def _manual_holdings(mcfg, market, managed=()):
+    """[v8.7] 운영자가 직접 운용하는 위성 종목 (`manual_holdings`). 봇은 이 종목을 보지 않는다.
+
+    유니버스·방어자산 종목은 봇이 관리하므로 수동 목록에 있어도 무시한다 — 둘이 같은 종목을
+    서로 다르게 다루면 봇이 산 수량을 운영자 몫으로 읽거나 그 반대가 된다.
+    """
+    manual = {str(c).strip() for c in mcfg.get('manual_holdings') or [] if str(c).strip()}
+    clash = sorted(manual & set(managed))
+    if clash:
+        logger.warning(f"[{market}] manual_holdings 의 {clash} 는 유니버스/방어자산이라 봇이 관리합니다 → 수동 목록에서 무시")
+    return frozenset(manual - set(managed))
+
+
+def _rotation_account(broker, market, exch_of=None, manual=frozenset()):
     """(holdings{code: {qty, avg, price, value, exchange}}, cash, equity, degraded).
+
+    [v8.7] manual 에 든 종목은 holdings·equity 에서 뺀다. 그래서 봇은 그 종목을 '유니버스 밖'으로
+    청산하지 않고, 종가손절하지 않고, 그 평가액을 슬롯 자금(equity/슬롯)에 넣지 않는다.
+    현금은 계좌 하나를 같이 쓰므로 위성 매수에 쓴 현금은 봇 몫에서 자연히 빠진다.
 
     degraded = 조회에 실패한 US 거래소 목록. 비어 있지 않으면 일부 보유가 안 보일 수
     있으므로 호출자는 **매수를 막고**(중복 매수 방지) 보이는 보유의 매도·손절은 계속한다.
@@ -1179,6 +1196,8 @@ def _rotation_account(broker, market, exch_of=None):
         code = h.get('pdno') if market == 'KR' else (h.get('ovrs_pdno') or h.get('pdno'))
         qty = int(safe_float(h.get('hldg_qty', h.get('ovrs_cblc_qty', 0))))
         if not code or qty <= 0:
+            continue
+        if code in manual:
             continue
         price = safe_float(h.get('prpr', h.get('now_pric2', h.get('ovrs_now_pric1', 0))))
         avg = safe_float(h.get('pchs_avg_pric', h.get('avg_unpr3', 0)))
@@ -1328,6 +1347,7 @@ def _rotation_session(market, user_config):
     universe = _rotation_universe(mcfg, market)
     uni_codes = [c for c, _ in universe]
     exch_of = {c: e for c, e in universe}
+    manual = _manual_holdings(mcfg, market, set(uni_codes) | set(defensive))
     logger.info(f"[{market}] 🔁 v7.0 모멘텀 로테이션 세션 시작 — 유니버스 {uni_codes}, "
                 f"슬롯 {slots_max}, 버퍼 {sell_buffer}위, 리밸런싱 {rebalance_days}거래일, "
                 f"시장필터 {'ON' if use_filter else 'OFF'}, 종가손절 {close_stop}%")
@@ -1344,8 +1364,10 @@ def _rotation_session(market, user_config):
 
     # --- 2) 계좌 + 일봉 ---
     touch_heartbeat(force=True, market=market, source='session-prep')
-    holdings, cash, equity, degraded = _rotation_account(broker, market, exch_of)
+    holdings, cash, equity, degraded = _rotation_account(broker, market, exch_of, manual)
     logger.info(f"[{market}] 계좌: 현금 {cash:,.2f} / 평가 {equity:,.2f} / 보유 {list(holdings)}")
+    if manual:
+        logger.info(f"[{market}] 수동 운용(봇 관리 밖, 청산·손절·슬롯자금 제외): {sorted(manual)}")
     # LiveFeed 는 세션 시작 시 유니버스·방어자산을 모두 구독한다. 보유 내역을 보고
     # 스트림을 다시 만들면 토스의 계정당 2개 연결 한도를 순간적으로 넘길 수 있다.
     # 유니버스 밖 이관 보유는 계좌 스냅샷 가격으로만 청산 판단하므로 추가 구독도 필요 없다.
@@ -1504,7 +1526,7 @@ def _rotation_session(market, user_config):
             to_buy = []
         if sold:
             time.sleep(3)
-        holdings, cash, equity, degraded = _rotation_account(broker, market, exch_of)
+        holdings, cash, equity, degraded = _rotation_account(broker, market, exch_of, manual)
         per_slot = equity / max(1, n_slots)
         # [v7.0.2] 실제 주문 단가. US 매수는 현재가 +1% 지정가(brokers.compat.TossOverseas.buy_market_order)에
         # 수수료가 붙는다. 현재가로만 판정하면 현금이 [가격, 가격×1.0125) 일 때 1주 주문이
@@ -1631,7 +1653,7 @@ def _rotation_session(market, user_config):
     if close_stop is not None:
         sess = _rotation_wait(market, lambda s: s.minutes_to_close <= close_check, 'close-watch')
         if sess.is_open:
-            holdings, cash, equity, _deg = _rotation_account(broker, market, exch_of)
+            holdings, cash, equity, _deg = _rotation_account(broker, market, exch_of, manual)
             for code, h in holdings.items():
                 if h['avg'] <= 0:
                     continue
@@ -1651,7 +1673,7 @@ def _rotation_session(market, user_config):
 
     # --- 6-1) [v7.0.3] 장 마감 포트폴리오 요약 ---
     try:
-        _final_h, _final_cash, _final_eq, _ = _rotation_account(broker, market, exch_of)
+        _final_h, _final_cash, _final_eq, _ = _rotation_account(broker, market, exch_of, manual)
         _cash_pct = (_final_cash / _final_eq * 100) if _final_eq > 0 else 100
         _close_lines = [f"📊 [{market}] 장 마감 포트폴리오", "━━━━━━━━━━━━"]
         _close_lines.append(f"총 평가: {_cur(_final_eq)}")

@@ -141,7 +141,9 @@
             "market_filter": true,
             "close_stop_pct": -15.0,
             "min_slot_value": 200000,
-            "liquidate_non_universe": true
+            "liquidate_non_universe": true,
+            "_manual_holdings_comment": "v8.7: 운영자가 직접 고른 위성 종목. 봇은 이 종목을 청산·종가손절하지 않고 슬롯 자금에도 넣지 않는다 (시스템 검증 대상 아님). 001040 = CJ (올리브영 지분 보유 지주사).",
+            "manual_holdings": ["001040"]
         },
         "us": {
             "_comment": "v7.0.3: SPY/QQQ/SMH 가 모두 $600+ 라 $586 예수금으로 1주도 매수 불가 → IWM($281)/XLK($202) 추가. 5종목 중 모멘텀 상위 2개 보유. 프로덕션 배포 후 scripts/backtest_real.py 로 검증 필요.",
@@ -174,7 +176,8 @@
             "market_filter": false,
             "close_stop_pct": -15.0,
             "min_slot_value": 50,
-            "liquidate_non_universe": true
+            "liquidate_non_universe": true,
+            "manual_holdings": []
         }
     },
     "broker": {
