@@ -1,6 +1,6 @@
 name: Market DB Maintenance
 
-# 수동 실행 전용. 현재는 읽기 전용 점검만 있다. 저장소가 PUBLIC 이므로 행 수·크기·날짜만 출력한다.
+# 수동 실행 전용. 전부 읽기 전용이다 (inspect = DB 점검, intraday-gate = 장중 엔진 사전 등록 판정). 저장소가 PUBLIC 이므로 행 수·크기·날짜만 출력한다.
 on:
   workflow_dispatch:
     inputs:
@@ -11,6 +11,7 @@ on:
         type: choice
         options:
           - inspect
+          - intraday-gate
 
 jobs:
   maintenance:
@@ -33,4 +34,10 @@ jobs:
             cd "$HOME/AlphaTrader"
             PRIO="nice -n 19"
             command -v ionice >/dev/null 2>&1 && PRIO="$PRIO ionice -c 3"
-            $PRIO venv/bin/python scripts/compact_market_db.py "$COMMAND"
+            if [ "$COMMAND" = "intraday-gate" ]; then
+              # docs/preregistration/2026-11-26-intraday-gate.md — 시장별 집계만 출력한다. 판정 결과로
+              # live 를 켜지 않는다 (읽는 곳 없음). 종료코드 1 = 기준 미통과로, 작업 실패가 아니다.
+              $PRIO venv/bin/python scripts/walk_forward_intraday.py || [ $? -eq 1 ]
+            else
+              $PRIO venv/bin/python scripts/compact_market_db.py "$COMMAND"
+            fi
